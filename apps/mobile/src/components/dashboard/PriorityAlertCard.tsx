@@ -66,6 +66,6 @@ const styles = StyleSheet.create({
   scorePill: { alignItems: "center", backgroundColor: colors.blueSoft, borderRadius: radius.md, minWidth: 52, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   score: { color: colors.blue, fontSize: 16, fontVariant: ["tabular-nums"], fontWeight: "800" },
   scoreLabel: { color: colors.muted, fontSize: 9, fontWeight: "700" },
-  evidenceAction: { alignItems: "flex-end", justifyContent: "center", minHeight: 44 },
+  evidenceAction: { alignItems: "flex-end", justifyContent: "center", minHeight: 44, minWidth: 44 },
   evidenceText: { color: colors.blue, fontSize: 11, fontWeight: "800" },
 });

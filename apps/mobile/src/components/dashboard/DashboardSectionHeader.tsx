@@ -30,6 +30,6 @@ export function DashboardSectionHeader({
 const styles = StyleSheet.create({
   row: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   title: { color: colors.ink, fontSize: 12, fontWeight: "800" },
-  action: { alignItems: "flex-end", justifyContent: "center", minHeight: 44 },
+  action: { alignItems: "flex-end", justifyContent: "center", minHeight: 44, minWidth: 44 },
   actionText: { color: colors.blue, fontSize: 10, fontWeight: "700" },
 });

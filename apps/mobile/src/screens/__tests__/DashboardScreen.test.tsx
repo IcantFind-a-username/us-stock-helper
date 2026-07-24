@@ -109,6 +109,10 @@ it("renders the priority alert and watchlist as compact dashboard surfaces", asy
   expect(view.getByTestId("watchlist-grid")).toBeTruthy();
   expect(view.queryByTestId("watchlist-scroll")).toBeNull();
   expect(view.getAllByTestId("watchlist-quote")).toHaveLength(3);
+
+  const sectionAction = view.getByRole("button", { name: "来自 moomoo ›" });
+  expect(StyleSheet.flatten(sectionAction.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(StyleSheet.flatten(sectionAction.props.style).minWidth).toBeGreaterThanOrEqual(44);
 });
 
 it("routes alert, quotes, and both long/short candidates while disclosing their evidence", async () => {
@@ -146,6 +150,7 @@ it("routes alert, quotes, and both long/short candidates while disclosing their 
 
   const alertEvidence = view.getByRole("button", { name: "查看 NVDA 提醒依据" });
   expect(StyleSheet.flatten(alertEvidence.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  expect(StyleSheet.flatten(alertEvidence.props.style).minWidth).toBeGreaterThanOrEqual(44);
   await fireEvent.press(alertEvidence);
   expect(view.getByText("NVDA 提醒依据")).toBeTruthy();
   expect(view.getByText("盘中报价、期权与量价演示快照")).toBeTruthy();
