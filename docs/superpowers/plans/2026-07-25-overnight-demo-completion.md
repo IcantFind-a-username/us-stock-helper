@@ -192,3 +192,26 @@
 - [ ] Re-run the complete verification suite after final visual adjustments.
 - [ ] Commit the verification/runbook changes and prepare the branch for the user's morning review.
 
+### Task 9: Add the optional read-only moomoo OpenD bridge
+
+**Files:**
+- Create: `services/market_gateway/src/us_stock_helper_market_gateway/`
+- Create: `services/market_gateway/tests/`
+- Create: `apps/mobile/src/data/marketGateway.ts`
+- Create: `apps/mobile/src/data/__tests__/marketGateway.test.ts`
+- Modify: `docs/runbooks/iphone-dev-client.md`
+
+**Interfaces:**
+- Consumes: local OpenD quote service on `127.0.0.1:11111`
+- Produces: allowlisted `/health`, `/watchlist`, `/quotes`, and `/candles` JSON endpoints plus explicit fixture fallback
+
+- [x] Write failing Python adapter tests with a protocol-compatible fake quote context for healthy, login-required, permission-denied, and stale responses.
+- [x] Verify RED because the adapter does not exist.
+- [x] Implement a read-only adapter using quote context methods only; importing or constructing any trade context is forbidden.
+- [x] Write failing TypeScript tests for live, unavailable, stale, and malformed gateway responses.
+- [x] Implement source/freshness validation and deterministic fallback without merging live and fixture timestamps.
+- [x] Expose fixture/live source disclosure and keep non-live screens explicitly labelled.
+- [x] Install the official `moomoo-api` SDK into a project-local virtual environment.
+- [x] Record the verified user-owned OpenD installation, login, and quote-permission step.
+- [x] Run gateway tests, mobile tests, and a loopback health probe.
+- [ ] Commit the read-only bridge separately from the UI completion.

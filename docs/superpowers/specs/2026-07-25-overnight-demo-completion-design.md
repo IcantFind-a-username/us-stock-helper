@@ -10,9 +10,10 @@ demo for morning review. The implementation must remove render errors and
 placeholder tabs while translating the already-approved browser prototypes
 into native React Native screens.
 
-This delivery remains Project 1 of the main product design. It does not add
-live market feeds, web crawling, moomoo authentication, an LLM provider, push
-notifications, or broker order permissions.
+This delivery remains primarily Project 1 of the main product design. At the
+user's request, it may also add a narrow Project 2 bridge for read-only moomoo
+watchlist, quote, and candlestick access. It does not add web crawling, an LLM
+provider, push notifications, or broker order permissions.
 
 ## Evidence and root cause
 
@@ -122,6 +123,19 @@ responses, clearly labeled as non-live. It also provides evidence disclosure,
 supplemental-research state, and an entry into the thirteen style-adviser
 council.
 
+### Optional read-only moomoo bridge
+
+The iPhone never connects to OpenD directly and never receives moomoo account
+credentials. A local gateway connects to OpenD on loopback, exposes only an
+allowlisted read API to the phone, normalizes timestamps and source metadata,
+and reports permission, quota, latency, and fallback state.
+
+The app uses live data only when the gateway explicitly reports `source:
+moomoo`, a successful OpenD session, and a fresh timestamp. Otherwise the
+existing deterministic fixtures remain visible with an `演示回退` label.
+Trading contexts, account positions, order submission, order modification,
+order cancellation, and watchlist mutation are excluded.
+
 ## Failure handling
 
 - Known UI routes must never rely on absent fixture records.
@@ -130,6 +144,8 @@ council.
 - Demo research and Agent actions acknowledge locally without external calls.
 - Unknown direct-link symbols show an unavailable screen with Back and
   Dashboard actions.
+- OpenD offline, login-required, permission-denied, quota-exhausted, and stale
+  responses map to explicit data-health states and deterministic fallback.
 - No control may submit, edit, or cancel a broker order.
 
 ## Testing and acceptance
@@ -150,4 +166,3 @@ Test-first coverage must prove:
 Final verification requires full Jest, TypeScript, ESLint, Expo route/config,
 390- and 430-point visual checks, a physical-device Xcode build, installation,
 launch, and Metro bundle inspection.
-

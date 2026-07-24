@@ -1,0 +1,313 @@
+import { describe, expect, it, jest } from "@jest/globals";
+
+import type { WatchlistQuote } from "@/domain/models";
+import {
+  createMarketGatewayClient,
+  decodeCandleEnvelope,
+  decodeWatchlistEnvelope,
+} from "../marketGateway";
+
+const now = new Date("2026-07-25T16:00:00.000Z");
+const fallback: WatchlistQuote[] = [
+  {
+    symbol: "NVDA",
+    price: 141.3,
+    changePercent: 1.2,
+    direction: "bullish",
+    summary: "演示回退",
+  },
+];
+
+function jsonResponse(value: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => value,
+  } as Response;
+}
+
+describe("market gateway point-in-time validation", () => {
+  it("accepts a fresh healthy moomoo watchlist without mixing fixture rows", () => {
+    const result = decodeWatchlistEnvelope(
+      {
+        schemaVersion: "1",
+        source: "moomoo",
+        session: "healthy",
+        asOf: "2026-07-25T15:59:50.000Z",
+        availableAt: "2026-07-25T15:59:51.000Z",
+        items: [
+          {
+            code: "US.NVDA",
+            price: 142.25,
+            changePercent: 2.4,
+            availableAt: "2026-07-25T15:59:49.000Z",
+          },
+        ],
+      },
+      { maxAgeMs: 30_000, now },
+    );
+
+    expect(result.source).toBe("moomoo");
+    expect(result.quotes).toEqual([
+      {
+        symbol: "NVDA",
+        price: 142.25,
+        changePercent: 2.4,
+        direction: "bullish",
+        summary: "实时只读",
+      },
+    ]);
+  });
+
+  it.each([
+    ["stale", "2026-07-25T15:58:00.000Z", "2026-07-25T15:58:01.000Z"],
+    ["future", "2026-07-25T16:00:03.000Z", "2026-07-25T16:00:04.000Z"],
+  ])("rejects %s watchlist snapshots", (_label, asOf, availableAt) => {
+    expect(() =>
+      decodeWatchlistEnvelope(
+        {
+          schemaVersion: "1",
+          source: "moomoo",
+          session: "healthy",
+          asOf,
+          availableAt,
+          items: [],
+        },
+        { maxAgeMs: 30_000, now },
+      ),
+    ).toThrow();
+  });
+
+  it("rejects fixture-labelled, unhealthy, malformed, and mixed-time live responses", () => {
+    const base = {
+      schemaVersion: "1",
+      source: "moomoo",
+      session: "healthy",
+      asOf: "2026-07-25T15:59:50.000Z",
+      availableAt: "2026-07-25T15:59:51.000Z",
+      items: [],
+    };
+
+    expect(() => decodeWatchlistEnvelope({ ...base, source: "fixture" }, { now })).toThrow();
+    expect(() => decodeWatchlistEnvelope({ ...base, session: "login-required" }, { now })).toThrow();
+    expect(() => decodeWatchlistEnvelope({ ...base, items: [{ code: "US.NVDA" }] }, { now })).toThrow();
+    expect(() =>
+      decodeWatchlistEnvelope(
+        {
+          ...base,
+          items: [
+            {
+              code: "US.NVDA",
+              price: 142,
+              changePercent: 1,
+              availableAt: "2026-07-25T16:00:01.000Z",
+            },
+          ],
+        },
+        { now },
+      ),
+    ).toThrow();
+  });
+
+  it("only accepts completed candles available by the response cutoff", () => {
+    const valid = {
+      schemaVersion: "1",
+      source: "moomoo",
+      session: "healthy",
+      asOf: "2026-07-25T15:59:50.000Z",
+      availableAt: "2026-07-25T15:59:51.000Z",
+      symbol: "NVDA",
+      interval: "5m",
+      items: [
+        {
+          timestamp: "2026-07-25T15:55:00.000Z",
+          availableAt: "2026-07-25T15:55:01.000Z",
+          complete: true,
+          open: 140,
+          high: 142,
+          low: 139.5,
+          close: 141.5,
+          volume: 1200,
+        },
+      ],
+    };
+
+    expect(decodeCandleEnvelope(valid, { now }).candles).toHaveLength(1);
+    expect(() =>
+      decodeCandleEnvelope(
+        {
+          ...valid,
+          items: [{ ...valid.items[0], complete: false }],
+        },
+        { now },
+      ),
+    ).toThrow();
+    expect(() =>
+      decodeCandleEnvelope(
+        {
+          ...valid,
+          items: [
+            {
+              ...valid.items[0],
+              availableAt: "2026-07-25T16:00:01.000Z",
+            },
+          ],
+        },
+        { now },
+      ),
+    ).toThrow();
+  });
+});
+
+describe("market gateway fallback", () => {
+  it("fails closed to one explicit fixture snapshot when the gateway is unavailable", async () => {
+    const fetchImpl = jest.fn(async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://192.168.1.10:8765",
+      authorizationToken: "0123456789abcdef0123456789abcdef",
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await client.getWatchlistOrFallback(fallback);
+
+    expect(result.source).toBe("fixture");
+    expect(result.quotes).toEqual(fallback);
+    expect(result.fallbackReason).toBe("gateway-unavailable");
+  });
+
+  it("falls back on stale, malformed, permission, or non-moomoo responses", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse({
+        schemaVersion: "1",
+        source: "moomoo",
+        session: "permission-denied",
+        asOf: "2026-07-25T15:59:50.000Z",
+        availableAt: "2026-07-25T15:59:51.000Z",
+        items: [],
+      }),
+    ) as unknown as typeof fetch;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(client.getWatchlistOrFallback(fallback)).resolves.toMatchObject({
+      source: "fixture",
+      fallbackReason: "gateway-invalid",
+      quotes: fallback,
+    });
+  });
+
+  it("returns live rows only after successful schema, source, health, and freshness checks", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse({
+        schemaVersion: "1",
+        source: "moomoo",
+        session: "healthy",
+        asOf: "2026-07-25T15:59:50.000Z",
+        availableAt: "2026-07-25T15:59:51.000Z",
+        items: [
+          {
+            code: "US.TSLA",
+            price: 320,
+            changePercent: -1.5,
+            availableAt: "2026-07-25T15:59:49.000Z",
+          },
+        ],
+      }),
+    ) as unknown as typeof fetch;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://192.168.1.10:8765/",
+      authorizationToken: "0123456789abcdef0123456789abcdef",
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await client.getWatchlistOrFallback(fallback);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://192.168.1.10:8765/watchlist",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          Authorization: "Bearer 0123456789abcdef0123456789abcdef",
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      source: "moomoo",
+      quotes: [{ symbol: "TSLA", direction: "bearish" }],
+    });
+    expect(result.quotes).not.toContainEqual(fallback[0]);
+  });
+
+  it("requires an ephemeral token before connecting to a LAN gateway", () => {
+    expect(() =>
+      createMarketGatewayClient({
+        baseUrl: "http://192.168.1.10:8765",
+        fetchImpl: jest.fn() as unknown as typeof fetch,
+      }),
+    ).toThrow(/token/i);
+  });
+
+  it.each([
+    "ftp://127.0.0.1:8765",
+    "http://user:secret@127.0.0.1:8765",
+    "http://127.0.0.1:8765/api?token=secret",
+  ])("rejects an unsafe gateway base URL: %s", (baseUrl) => {
+    expect(() =>
+      createMarketGatewayClient({
+        baseUrl,
+        fetchImpl: jest.fn() as unknown as typeof fetch,
+      }),
+    ).toThrow(/baseUrl/i);
+  });
+
+  it("fetches and validates completed candles without fixture mixing", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse({
+        schemaVersion: "1",
+        source: "moomoo",
+        session: "healthy",
+        asOf: "2026-07-25T15:59:50.000Z",
+        availableAt: "2026-07-25T15:59:51.000Z",
+        symbol: "NVDA",
+        interval: "5m",
+        items: [
+          {
+            timestamp: "2026-07-25T15:55:00.000Z",
+            availableAt: "2026-07-25T15:55:01.000Z",
+            complete: true,
+            open: 140,
+            high: 142,
+            low: 139.5,
+            close: 141.5,
+            volume: 1200,
+          },
+        ],
+      }),
+    ) as unknown as typeof fetch;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await client.getCandles("nvda", "5m", 200);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/candles?symbol=NVDA&interval=5m&count=200",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(result).toMatchObject({
+      source: "moomoo",
+      symbol: "NVDA",
+      interval: "5m",
+      candles: [{ complete: true, close: 141.5 }],
+    });
+  });
+});

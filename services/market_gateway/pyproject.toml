@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "us-stock-helper-market-gateway"
+version = "0.1.0"
+description = "Read-only moomoo OpenD market-data gateway"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+opend = ["moomoo-api"]
+
+[project.scripts]
+us-stock-helper-market-gateway = "us_stock_helper_market_gateway.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+us_stock_helper_market_gateway = ["py.typed"]
