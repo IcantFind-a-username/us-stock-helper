@@ -10,6 +10,9 @@ export type MarketDriverCategory =
   | "volatility-options"
   | "sector"
   | "rates-dollar"
+  | "macro-credit-energy"
+  | "liquidity-correlation"
+  | "broad-market-trend"
   | "geopolitics";
 
 export interface Citation {
@@ -43,6 +46,7 @@ export interface DashboardSnapshot {
   marketScoreChange: number;
   marketConclusion: string;
   marketAdvice: string;
+  marketInvalidation: string;
   contradictions: string[];
   marketDrivers: MarketDriver[];
   priorityAlert: AlertThread;
@@ -63,6 +67,7 @@ export interface Candidate {
   company: string;
   horizon: Horizon;
   side: PlanSide;
+  designation: "asymmetric-upside" | "standard";
   score: number;
   state: "observation" | "action-eligible" | "risk";
   catalyst: string;
@@ -73,8 +78,11 @@ export interface Candidate {
   volatilityState: string;
   liquidityRisk: "low" | "medium" | "high";
   reason: string;
+  counterCase: string;
+  invalidation: string;
   evidenceCount: number;
   counterEvidenceCount: number;
+  citationIds: string[];
 }
 
 export interface Candle {

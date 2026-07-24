@@ -4,8 +4,8 @@ import { colors, radius, spacing } from "@/theme/tokens";
 
 export function DemoDataBadge() {
   return (
-    <View accessibilityLabel="演示数据，非实时建议" style={styles.badge}>
-      <Text style={styles.text}>演示数据 · 非实时建议</Text>
+    <View accessibilityLabel="演示数据，非实时行情" style={styles.badge}>
+      <Text style={styles.text}>演示数据 · 非实时行情</Text>
     </View>
   );
 }

@@ -10,8 +10,22 @@ describe("fixtureRepository", () => {
       expect(dashboard.horizon).toBe(horizon);
       expect(dashboard.demoData).toBe(true);
       expect(dashboard.marketConclusion.length).toBeGreaterThan(0);
-      expect(dashboard.marketDrivers.length).toBeGreaterThanOrEqual(4);
+      expect(dashboard.marketDrivers.map((driver) => driver.category)).toEqual([
+        "news-sentiment",
+        "breadth",
+        "volatility-options",
+        "sector",
+        "rates-dollar",
+        "macro-credit-energy",
+        "liquidity-correlation",
+        "broad-market-trend",
+        "geopolitics",
+      ]);
+      expect(dashboard.marketDrivers.every((driver) => driver.freshness.length > 0)).toBe(true);
       expect(dashboard.watchlist.length).toBeGreaterThanOrEqual(3);
+      expect(dashboard.candidates.some((candidate) => candidate.side === "long" && candidate.designation === "asymmetric-upside")).toBe(true);
+      expect(dashboard.candidates.some((candidate) => candidate.side === "short" && candidate.designation === "standard")).toBe(true);
+      expect(dashboard.candidates.every((candidate) => candidate.counterCase.length > 0 && candidate.invalidation.length > 0 && candidate.citationIds.length > 0)).toBe(true);
     },
   );
 
