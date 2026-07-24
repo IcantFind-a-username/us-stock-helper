@@ -15,6 +15,26 @@ export type MarketDriverCategory =
   | "broad-market-trend"
   | "geopolitics";
 
+export type MarketDriverCoverage =
+  | "news"
+  | "social-sentiment"
+  | "breadth"
+  | "volatility"
+  | "options"
+  | "term-structure"
+  | "sector-strength"
+  | "rates"
+  | "yield-curve"
+  | "dollar"
+  | "macro"
+  | "credit"
+  | "energy"
+  | "commodities"
+  | "liquidity"
+  | "correlation-stress"
+  | "broad-trend"
+  | "geopolitics";
+
 export interface Citation {
   id: string;
   title: string;
@@ -28,6 +48,7 @@ export interface Citation {
 export interface MarketDriver {
   id: string;
   category: MarketDriverCategory;
+  coverage: MarketDriverCoverage[];
   label: string;
   score: number;
   conclusion: string;
@@ -45,7 +66,9 @@ export interface DashboardSnapshot {
   marketConfidence: number;
   marketScoreChange: number;
   marketConclusion: string;
+  marketRationale: string;
   marketAdvice: string;
+  marketRiskPosture: string;
   marketInvalidation: string;
   contradictions: string[];
   marketDrivers: MarketDriver[];

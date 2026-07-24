@@ -13,6 +13,7 @@ type EvidenceSheetProps = {
 export function EvidenceSheet({ title, citations }: EvidenceSheetProps) {
   return (
     <View accessibilityLabel={title} style={styles.sheet}>
+      <Text style={styles.marker}>演示</Text>
       <Text style={styles.title}>{title}</Text>
       {citations.length ? (
         citations.map((citation) => <CitationRow citation={citation} key={citation.id} />)
@@ -25,6 +26,7 @@ export function EvidenceSheet({ title, citations }: EvidenceSheetProps) {
 
 const styles = StyleSheet.create({
   sheet: { backgroundColor: colors.card, borderRadius: radius.lg, padding: spacing.lg },
+  marker: { color: colors.amber, fontSize: 11, fontWeight: "800" },
   title: { color: colors.ink, fontSize: 18, fontWeight: "800" },
   empty: { color: colors.muted, fontSize: 14, paddingVertical: spacing.xl },
 });

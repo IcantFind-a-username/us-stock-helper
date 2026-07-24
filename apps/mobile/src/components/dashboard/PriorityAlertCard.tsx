@@ -6,8 +6,10 @@ import { colors, radius, spacing } from "@/theme/tokens";
 type PriorityAlertCardProps = {
   alert: AlertThread;
   onPress(): void;
-  onOpenEvidence(citationIds: string[]): void;
+  onOpenEvidence(title: string, citationIds: string[]): void;
 };
+
+const freshnessLabel = { fresh: "新鲜", stale: "可能延迟", conflict: "存在冲突" } as const;
 
 export function PriorityAlertCard({ alert, onPress, onOpenEvidence }: PriorityAlertCardProps) {
   return (
@@ -18,16 +20,16 @@ export function PriorityAlertCard({ alert, onPress, onOpenEvidence }: PriorityAl
       <Text style={styles.detail}>触发：{alert.triggeredAt}</Text>
       <Text style={styles.detail}>当前状态：{alert.currentState}</Text>
       <Text style={styles.detail}>证据 {alert.evidenceCount} · 反证 {alert.counterEvidenceCount}</Text>
-      <Text style={styles.detail}>新鲜度：{alert.sourceFreshness === "fresh" ? "新鲜" : alert.sourceFreshness === "stale" ? "可能延迟" : "存在冲突"}</Text>
+      <Text style={styles.detail}>新鲜度：{freshnessLabel[alert.sourceFreshness]}</Text>
       <Text style={styles.detail}>更新时间：{alert.updatedAt}</Text>
       {alert.adviserAdjustment === null ? null : <Text style={styles.detail}>顾问调整 {alert.adviserAdjustment >= 0 ? "+" : ""}{alert.adviserAdjustment}</Text>}
       <Text style={styles.label}>失效条件</Text>
       <Text style={styles.detail}>{alert.invalidation}</Text>
       <View style={styles.actions}>
-        <Pressable accessibilityHint="打开此提醒的演示引用" accessibilityLabel={`查看 ${alert.symbol} 提醒证据`} accessibilityRole="button" onPress={() => onOpenEvidence(alert.citations.map((citation) => citation.id))} style={styles.evidenceButton}>
+        <Pressable accessibilityHint="打开此提醒的演示引用" accessibilityLabel={`查看 ${alert.symbol} 提醒证据：当前状态 ${alert.currentState}，证据 ${alert.evidenceCount}，反证 ${alert.counterEvidenceCount}，新鲜度 ${freshnessLabel[alert.sourceFreshness]}`} accessibilityRole="button" onPress={() => onOpenEvidence(`${alert.symbol} 提醒证据`, alert.citations.map((citation) => citation.id))} style={styles.evidenceButton}>
           <Text style={styles.evidenceText}>查看证据</Text>
         </Pressable>
-        <Pressable accessibilityHint="前往股票详情" accessibilityLabel={`查看 ${alert.symbol} 提醒详情`} accessibilityRole="button" onPress={onPress} style={styles.detailButton}>
+        <Pressable accessibilityHint="前往股票详情" accessibilityLabel={`查看 ${alert.symbol} 提醒详情：${alert.title}，当前状态 ${alert.currentState}，新鲜度 ${freshnessLabel[alert.sourceFreshness]}`} accessibilityRole="button" onPress={onPress} style={styles.detailButton}>
           <Text style={styles.detailText}>查看详情</Text>
         </Pressable>
       </View>

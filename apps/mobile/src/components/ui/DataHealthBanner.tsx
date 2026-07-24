@@ -24,7 +24,10 @@ export function DataHealthBanner({ health, marketSession }: DataHealthBannerProp
         <Text style={[styles.label, { color: copy.color }]}>{copy.label}</Text>
         <Text style={styles.detail}>{copy.detail}</Text>
       </View>
-      <Text style={styles.session}>{marketSession}</Text>
+      <View style={styles.sessionCopy}>
+        <Text style={styles.marker}>演示</Text>
+        <Text style={styles.session}>{marketSession}</Text>
+      </View>
     </View>
   );
 }
@@ -34,5 +37,7 @@ const styles = StyleSheet.create({
   copy: { flex: 1 },
   label: { fontSize: 13, fontWeight: "700" },
   detail: { color: colors.muted, fontSize: 12, marginTop: spacing.xs },
-  session: { color: colors.ink, fontSize: 12, fontWeight: "600" },
+  sessionCopy: { alignItems: "flex-end", flexShrink: 1 },
+  marker: { color: colors.amber, fontSize: 10, fontWeight: "800" },
+  session: { color: colors.ink, fontSize: 12, fontWeight: "600", textAlign: "right" },
 });

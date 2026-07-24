@@ -9,12 +9,14 @@ type MarketPlaybookCardProps = {
   confidence: number;
   scoreChange: number;
   conclusion: string;
+  rationale: string;
   advice: string;
+  riskPosture: string;
   invalidation: string;
   contradictions: string[];
   drivers: MarketDriver[];
   updatedAt: string;
-  onOpenEvidence(citationIds: string[]): void;
+  onOpenEvidence(title: string, citationIds: string[]): void;
 };
 
 export const normalizedWidth = (score: number) =>
@@ -27,7 +29,9 @@ export function MarketPlaybookCard({
   confidence,
   scoreChange,
   conclusion,
+  rationale,
   advice,
+  riskPosture,
   invalidation,
   contradictions,
   drivers,
@@ -52,9 +56,11 @@ export function MarketPlaybookCard({
       </View>
 
       <Text style={styles.label}>为什么</Text>
-      <Text style={styles.copy}>{advice}</Text>
+      <Text style={styles.copy}>{rationale}</Text>
       <Text style={styles.label}>今日建议</Text>
-      <Text style={styles.copy}>当前策略 / 风险姿态：控制仓位，先等证据确认。</Text>
+      <Text style={styles.copy}>{advice}</Text>
+      <Text style={styles.label}>当前策略 / 风险姿态</Text>
+      <Text style={styles.copy}>{riskPosture}</Text>
 
       <Text style={styles.label}>最强反证</Text>
       {contradictions.map((contradiction) => <Text key={contradiction} style={styles.bullet}>• {contradiction}</Text>)}
@@ -68,10 +74,10 @@ export function MarketPlaybookCard({
       {drivers.map((driver) => (
         <Pressable
           accessibilityHint="查看该驱动因素的演示引用"
-          accessibilityLabel={`查看 ${driver.label} 证据`}
+          accessibilityLabel={`查看 ${driver.label} 证据：评分 ${driver.score}，${driver.conclusion}，新鲜度 ${freshnessLabel[driver.freshness]}`}
           accessibilityRole="button"
           key={driver.id}
-          onPress={() => onOpenEvidence(driver.citationIds)}
+          onPress={() => onOpenEvidence(`${driver.label}证据`, driver.citationIds)}
           style={styles.driver}>
           <View style={styles.driverCopy}>
             <Text style={styles.driverLabel}>{driver.label}</Text>
@@ -91,7 +97,7 @@ export function MarketPlaybookCard({
         accessibilityHint="打开市场结论所依据的演示引用"
         accessibilityLabel="查看市场证据"
         accessibilityRole="button"
-        onPress={() => onOpenEvidence(citationIds)}
+        onPress={() => onOpenEvidence("市场证据", citationIds)}
         style={styles.evidenceButton}>
         <Text style={styles.evidenceText}>查看市场证据</Text>
       </Pressable>

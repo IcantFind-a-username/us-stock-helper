@@ -19,7 +19,7 @@ export function WatchlistStrip({ title, quotes, onPress }: WatchlistStripProps) 
       {quotes.map((quote) => (
         <Pressable
           accessibilityHint="前往股票详情"
-          accessibilityLabel={`查看 ${quote.symbol} 行情详情`}
+          accessibilityLabel={`查看 ${quote.symbol} 行情详情：$${quote.price.toFixed(2)}，${quote.changePercent >= 0 ? "+" : ""}${quote.changePercent.toFixed(2)}%，${directionCopy[quote.direction]}，当前脉冲 ${quote.summary}`}
           accessibilityRole="button"
           key={quote.symbol}
           onPress={() => onPress(quote.symbol)}

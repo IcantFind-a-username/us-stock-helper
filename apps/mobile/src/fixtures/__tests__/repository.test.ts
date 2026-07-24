@@ -1,5 +1,27 @@
 import { describe, expect, it } from "@jest/globals";
+import type { Horizon } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
+
+type HorizonExpectation = {
+  horizon: Horizon;
+  score: number;
+  confidence: number;
+  scoreChange: number;
+  rationale: string;
+  advice: string;
+  posture: string;
+  alertTitle: string;
+  citationTitle: string;
+  candidateScore: number;
+  candidateReason: string;
+  driverConclusion: string;
+};
+
+const horizonExpectations: HorizonExpectation[] = [
+  { horizon: "short", score: 61, confidence: 0.67, scoreChange: 4, rationale: "新闻与社交情绪改善", advice: "优先等回踩确认", posture: "轻仓，等待量价与广度确认", alertTitle: "NVDA 接近量价确认区", citationTitle: "演示：短线 NVDA 量价确认快照", candidateScore: 72, candidateReason: "催化、量价和短线", driverConclusion: "新闻改善，社交讨论升温但拥挤" },
+  { horizon: "swing", score: 56, confidence: 0.62, scoreChange: -2, rationale: "板块相对强势", advice: "以相对强势板块为主", posture: "分批，优先顺势回撤", alertTitle: "NVDA 进入波段趋势验证区", citationTitle: "演示：波段 NVDA 趋势与广度快照", candidateScore: 64, candidateReason: "波段趋势仍需", driverConclusion: "新闻催化有限，社交热度回落" },
+  { horizon: "long", score: 68, confidence: 0.73, scoreChange: 3, rationale: "盈利质量与资本开支", advice: "优先关注现金流质量", posture: "耐心，质量优先并容忍波动", alertTitle: "NVDA 长期盈利质量待估值确认", citationTitle: "演示：长期 NVDA 盈利质量快照", candidateScore: 81, candidateReason: "长期盈利质量", driverConclusion: "盈利叙事改善，社交噪音权重较低" },
+];
 
 describe("fixtureRepository", () => {
   it.each(["short", "swing", "long"] as const)(
@@ -21,11 +43,43 @@ describe("fixtureRepository", () => {
         "broad-market-trend",
         "geopolitics",
       ]);
+      expect(dashboard.marketDrivers.map((driver) => driver.coverage)).toEqual([
+        ["news", "social-sentiment"],
+        ["breadth"],
+        ["volatility", "options", "term-structure"],
+        ["sector-strength"],
+        ["rates", "yield-curve", "dollar"],
+        ["macro", "credit", "energy", "commodities"],
+        ["liquidity", "correlation-stress"],
+        ["broad-trend"],
+        ["geopolitics"],
+      ]);
       expect(dashboard.marketDrivers.every((driver) => driver.freshness.length > 0)).toBe(true);
       expect(dashboard.watchlist.length).toBeGreaterThanOrEqual(3);
       expect(dashboard.candidates.some((candidate) => candidate.side === "long" && candidate.designation === "asymmetric-upside")).toBe(true);
       expect(dashboard.candidates.some((candidate) => candidate.side === "short" && candidate.designation === "standard")).toBe(true);
       expect(dashboard.candidates.every((candidate) => candidate.counterCase.length > 0 && candidate.invalidation.length > 0 && candidate.citationIds.length > 0)).toBe(true);
+    },
+  );
+
+  it.each(horizonExpectations)(
+    "keeps $horizon objective fields, alert, candidates, drivers, and evidence independently fixture-backed",
+    ({ horizon, score, confidence, scoreChange, rationale, advice, posture, alertTitle, citationTitle, candidateScore, candidateReason, driverConclusion }) => {
+      const dashboard = fixtureRepository.getDashboard(horizon);
+      const candidate = dashboard.candidates[0]!;
+
+      expect(dashboard.marketScore).toBe(score);
+      expect(dashboard.marketConfidence).toBe(confidence);
+      expect(dashboard.marketScoreChange).toBe(scoreChange);
+      expect(dashboard.marketRationale).toContain(rationale);
+      expect(dashboard.marketAdvice).toContain(advice);
+      expect(dashboard.marketRiskPosture).toBe(posture);
+      expect(dashboard.priorityAlert.title).toBe(alertTitle);
+      expect(candidate.score).toBe(candidateScore);
+      expect(candidate.reason).toContain(candidateReason);
+      expect(fixtureRepository.getCitations(candidate.citationIds)[0]?.title).toBe(citationTitle);
+      expect(fixtureRepository.getCitations(dashboard.marketDrivers[0]!.citationIds)[0]?.title).toContain(`${horizon === "short" ? "短线" : horizon === "swing" ? "波段" : "长期"}新闻与社交情绪`);
+      expect(dashboard.marketDrivers[0]?.conclusion).toBe(driverConclusion);
     },
   );
 

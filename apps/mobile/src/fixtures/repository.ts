@@ -11,7 +11,7 @@ import type {
 import { alertThreads } from "./alerts";
 import { adviserOpinions, tradePlanFixtures } from "./advisers";
 import { conversationTurns } from "./conversations";
-import { dashboardFixtures } from "./dashboard";
+import { dashboardCitations, dashboardFixtures } from "./dashboard";
 import { stockFixtures } from "./stocks";
 
 export interface FixtureRepository {
@@ -41,6 +41,7 @@ export const fixtureRepository: FixtureRepository = {
     const all = [
       ...Object.values(stockFixtures).flatMap((stock) => stock.citations),
       ...alertThreads.flatMap((alert) => alert.citations),
+      ...dashboardCitations,
     ];
     return ids.flatMap((id) => {
       const citation = all.find((candidate) => candidate.id === id);

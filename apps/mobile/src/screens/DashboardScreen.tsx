@@ -18,14 +18,18 @@ export function DashboardScreen() {
   const router = useRouter();
   const { horizon, setHorizon } = useAppState();
   const snapshot = fixtureRepository.getDashboard(horizon);
-  const [evidence, setEvidence] = useState<Citation[]>([]);
-  const openEvidence = (ids: string[]) => setEvidence(fixtureRepository.getCitations(ids));
+  const [evidence, setEvidence] = useState({ title: "市场证据", citations: [] as Citation[] });
+  const openEvidence = (title: string, ids: string[]) => setEvidence({ title, citations: fixtureRepository.getCitations(ids) });
+  const changeHorizon = (nextHorizon: typeof horizon) => {
+    setHorizon(nextHorizon);
+    setEvidence({ title: "市场证据", citations: [] });
+  };
   const openStock = (symbol: string) => router.push({ pathname: "/stocks/[symbol]", params: { symbol } });
 
   return (
     <Screen>
       <DemoDataBadge />
-      <HorizonSwitch value={horizon} onChange={setHorizon} />
+      <HorizonSwitch value={horizon} onChange={changeHorizon} />
       <DataHealthBanner health={snapshot.dataHealth} marketSession={snapshot.marketSession} />
       <MarketPlaybookCard
         advice={snapshot.marketAdvice}
@@ -35,6 +39,8 @@ export function DashboardScreen() {
         drivers={snapshot.marketDrivers}
         invalidation={snapshot.marketInvalidation}
         onOpenEvidence={openEvidence}
+        rationale={snapshot.marketRationale}
+        riskPosture={snapshot.marketRiskPosture}
         score={snapshot.marketScore}
         scoreChange={snapshot.marketScoreChange}
         updatedAt={snapshot.updatedAt}
@@ -42,7 +48,7 @@ export function DashboardScreen() {
       <PriorityAlertCard alert={snapshot.priorityAlert} onOpenEvidence={openEvidence} onPress={() => openStock(snapshot.priorityAlert.symbol)} />
       <WatchlistStrip onPress={openStock} quotes={snapshot.watchlist} title="moomoo watchlist · 演示占位" />
       <CandidateList candidates={snapshot.candidates} onOpenEvidence={openEvidence} onPress={openStock} title="潜力候选" />
-      <EvidenceSheet citations={evidence} title="市场证据" />
+      <EvidenceSheet citations={evidence.citations} title={evidence.title} />
     </Screen>
   );
 }

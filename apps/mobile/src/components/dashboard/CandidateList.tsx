@@ -7,7 +7,7 @@ type CandidateListProps = {
   title: string;
   candidates: Candidate[];
   onPress(symbol: string): void;
-  onOpenEvidence(citationIds: string[]): void;
+  onOpenEvidence(title: string, citationIds: string[]): void;
 };
 
 const stateLabels = {
@@ -15,6 +15,8 @@ const stateLabels = {
   "action-eligible": "达到行动研究门槛",
   risk: "风险升高",
 } as const;
+
+const freshnessLabel = { fresh: "新鲜", stale: "可能延迟", conflict: "存在冲突" } as const;
 
 export function CandidateList({ title, candidates, onPress, onOpenEvidence }: CandidateListProps) {
   return (
@@ -26,7 +28,7 @@ export function CandidateList({ title, candidates, onPress, onOpenEvidence }: Ca
   );
 }
 
-function CandidateCard({ candidate, onPress, onOpenEvidence }: { candidate: Candidate; onPress(symbol: string): void; onOpenEvidence(citationIds: string[]): void }) {
+function CandidateCard({ candidate, onPress, onOpenEvidence }: { candidate: Candidate; onPress(symbol: string): void; onOpenEvidence(title: string, citationIds: string[]): void }) {
   const designation = candidate.designation === "asymmetric-upside" ? "非对称上行" : "常规";
   const side = candidate.side === "long" ? "做多" : "做空";
 
@@ -49,10 +51,10 @@ function CandidateCard({ candidate, onPress, onOpenEvidence }: { candidate: Cand
       <Text style={styles.label}>失效条件</Text>
       <Text style={styles.detail}>{candidate.invalidation}</Text>
       <View style={styles.actions}>
-        <Pressable accessibilityHint="打开该候选的演示引用" accessibilityLabel={`查看 ${candidate.symbol} 候选证据`} accessibilityRole="button" onPress={() => onOpenEvidence(candidate.citationIds)} style={styles.evidenceButton}>
+        <Pressable accessibilityHint="打开该候选的演示引用" accessibilityLabel={`查看 ${candidate.symbol} 候选证据：${side}，${stateLabels[candidate.state]}，评分 ${candidate.score}，新鲜度 ${freshnessLabel[candidate.evidenceFreshness]}`} accessibilityRole="button" onPress={() => onOpenEvidence(`${candidate.symbol} 候选证据`, candidate.citationIds)} style={styles.evidenceButton}>
           <Text style={styles.evidenceText}>引用</Text>
         </Pressable>
-        <Pressable accessibilityHint="前往股票详情" accessibilityLabel={`查看 ${candidate.symbol} 候选详情`} accessibilityRole="button" onPress={() => onPress(candidate.symbol)} style={styles.detailButton}>
+        <Pressable accessibilityHint="前往股票详情" accessibilityLabel={`查看 ${candidate.symbol} 候选详情：${side}，${designation}，${stateLabels[candidate.state]}，评分 ${candidate.score}`} accessibilityRole="button" onPress={() => onPress(candidate.symbol)} style={styles.detailButton}>
           <Text style={styles.detailText}>股票详情</Text>
         </Pressable>
       </View>
