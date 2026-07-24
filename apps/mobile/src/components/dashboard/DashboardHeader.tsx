@@ -11,6 +11,11 @@ const healthLabels: Record<DataHealth, string> = {
   insufficient: "数据不足",
 };
 
+const actionSymbols = {
+  alerts: { android: "notifications", ios: "bell", web: "notifications" },
+  search: { android: "search", ios: "magnifyingglass", web: "search" },
+} as const;
+
 type DashboardHeaderProps = {
   marketSession: string;
   health: DataHealth;
@@ -38,12 +43,12 @@ export function DashboardHeader({
       <View style={styles.actions}>
         <Pressable accessibilityLabel="搜索股票" onPress={onSearch} style={styles.iconButton}>
           <View style={styles.iconCircle}>
-            <SymbolView name="magnifyingglass" size={18} tintColor={colors.ink} />
+            <SymbolView name={actionSymbols.search} size={18} tintColor={colors.ink} />
           </View>
         </Pressable>
         <Pressable accessibilityLabel="查看提醒" onPress={onAlerts} style={styles.iconButton}>
           <View style={styles.iconCircle}>
-            <SymbolView name="bell" size={18} tintColor={colors.ink} />
+            <SymbolView name={actionSymbols.alerts} size={18} tintColor={colors.ink} />
           </View>
         </Pressable>
       </View>

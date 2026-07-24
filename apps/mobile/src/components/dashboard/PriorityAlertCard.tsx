@@ -14,6 +14,10 @@ const freshnessLabel = { fresh: "新鲜", stale: "可能延迟", conflict: "存�
 
 export function PriorityAlertCard({ alert, onPress, onOpenDetail, onOpenEvidence }: PriorityAlertCardProps) {
   const openDetail = onOpenDetail ?? (() => onOpenEvidence?.(`${alert.symbol} 提醒证据`, alert.citations.map((citation) => citation.id)));
+  const titlePrefix = `${alert.symbol} `;
+  const visibleTitle = alert.title.startsWith(titlePrefix)
+    ? alert.title.slice(titlePrefix.length)
+    : alert.title;
 
   return (
     <View testID="priority-alert-card" style={styles.card}>
@@ -27,7 +31,7 @@ export function PriorityAlertCard({ alert, onPress, onOpenDetail, onOpenEvidence
             <Text style={styles.symbol}>{alert.symbol}</Text>
             <Text style={styles.badge}>{alert.currentState}</Text>
           </View>
-          <Text numberOfLines={1} style={styles.title}>{alert.title}</Text>
+          <Text numberOfLines={1} style={styles.title}>{visibleTitle}</Text>
           <Text numberOfLines={2} style={styles.summary}>{alert.summary}</Text>
           <Text style={styles.meta}>
             证据 {alert.evidenceCount} · 反证 {alert.counterEvidenceCount} · {" "}

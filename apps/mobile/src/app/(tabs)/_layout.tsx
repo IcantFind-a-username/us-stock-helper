@@ -19,7 +19,23 @@ const tabSymbols = {
 
 export default function TabsLayout() {
   return (
-    <Tabs screenOptions={{ headerShown: false }}>
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#4285FF",
+        tabBarInactiveTintColor: "#8A96A8",
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: "700",
+        },
+        tabBarStyle: {
+          backgroundColor: "rgba(255,255,255,0.98)",
+          borderTopColor: "rgba(18,33,55,0.07)",
+          height: 66,
+          paddingBottom: 8,
+          paddingTop: 6,
+        },
+      }}>
       {tabRoutes.map(([name, title, icon]) => (
         <Tabs.Screen
           key={name}

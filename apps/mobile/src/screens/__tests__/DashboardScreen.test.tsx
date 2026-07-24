@@ -81,7 +81,8 @@ it("switches all fixture-backed horizon views independently", async () => {
   await fireEvent.press(view.getByRole("button", { name: "查看完整依据" }));
   expect(view.getByText("分批，优先顺势回撤")).toBeTruthy();
   await fireEvent.press(view.getByRole("button", { name: "关闭市场完整依据" }));
-  expect(view.getByText("NVDA 进入波段趋势验证区")).toBeTruthy();
+  expect(view.getByText("进入波段趋势验证区")).toBeTruthy();
+  expect(view.queryByText("NVDA 进入波段趋势验证区")).toBeNull();
   expect(view.getByText("64")).toBeTruthy();
 
   await fireEvent.press(view.getByText("中长线 · 2–24月"));
@@ -90,14 +91,16 @@ it("switches all fixture-backed horizon views independently", async () => {
   await fireEvent.press(view.getByRole("button", { name: "查看完整依据" }));
   expect(view.getByText("耐心，质量优先并容忍波动")).toBeTruthy();
   await fireEvent.press(view.getByRole("button", { name: "关闭市场完整依据" }));
-  expect(view.getByText("NVDA 长期盈利质量待估值确认")).toBeTruthy();
+  expect(view.getByText("长期盈利质量待估值确认")).toBeTruthy();
+  expect(view.queryByText("NVDA 长期盈利质量待估值确认")).toBeNull();
   expect(view.getByText("81")).toBeTruthy();
 });
 
 it("renders the priority alert and watchlist as compact dashboard surfaces", async () => {
   const view = await renderDashboard();
 
-  await waitFor(() => expect(view.getByText("NVDA 接近量价确认区")).toBeTruthy());
+  await waitFor(() => expect(view.getByText("接近量价确认区")).toBeTruthy());
+  expect(view.queryByText("NVDA 接近量价确认区")).toBeNull();
 
   const alert = view.getByTestId("priority-alert-card");
   expect(alert).toBeTruthy();
@@ -118,7 +121,8 @@ it("renders the priority alert and watchlist as compact dashboard surfaces", asy
 it("routes alert, quotes, and both long/short candidates while disclosing their evidence", async () => {
   const view = await renderDashboard();
 
-  await waitFor(() => expect(view.getByText("NVDA 接近量价确认区")).toBeTruthy());
+  await waitFor(() => expect(view.getByText("接近量价确认区")).toBeTruthy());
+  expect(view.queryByText("NVDA 接近量价确认区")).toBeNull();
 
   expect(view.getByText("证据 5 · 反证 2 · 新鲜")).toBeTruthy();
   expect(view.queryByText("顾问有限调整 +2 · 不能独立触发")).toBeNull();

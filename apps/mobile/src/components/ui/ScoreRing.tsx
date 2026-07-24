@@ -40,12 +40,11 @@ export function ScoreRing({
           cy={size / 2}
           fill="none"
           r={radius}
-          rotation="-90"
-          origin={`${size / 2}, ${size / 2}`}
           stroke={colors.green}
           strokeDasharray={`${progress} ${circumference - progress}`}
           strokeLinecap="round"
           strokeWidth={strokeWidth}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
       </Svg>
       <Text style={styles.score}>{normalized}</Text>

@@ -27,9 +27,8 @@ export function MiniSparkline({
 }: MiniSparklineProps) {
   return (
     <Svg
-      accessibilityElementsHidden
+      focusable={false}
       height={height}
-      importantForAccessibility="no-hide-descendants"
       viewBox="0 0 66 22"
       width={width}>
       <Path

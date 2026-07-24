@@ -52,7 +52,8 @@ it("keeps alert, watchlist, and candidates actionable without expanding memos", 
     </AppStateProvider>,
   );
 
-  await waitFor(() => expect(view.getByText("NVDA 接近量价确认区")).toBeTruthy());
+  await waitFor(() => expect(view.getByText("接近量价确认区")).toBeTruthy());
+  expect(view.queryByText("NVDA 接近量价确认区")).toBeNull();
 
   expect(view.queryByText("催化、量价和短线市场环境同向。")).toBeNull();
   expect(view.queryByText("估值拥挤，若成交量未确认则动量可能快速反转。")).toBeNull();
