@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { DataHealth } from "@/domain/models";
 import { colors, radius, spacing } from "@/theme/tokens";
@@ -13,31 +13,47 @@ const healthCopy: Record<DataHealth, { label: string; detail: string; color: str
 type DataHealthBannerProps = {
   health: DataHealth;
   marketSession: string;
+  evidenceTitle: string;
+  citationIds: string[];
+  onOpenEvidence(title: string, citationIds: string[]): void;
 };
 
-export function DataHealthBanner({ health, marketSession }: DataHealthBannerProps) {
+export function DataHealthBanner({ health, marketSession, evidenceTitle, citationIds, onOpenEvidence }: DataHealthBannerProps) {
   const copy = healthCopy[health];
 
   return (
     <View accessibilityRole="alert" style={[styles.banner, { backgroundColor: copy.backgroundColor }]}>
-      <View style={styles.copy}>
-        <Text style={[styles.label, { color: copy.color }]}>{copy.label}</Text>
-        <Text style={styles.detail}>{copy.detail}</Text>
+      <View style={styles.row}>
+        <View style={styles.copy}>
+          <Text style={[styles.label, { color: copy.color }]}>{copy.label}</Text>
+          <Text style={styles.detail}>{copy.detail}</Text>
+        </View>
+        <View style={styles.sessionCopy}>
+          <Text style={styles.marker}>演示</Text>
+          <Text style={styles.session}>{marketSession}</Text>
+        </View>
       </View>
-      <View style={styles.sessionCopy}>
-        <Text style={styles.marker}>演示</Text>
-        <Text style={styles.session}>{marketSession}</Text>
-      </View>
+      <Pressable
+        accessibilityHint="打开数据健康与市场时段的演示引用"
+        accessibilityLabel={`查看数据健康与市场时段证据：${copy.label}，${marketSession}`}
+        accessibilityRole="button"
+        onPress={() => onOpenEvidence(evidenceTitle, citationIds)}
+        style={styles.evidenceButton}>
+        <Text style={styles.evidenceText}>查看证据</Text>
+      </Pressable>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  banner: { alignItems: "center", borderRadius: radius.md, flexDirection: "row", gap: spacing.md, padding: spacing.md },
+  banner: { borderRadius: radius.md, gap: spacing.sm, padding: spacing.md },
+  row: { alignItems: "center", flexDirection: "row", gap: spacing.md },
   copy: { flex: 1 },
   label: { fontSize: 13, fontWeight: "700" },
   detail: { color: colors.muted, fontSize: 12, marginTop: spacing.xs },
   sessionCopy: { alignItems: "flex-end", flexShrink: 1 },
   marker: { color: colors.amber, fontSize: 10, fontWeight: "800" },
   session: { color: colors.ink, fontSize: 12, fontWeight: "600", textAlign: "right" },
+  evidenceButton: { alignItems: "center", backgroundColor: colors.card, borderRadius: radius.sm, justifyContent: "center", minHeight: 44, paddingHorizontal: spacing.md },
+  evidenceText: { color: colors.blue, fontSize: 13, fontWeight: "800" },
 });

@@ -72,6 +72,7 @@ export interface DashboardSnapshot {
   marketInvalidation: string;
   contradictions: string[];
   marketDrivers: MarketDriver[];
+  dataHealthCitationIds: string[];
   priorityAlert: AlertThread;
   watchlist: WatchlistQuote[];
   candidates: Candidate[];
@@ -288,6 +289,7 @@ export interface AlertThread {
   summary: string;
   triggeredAt: string;
   sourceFreshness: "fresh" | "stale" | "conflict";
+  sourceCoverage: string;
   currentState: string;
   invalidation: string;
   baseScoreContribution: number;

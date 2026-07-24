@@ -2,6 +2,7 @@ import type { AlertThread, Candidate, Citation, DashboardSnapshot, Horizon, Mark
 
 const horizons: Horizon[] = ["short", "swing", "long"];
 const horizonNames: Record<Horizon, string> = { short: "短线", swing: "波段", long: "长期" };
+const dataHealthByHorizon: Record<Horizon, DashboardSnapshot["dataHealth"]> = { short: "fresh", swing: "conflict", long: "fresh" };
 
 type HorizonMarket = Pick<DashboardSnapshot, "marketScore" | "marketConfidence" | "marketScoreChange" | "marketConclusion" | "marketRationale" | "marketAdvice" | "marketRiskPosture" | "marketInvalidation" | "contradictions">;
 
@@ -99,6 +100,7 @@ function citation(id: string, title: string): Citation {
 
 export const dashboardCitations: Citation[] = [
   ...horizons.flatMap((horizon) => driverDefinitions.map((driver) => citation(`${horizon}-${driver.category}`, `演示：${horizonNames[horizon]}${driver.label}快照`))),
+  ...horizons.map((horizon) => citation(`${horizon}-data-health`, `演示：${horizonNames[horizon]}数据健康与市场时段快照`)),
   ...Object.entries(citationTitles).map(([id, title]) => citation(id, title)),
 ];
 
@@ -127,10 +129,10 @@ function candidates(horizon: Horizon): Candidate[] {
 
 function priorityAlert(horizon: Horizon): AlertThread {
   const candidate = candidates(horizon)[0]!;
-  const alertCopy: Record<Horizon, Pick<AlertThread, "title" | "summary" | "triggeredAt" | "sourceFreshness" | "currentState" | "invalidation" | "baseScoreContribution" | "adviserAdjustment" | "evidenceCount" | "counterEvidenceCount" | "updatedAt">> = {
-    short: { title: "NVDA 接近量价确认区", summary: "价格走强，但仍需成交量与指数环境共同确认。", triggeredAt: "2026-07-24T10:26:00-04:00", sourceFreshness: "fresh", currentState: "等待量价确认", invalidation: "收盘跌破 136.40", baseScoreContribution: 7, adviserAdjustment: 2, evidenceCount: 5, counterEvidenceCount: 2, updatedAt: "2026-07-24T10:30:00-04:00" },
-    swing: { title: "NVDA 进入波段趋势验证区", summary: "相对强势尚在，需由广度与回撤承接共同确认。", triggeredAt: "2026-07-24T10:12:00-04:00", sourceFreshness: "fresh", currentState: "等待周线趋势确认", invalidation: "周线跌破中期趋势位", baseScoreContribution: 4, adviserAdjustment: -1, evidenceCount: 4, counterEvidenceCount: 3, updatedAt: "2026-07-24T10:28:00-04:00" },
-    long: { title: "NVDA 长期盈利质量待估值确认", summary: "盈利质量强，但估值与资本开支假设需要持续验证。", triggeredAt: "2026-07-24T09:45:00-04:00", sourceFreshness: "stale", currentState: "等待盈利质量复核", invalidation: "连续两季盈利质量下修", baseScoreContribution: 9, adviserAdjustment: 3, evidenceCount: 7, counterEvidenceCount: 2, updatedAt: "2026-07-24T10:20:00-04:00" },
+  const alertCopy: Record<Horizon, Pick<AlertThread, "title" | "summary" | "triggeredAt" | "sourceFreshness" | "sourceCoverage" | "currentState" | "invalidation" | "baseScoreContribution" | "adviserAdjustment" | "evidenceCount" | "counterEvidenceCount" | "updatedAt">> = {
+    short: { title: "NVDA 接近量价确认区", summary: "价格走强，但仍需成交量与指数环境共同确认。", triggeredAt: "2026-07-24T10:26:00-04:00", sourceFreshness: "fresh", sourceCoverage: "盘中报价、期权与量价演示快照", currentState: "等待量价确认", invalidation: "收盘跌破 136.40", baseScoreContribution: 7, adviserAdjustment: 2, evidenceCount: 5, counterEvidenceCount: 2, updatedAt: "2026-07-24T10:30:00-04:00" },
+    swing: { title: "NVDA 进入波段趋势验证区", summary: "相对强势尚在，需由广度与回撤承接共同确认。", triggeredAt: "2026-07-24T10:12:00-04:00", sourceFreshness: "fresh", sourceCoverage: "周线趋势、市场广度与相对强势演示快照", currentState: "等待周线趋势确认", invalidation: "周线跌破中期趋势位", baseScoreContribution: 4, adviserAdjustment: -1, evidenceCount: 4, counterEvidenceCount: 3, updatedAt: "2026-07-24T10:28:00-04:00" },
+    long: { title: "NVDA 长期盈利质量待估值确认", summary: "盈利质量强，但估值与资本开支假设需要持续验证。", triggeredAt: "2026-07-24T09:45:00-04:00", sourceFreshness: "stale", sourceCoverage: "长期盈利质量、现金流与资本开支演示快照", currentState: "等待盈利质量复核", invalidation: "连续两季盈利质量下修", baseScoreContribution: 9, adviserAdjustment: 3, evidenceCount: 7, counterEvidenceCount: 2, updatedAt: "2026-07-24T10:20:00-04:00" },
   };
   const copy = alertCopy[horizon];
 
@@ -142,9 +144,10 @@ const buildDashboard = (horizon: Horizon): DashboardSnapshot => ({
   horizon,
   updatedAt: "2026-07-24T10:30:00-04:00",
   marketSession: "美股盘中 · 演示状态",
-  dataHealth: "fresh",
+  dataHealth: dataHealthByHorizon[horizon],
   ...horizonData[horizon],
   marketDrivers: marketDrivers(horizon),
+  dataHealthCitationIds: [`${horizon}-data-health`],
   priorityAlert: priorityAlert(horizon),
   watchlist: [
     { symbol: "NVDA", price: 143.8, changePercent: 2.46, direction: "bullish", summary: "量价待确认" },

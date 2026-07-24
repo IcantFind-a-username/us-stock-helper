@@ -9,6 +9,7 @@ export const alertThreads: AlertThread[] = [{
   summary: "价格走强，但仍需成交量与指数环境共同确认。",
   triggeredAt: "2026-07-24T10:26:00-04:00",
   sourceFreshness: "fresh",
+  sourceCoverage: "盘中报价、期权与量价演示快照",
   currentState: "等待量价确认",
   invalidation: "收盘跌破 136.40",
   baseScoreContribution: 7,

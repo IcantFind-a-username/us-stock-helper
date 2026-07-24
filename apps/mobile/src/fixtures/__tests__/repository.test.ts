@@ -55,6 +55,8 @@ describe("fixtureRepository", () => {
         ["geopolitics"],
       ]);
       expect(dashboard.marketDrivers.every((driver) => driver.freshness.length > 0)).toBe(true);
+      expect(dashboard.dataHealthCitationIds).toEqual([`${horizon}-data-health`]);
+      expect(fixtureRepository.getCitations(dashboard.dataHealthCitationIds)[0]?.title).toBe(`演示：${horizon === "short" ? "短线" : horizon === "swing" ? "波段" : "长期"}数据健康与市场时段快照`);
       expect(dashboard.watchlist.length).toBeGreaterThanOrEqual(3);
       expect(dashboard.candidates.some((candidate) => candidate.side === "long" && candidate.designation === "asymmetric-upside")).toBe(true);
       expect(dashboard.candidates.some((candidate) => candidate.side === "short" && candidate.designation === "standard")).toBe(true);
@@ -75,6 +77,7 @@ describe("fixtureRepository", () => {
       expect(dashboard.marketAdvice).toContain(advice);
       expect(dashboard.marketRiskPosture).toBe(posture);
       expect(dashboard.priorityAlert.title).toBe(alertTitle);
+      expect(dashboard.priorityAlert.sourceCoverage.length).toBeGreaterThan(0);
       expect(candidate.score).toBe(candidateScore);
       expect(candidate.reason).toContain(candidateReason);
       expect(fixtureRepository.getCitations(candidate.citationIds)[0]?.title).toBe(citationTitle);
@@ -106,6 +109,7 @@ describe("fixtureRepository", () => {
     expect(fixtureRepository.getAlerts()[0]).toMatchObject({
       currentState: "等待量价确认",
       invalidation: "收盘跌破 136.40",
+      sourceCoverage: "盘中报价、期权与量价演示快照",
     });
     expect(
       fixtureRepository

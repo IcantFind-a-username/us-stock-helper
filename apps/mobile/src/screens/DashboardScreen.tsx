@@ -14,6 +14,8 @@ import type { Citation } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useAppState } from "@/state/AppStateProvider";
 
+const horizonEvidenceNames = { short: "短线", swing: "波段", long: "长期" } as const;
+
 export function DashboardScreen() {
   const router = useRouter();
   const { horizon, setHorizon } = useAppState();
@@ -30,7 +32,13 @@ export function DashboardScreen() {
     <Screen>
       <DemoDataBadge />
       <HorizonSwitch value={horizon} onChange={changeHorizon} />
-      <DataHealthBanner health={snapshot.dataHealth} marketSession={snapshot.marketSession} />
+      <DataHealthBanner
+        citationIds={snapshot.dataHealthCitationIds}
+        evidenceTitle={`${horizonEvidenceNames[horizon]}数据健康与市场时段证据`}
+        health={snapshot.dataHealth}
+        marketSession={snapshot.marketSession}
+        onOpenEvidence={openEvidence}
+      />
       <MarketPlaybookCard
         advice={snapshot.marketAdvice}
         conclusion={snapshot.marketConclusion}
@@ -48,7 +56,7 @@ export function DashboardScreen() {
       <PriorityAlertCard alert={snapshot.priorityAlert} onOpenEvidence={openEvidence} onPress={() => openStock(snapshot.priorityAlert.symbol)} />
       <WatchlistStrip onPress={openStock} quotes={snapshot.watchlist} title="moomoo watchlist · 演示占位" />
       <CandidateList candidates={snapshot.candidates} onOpenEvidence={openEvidence} onPress={openStock} title="潜力候选" />
-      <EvidenceSheet citations={evidence.citations} title={evidence.title} />
+      {evidence.citations.length ? <EvidenceSheet citations={evidence.citations} title={evidence.title} /> : null}
     </Screen>
   );
 }
