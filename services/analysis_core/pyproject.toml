@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "us-stock-helper-analysis-core"
+version = "0.1.0"
+description = "Point-in-time-safe, explainable US equity analysis primitives"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["us_stock_helper_core*"]
+
+[tool.setuptools.package-data]
+us_stock_helper_core = ["py.typed"]

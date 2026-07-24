@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "us-stock-helper-information-layer"
+version = "0.1.0"
+description = "Point-in-time evidence and market-information core"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["information_layer*"]
+
+[tool.setuptools.package-data]
+information_layer = ["py.typed"]

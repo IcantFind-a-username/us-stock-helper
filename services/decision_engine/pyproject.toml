@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "us-stock-helper-decision-engine"
+version = "0.1.0"
+description = "Evidence-first orchestration for US Stock Helper"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["decision_engine*"]
+
+[tool.setuptools.package-data]
+decision_engine = ["py.typed"]

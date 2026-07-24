@@ -1,0 +1,392 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from information_layer import ClaimStatus
+from information_layer.feeds import (
+    CacheValidators,
+    FeedAccessError,
+    FeedConfig,
+    GenericFeedAdapter,
+    HttpRequest,
+    HttpResponse,
+    KeywordMapping,
+    PollingCoordinator,
+    ResponseTooLargeError,
+    SecCurrentFilingsAdapter,
+    UrllibHttpsTransport,
+    build_sec_current_filings_adapters,
+)
+
+
+UTC = timezone.utc
+NOW = datetime(2026, 7, 25, 14, 0, tzinfo=UTC)
+
+
+ATOM = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example feed</title>
+  <entry>
+    <id>tag:example.test,2026:item-1</id>
+    <title>NVIDIA supplier raises shipment forecast</title>
+    <summary type="html">&lt;p&gt;NVDA demand improved. Full article text must not be stored. More details follow here.&lt;/p&gt;</summary>
+    <link rel="alternate" href="https://news.example.test/item-1"/>
+    <published>2026-07-25T13:55:00Z</published>
+    <updated>2026-07-25T13:56:00Z</updated>
+  </entry>
+</feed>
+"""
+
+RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example RSS</title>
+    <item>
+      <guid>rss-item-1</guid>
+      <title>Microsoft cloud demand accelerates</title>
+      <description><![CDATA[<p>MSFT Azure demand improved. This is deliberately longer than the configured summary limit.</p>]]></description>
+      <link>https://news.example.test/rss-item-1</link>
+      <pubDate>Sat, 25 Jul 2026 13:50:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>
+"""
+
+SEC_ATOM = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000081</id>
+    <title>8-K - Apple Inc. (0000320193)</title>
+    <summary>Filed 8-K current report.</summary>
+    <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000081/filing-index.htm"/>
+    <updated>2026-07-25T13:58:00Z</updated>
+  </entry>
+</feed>
+"""
+
+
+class FakeTransport:
+    def __init__(self, *responses: HttpResponse) -> None:
+        self.responses = list(responses)
+        self.requests: list[HttpRequest] = []
+
+    def request(self, request: HttpRequest) -> HttpResponse:
+        self.requests.append(request)
+        if not self.responses:
+            raise AssertionError("no fake response queued")
+        return self.responses.pop(0)
+
+
+def response(
+    body: bytes = ATOM,
+    *,
+    status: int = 200,
+    headers: tuple[tuple[str, str], ...] = (),
+    retrieved_at: datetime = NOW,
+) -> HttpResponse:
+    return HttpResponse(
+        status_code=status,
+        headers=headers,
+        body=body,
+        retrieved_at=retrieved_at,
+    )
+
+
+def config(**overrides: object) -> FeedConfig:
+    values: dict[str, object] = {
+        "adapter_id": "example-atom",
+        "feed_url": "https://feeds.example.test/atom.xml",
+        "allowed_hosts": ("feeds.example.test",),
+        "publisher_id": "example-news",
+        "publisher_name": "Example News",
+        "source_type": "news",
+        "reliability": 0.75,
+        "user_agent": "USStockHelper/0.1 contact@example.test",
+        "timeout_seconds": 7.0,
+        "max_response_bytes": 2048,
+        "summary_max_chars": 64,
+        "robots_allowed": True,
+        "symbol_mappings": (
+            KeywordMapping("NVDA", ("nvidia", "nvda"), 0.95),
+        ),
+        "entity_mappings": (
+            KeywordMapping("NVIDIA", ("nvidia",), 0.9),
+        ),
+        "macro_mappings": (
+            KeywordMapping("SEMICONDUCTOR_CYCLE", ("shipment",), 0.8),
+        ),
+        "geopolitical_mappings": (
+            KeywordMapping("US_CHINA_TECH", ("supplier",), 0.8),
+        ),
+    }
+    values.update(overrides)
+    return FeedConfig(**values)  # type: ignore[arg-type]
+
+
+class SecurityAndHttpMetadataTests(unittest.TestCase):
+    def test_https_host_allowlist_and_public_access_are_mandatory(self) -> None:
+        with self.assertRaises(FeedAccessError):
+            config(feed_url="http://feeds.example.test/feed")
+        with self.assertRaises(FeedAccessError):
+            config(feed_url="https://evil.example/feed")
+        with self.assertRaises(FeedAccessError):
+            config(robots_allowed=False)
+        with self.assertRaises(FeedAccessError):
+            config(requires_auth=True)
+        with self.assertRaises(FeedAccessError):
+            config(paywalled=True)
+
+    def test_request_has_limits_user_agent_and_conditional_headers(self) -> None:
+        transport = FakeTransport(response(headers=(("ETag", '"next"'),)))
+        adapter = GenericFeedAdapter(config(), transport)
+
+        batch = adapter.poll(
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+            validators=CacheValidators(
+                etag='"prior"',
+                last_modified="Sat, 25 Jul 2026 13:00:00 GMT",
+            ),
+        )
+
+        request = transport.requests[0]
+        self.assertEqual(request.timeout_seconds, 7.0)
+        self.assertEqual(request.max_response_bytes, 2048)
+        self.assertEqual(request.header("User-Agent"), "USStockHelper/0.1 contact@example.test")
+        self.assertEqual(request.header("If-None-Match"), '"prior"')
+        self.assertEqual(
+            request.header("If-Modified-Since"),
+            "Sat, 25 Jul 2026 13:00:00 GMT",
+        )
+        self.assertEqual(batch.metadata.etag, '"next"')
+
+    def test_retry_after_and_exponential_backoff_are_reported_not_slept(self) -> None:
+        transport = FakeTransport(
+            response(
+                b"",
+                status=429,
+                headers=(("Retry-After", "120"),),
+            )
+        )
+        adapter = GenericFeedAdapter(
+            config(base_backoff_seconds=10.0, max_backoff_seconds=300.0),
+            transport,
+        )
+
+        batch = adapter.poll(
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+            consecutive_failures=2,
+        )
+
+        self.assertEqual(batch.events, ())
+        self.assertEqual(batch.metadata.retry_after_seconds, 120.0)
+        self.assertEqual(batch.metadata.recommended_delay_seconds, 120.0)
+
+    def test_successful_poll_reports_configured_minimum_interval(self) -> None:
+        adapter = GenericFeedAdapter(
+            config(minimum_poll_interval_seconds=45.0),
+            FakeTransport(response()),
+        )
+        batch = adapter.poll(since=NOW - timedelta(hours=1), until=NOW)
+        self.assertEqual(batch.metadata.recommended_delay_seconds, 45.0)
+
+    def test_response_limit_is_enforced_even_with_injected_transport(self) -> None:
+        transport = FakeTransport(response(b"x" * 65))
+        adapter = GenericFeedAdapter(config(max_response_bytes=64), transport)
+        with self.assertRaises(ResponseTooLargeError):
+            adapter.poll(since=NOW - timedelta(hours=1), until=NOW)
+
+    def test_stdlib_transport_rejects_insecure_or_credentialed_request_before_io(self) -> None:
+        transport = UrllibHttpsTransport()
+        with self.assertRaises(FeedAccessError):
+            transport.request(
+                HttpRequest(
+                    url="http://feeds.example.test/feed",
+                    allowed_hosts=("feeds.example.test",),
+                    headers=(("User-Agent", "declared-agent"),),
+                    timeout_seconds=1.0,
+                    max_response_bytes=100,
+                )
+            )
+        with self.assertRaises(FeedAccessError):
+            transport.request(
+                HttpRequest(
+                    url="https://feeds.example.test/feed",
+                    allowed_hosts=("feeds.example.test",),
+                    headers=(
+                        ("User-Agent", "declared-agent"),
+                        ("Authorization", "secret"),
+                    ),
+                    timeout_seconds=1.0,
+                    max_response_bytes=100,
+                )
+            )
+
+
+class FeedParsingTests(unittest.TestCase):
+    def test_empty_keyword_is_rejected_and_short_ticker_uses_word_boundary(self) -> None:
+        with self.assertRaises(ValueError):
+            KeywordMapping("AI", ("",), 0.9)
+        adapter = GenericFeedAdapter(
+            config(
+                symbol_mappings=(KeywordMapping("AI", ("ai",), 0.9),),
+            ),
+            FakeTransport(response()),
+        )
+        item = adapter.poll(
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        ).events[0]
+        self.assertEqual(item.symbol_relevance, ())
+
+    def test_atom_stores_short_summary_link_hash_and_keyword_relevance(self) -> None:
+        adapter = GenericFeedAdapter(config(), FakeTransport(response()))
+        batch = adapter.poll(since=NOW - timedelta(hours=1), until=NOW)
+
+        self.assertEqual(len(batch.events), 1)
+        item = batch.events[0]
+        self.assertLessEqual(len(item.summary), 64)
+        self.assertNotIn("<p>", item.summary)
+        self.assertEqual(
+            item.provenance.canonical_url,
+            "https://news.example.test/item-1",
+        )
+        self.assertEqual(item.symbol_relevance, (("NVDA", 0.95),))
+        self.assertEqual(item.entity_relevance, (("NVIDIA", 0.9),))
+        self.assertEqual(item.macro_tags, ("SEMICONDUCTOR_CYCLE",))
+        self.assertEqual(item.geopolitical_tags, ("US_CHINA_TECH",))
+        self.assertEqual(len(item.content_hash), 64)
+        self.assertEqual(item.claim_status, ClaimStatus.REPORTED)
+        for timestamp in (
+            item.event_time,
+            item.published_at,
+            item.first_seen_at,
+            item.available_at,
+            item.retrieved_at,
+        ):
+            self.assertIsNotNone(timestamp.utcoffset())
+            self.assertLessEqual(timestamp, NOW)
+
+    def test_rss_is_supported_without_storing_full_description(self) -> None:
+        adapter = GenericFeedAdapter(
+            config(
+                adapter_id="example-rss",
+                symbol_mappings=(
+                    KeywordMapping("MSFT", ("microsoft", "msft"), 0.9),
+                ),
+            ),
+            FakeTransport(response(RSS)),
+        )
+        item = adapter.poll(
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        ).events[0]
+        self.assertEqual(item.symbol_relevance, (("MSFT", 0.9),))
+        self.assertLessEqual(len(item.summary), 64)
+        self.assertNotIn("<p>", item.summary)
+
+    def test_future_dated_entry_is_not_emitted(self) -> None:
+        future_atom = ATOM.replace(
+            b"2026-07-25T13:55:00Z",
+            b"2026-07-25T14:00:01Z",
+        )
+        adapter = GenericFeedAdapter(
+            config(),
+            FakeTransport(response(future_atom)),
+        )
+        batch = adapter.poll(since=NOW - timedelta(hours=1), until=NOW)
+        self.assertEqual(batch.events, ())
+        self.assertEqual(batch.metadata.future_entries_rejected, 1)
+
+
+class SecAndCoordinatorTests(unittest.TestCase):
+    def test_sec_atom_preserves_accession_form_and_canonical_url(self) -> None:
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_ATOM)),
+        )
+
+        item = adapter.poll(
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        ).events[0]
+
+        self.assertIn(("accession", "0000320193-26-000081"), item.attributes)
+        self.assertIn(("form_type", "8-K"), item.attributes)
+        self.assertEqual(
+            item.provenance.canonical_url,
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000081/filing-index.htm",
+        )
+        self.assertEqual(item.claim_status, ClaimStatus.VERIFIED)
+
+    def test_sec_factory_builds_separate_8k_and_form4_feeds(self) -> None:
+        adapters = build_sec_current_filings_adapters(
+            transport=FakeTransport(),
+            user_agent="USStockHelper/0.1 research@example.test",
+            forms=("8-K", "4"),
+        )
+        self.assertEqual(tuple(adapter.form_type for adapter in adapters), ("8-K", "4"))
+        self.assertTrue(all("output=atom" in adapter.config.feed_url for adapter in adapters))
+        self.assertTrue(all(adapter.config.allowed_hosts == ("www.sec.gov",) for adapter in adapters))
+
+    def test_coordinator_uses_validators_and_does_not_republish_unchanged_content(self) -> None:
+        transport = FakeTransport(
+            response(headers=(("ETag", '"v1"'),)),
+            response(b"", status=304, headers=(("ETag", '"v1"'),)),
+        )
+        adapter = GenericFeedAdapter(config(), transport)
+        coordinator = PollingCoordinator()
+
+        first = coordinator.poll(
+            adapter,
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        )
+        second = coordinator.poll(
+            adapter,
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        )
+
+        self.assertEqual(len(first.events), 1)
+        self.assertEqual(second.events, ())
+        self.assertEqual(transport.requests[1].header("If-None-Match"), '"v1"')
+        self.assertTrue(second.metadata.not_modified)
+
+    def test_changed_entry_is_published_as_revision_once(self) -> None:
+        changed = ATOM.replace(
+            b"NVDA demand improved.",
+            b"NVDA demand was revised lower.",
+        )
+        transport = FakeTransport(response(), response(changed), response(changed))
+        adapter = GenericFeedAdapter(config(), transport)
+        coordinator = PollingCoordinator()
+
+        first = coordinator.poll(
+            adapter,
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        )
+        revised = coordinator.poll(
+            adapter,
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        )
+        unchanged = coordinator.poll(
+            adapter,
+            since=NOW - timedelta(hours=1),
+            until=NOW,
+        )
+
+        self.assertEqual(len(revised.events), 1)
+        self.assertEqual(revised.events[0].revision_of, first.events[0].event_id)
+        self.assertEqual(revised.events[0].revision_number, 1)
+        self.assertEqual(revised.events[0].revised_at, NOW)
+        self.assertEqual(unchanged.events, ())
+
+
+if __name__ == "__main__":
+    unittest.main()
