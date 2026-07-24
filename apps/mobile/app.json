@@ -3,6 +3,7 @@
     "name": "US Stock Helper",
     "slug": "us-stock-helper",
     "version": "0.1.0",
+    "icon": "./assets/images/icon.png",
     "orientation": "portrait",
     "scheme": "usstockhelper",
     "userInterfaceStyle": "light",
