@@ -1,5 +1,6 @@
 import type { Direction } from "@/domain/models";
 import { colors } from "@/theme/tokens";
+import { Platform } from "react-native";
 import Svg, { Path } from "react-native-svg";
 
 type MiniSparklineProps = {
@@ -25,8 +26,16 @@ export function MiniSparkline({
   width = 66,
   height = 22,
 }: MiniSparklineProps) {
+  const nativeAccessibilityProps = Platform.OS === "web"
+    ? {}
+    : {
+        accessibilityElementsHidden: true,
+        importantForAccessibility: "no-hide-descendants" as const,
+      };
+
   return (
     <Svg
+      {...nativeAccessibilityProps}
       focusable={false}
       height={height}
       viewBox="0 0 66 22"
