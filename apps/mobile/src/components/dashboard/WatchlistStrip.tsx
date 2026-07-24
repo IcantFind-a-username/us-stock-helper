@@ -9,16 +9,17 @@ type WatchlistStripProps = {
   title?: string;
   quotes: WatchlistQuote[];
   onPress(symbol: string): void;
+  onOpenSource(): void;
 };
 
 const directionCopy = { bullish: "上涨", neutral: "持平", bearish: "下跌" } as const;
 
-export function WatchlistStrip({ quotes, onPress }: WatchlistStripProps) {
+export function WatchlistStrip({ quotes, onOpenSource, onPress }: WatchlistStripProps) {
   return (
     <View accessibilityLabel="自选行情，演示">
       <DashboardSectionHeader
         actionLabel="来自 moomoo ›"
-        onAction={() => undefined}
+        onAction={onOpenSource}
         title="我的关注"
       />
       <View style={styles.grid} testID="watchlist-grid">

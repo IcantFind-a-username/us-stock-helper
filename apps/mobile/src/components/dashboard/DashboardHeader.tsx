@@ -41,12 +41,20 @@ export function DashboardHeader({
         <Text style={styles.demoStatus}>演示数据 · 非实时行情</Text>
       </View>
       <View style={styles.actions}>
-        <Pressable accessibilityLabel="搜索股票" onPress={onSearch} style={styles.iconButton}>
+        <Pressable
+          accessibilityLabel="搜索股票"
+          accessibilityRole="button"
+          onPress={onSearch}
+          style={styles.iconButton}>
           <View style={styles.iconCircle}>
             <SymbolView name={actionSymbols.search} size={18} tintColor={colors.ink} />
           </View>
         </Pressable>
-        <Pressable accessibilityLabel="查看提醒" onPress={onAlerts} style={styles.iconButton}>
+        <Pressable
+          accessibilityLabel="查看提醒"
+          accessibilityRole="button"
+          onPress={onAlerts}
+          style={styles.iconButton}>
           <View style={styles.iconCircle}>
             <SymbolView name={actionSymbols.alerts} size={18} tintColor={colors.ink} />
           </View>

@@ -172,3 +172,28 @@ it("routes alert, quotes, and both long/short candidates while disclosing their 
   const quote = view.getByRole("button", { name: /TSLA 行情详情.*\$318\.20.*下跌.*事件波动高/ });
   expect(StyleSheet.flatten(quote.props.style).minHeight).toBeGreaterThanOrEqual(44);
 });
+
+it("turns Search and the moomoo source affordance into complete interactions", async () => {
+  const view = await renderDashboard();
+
+  await waitFor(() => expect(view.getByText("谨慎偏多")).toBeTruthy());
+
+  await fireEvent.press(view.getByRole("button", { name: "搜索股票" }));
+  expect(view.getByText("搜索关注标的")).toBeTruthy();
+  const input = view.getByLabelText("搜索股票代码或名称");
+  await fireEvent.changeText(input, "tesla");
+  await fireEvent.press(view.getByRole("button", { name: "打开 TSLA Tesla" }));
+  expect(mockPush).toHaveBeenLastCalledWith({
+    pathname: "/stocks/[symbol]",
+    params: { symbol: "TSLA" },
+  });
+
+  await fireEvent.press(view.getByRole("button", { name: "搜索股票" }));
+  expect(view.getByRole("button", { name: "打开 NVDA NVIDIA" })).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "关闭股票搜索" }));
+
+  await fireEvent.press(view.getByRole("button", { name: "来自 moomoo ›" }));
+  expect(view.getByText("moomoo 数据来源")).toBeTruthy();
+  expect(view.getByText(/只读同步尚未连接/)).toBeTruthy();
+  expect(view.getByText(/演示回退/)).toBeTruthy();
+});
