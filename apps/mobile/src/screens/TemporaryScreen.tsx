@@ -1,9 +1,12 @@
 import { StyleSheet, Text, View } from "react-native";
 
+import { DemoDataBadge } from "@/components/ui/DemoDataBadge";
+
 export function TemporaryScreen({ title }: { title: string }) {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>{title}</Text>
+      <DemoDataBadge />
       <Text style={styles.description}>演示页面将在后续任务中完善。</Text>
     </View>
   );

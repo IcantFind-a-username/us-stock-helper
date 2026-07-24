@@ -24,17 +24,30 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [horizon, setHorizonState] = useState<Horizon>("short");
   const [savedPlans, setSavedPlans] = useState<TradePlan[]>([]);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
+    let isCurrent = true;
+
     void Promise.all([
       storage.get<Horizon>(persistedKeys.horizon),
       storage.get<TradePlan[]>(persistedKeys.savedPlans),
       storage.get<JournalEntry[]>(persistedKeys.journalEntries),
-    ]).then(([storedHorizon, storedPlans, storedEntries]) => {
-      if (storedHorizon !== null) setHorizonState(storedHorizon);
-      if (storedPlans !== null) setSavedPlans(storedPlans);
-      if (storedEntries !== null) setJournalEntries(storedEntries);
-    });
+    ])
+      .then(([storedHorizon, storedPlans, storedEntries]) => {
+        if (!isCurrent) return;
+        if (storedHorizon !== null) setHorizonState(storedHorizon);
+        if (storedPlans !== null) setSavedPlans(storedPlans);
+        if (storedEntries !== null) setJournalEntries(storedEntries);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (isCurrent) setHydrated(true);
+      });
+
+    return () => {
+      isCurrent = false;
+    };
   }, []);
 
   const value = useMemo<AppStateValue>(
@@ -63,6 +76,8 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     }),
     [horizon, journalEntries, savedPlans],
   );
+
+  if (!hydrated) return null;
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
