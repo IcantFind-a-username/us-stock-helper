@@ -34,7 +34,7 @@ The complete product is too large and data-dependent for one implementation cycl
 
 ### Project 1: runnable iPhone product demo
 
-Build the approved interface and navigation as a real React Native application using Expo and TypeScript. The user installs Expo Go on an iPhone and scans a QR code to test the app immediately. This phase uses clearly labeled deterministic demo fixtures and requires no API keys.
+Build the approved interface and navigation as a real React Native application using Expo and TypeScript. The app is compiled locally with the full Xcode toolchain and installed on the user's iPhone with a free Apple Account Personal Team. It has its own name and Home Screen icon and connects to the local Expo development server for Fast Refresh. This phase uses clearly labeled deterministic demo fixtures and requires no API keys.
 
 The demo validates:
 
@@ -45,7 +45,7 @@ The demo validates:
 - information density;
 - wording and safety boundaries.
 
-It does not pretend that fixture data is live. A standalone TestFlight build comes after the interaction model stabilizes.
+It does not pretend that fixture data is live. Free Personal Team provisioning expires after 7 days, so the development build must be rebuilt and reinstalled periodically. EAS internal distribution and TestFlight come after the interaction model stabilizes and the user chooses to join the paid Apple Developer Program.
 
 ### Project 2: information and evidence foundation
 
@@ -593,6 +593,7 @@ Required controls:
 ### 16.1 Stack
 
 - Expo-managed React Native application;
+- local Expo development build with `expo-dev-client`;
 - TypeScript;
 - Expo Router;
 - React Native SVG for the demo candlestick and indicator views;
@@ -600,7 +601,9 @@ Required controls:
 - lightweight local state only;
 - no secrets and no production API calls.
 
-This choice gives the fastest real-device feedback loop. A later EAS/TestFlight build can use the same application code.
+The local build is created with `npx expo run:ios --device` after the user installs full Xcode, signs in with a free Apple Account Personal Team, connects and trusts the iPhone, and enables Developer Mode. JavaScript, TypeScript, styling, and fixture changes use Fast Refresh through `npx expo start --dev-client`; native dependency or configuration changes require a rebuild.
+
+This choice provides a standalone, app-like real-device feedback loop without a paid Apple membership. The 7-day free-provisioning expiry is accepted for Project 1. A later EAS/TestFlight build can use the same application code.
 
 ### 16.2 Demo routes
 
@@ -643,8 +646,8 @@ The demo must support:
 
 The first runnable demo is complete when:
 
-1. it launches with `npx expo start`;
-2. an iPhone running Expo Go can load it by QR code on the same network;
+1. it launches with `npx expo start --dev-client`;
+2. a locally signed development build installs on the user's iPhone with a free Apple Account Personal Team and launches from its own Home Screen icon;
 3. all routes and primary interactions work without an API key;
 4. Dashboard defaults to the short horizon;
 5. stock detail visibly contains the candlestick chart, Magic Nine, forecast band, pattern prompt, RSI, MACD, and both ownership/activity views;
@@ -664,6 +667,7 @@ The first runnable demo is complete when:
 - real forecasting;
 - real LLM calls;
 - authentication and cloud sync;
+- EAS internal distribution;
 - TestFlight distribution;
 - order execution of any kind.
 
