@@ -35,6 +35,15 @@ separate follow-on implementation plans after the user approves the repaired
 native Dashboard; their prototype sources are already preserved and must not
 be redesigned independently.
 
+## Execution Ruling
+
+The user selected the green-branch TDD option after pre-flight review. Execute
+Tasks 2–5 first using their focused red/green cycles. Then execute Task 1 and
+Task 6 as one combined SDD unit: add the full Dashboard contract tests, record
+their expected RED output, implement the composition, and commit only after
+the focused and full Dashboard suites are GREEN. Do not publish an
+intentionally failing intermediate commit.
+
 ## File Structure
 
 ```text
