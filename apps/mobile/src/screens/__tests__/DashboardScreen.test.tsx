@@ -28,21 +28,26 @@ async function renderDashboard() {
 it("shows the short-first conclusion, objective dashboard context, and accessible actions", async () => {
   const view = await renderDashboard();
 
-  await waitFor(() => expect(view.getByText("演示数据 · 非实时行情")).toBeTruthy());
-  expect(view.queryByLabelText("市场证据")).toBeNull();
+  await waitFor(() => expect(view.getByText("谨慎偏多")).toBeTruthy());
+  expect(view.getByLabelText("市场评分 61")).toBeTruthy();
+  expect(view.getByText("今日建议")).toBeTruthy();
+  expect(view.getByText("需要关注")).toBeTruthy();
+  expect(view.getByText("我的关注")).toBeTruthy();
+  expect(view.getByText("潜力候选")).toBeTruthy();
+  expect(view.queryByText("最强反证")).toBeNull();
 
   expect(view.getByText("短线 · 0–5日")).toBeTruthy();
   expect(view.getByText("谨慎偏多")).toBeTruthy();
-  expect(view.getByText("市场评分 61")).toBeTruthy();
-  expect(view.getByText("置信度 67%")).toBeTruthy();
   expect(view.getByText("新闻与社交情绪改善，但市场广度和期限结构仍要求确认。")).toBeTruthy();
-  expect(view.getByText("轻仓，等待量价与广度确认")).toBeTruthy();
-  expect(view.getByText("今日建议")).toBeTruthy();
-  expect(view.getByText("最强反证")).toBeTruthy();
-  expect(view.getAllByText("失效条件").length).toBeGreaterThanOrEqual(1);
-  expect(view.getByText("美股盘中 · 演示状态")).toBeTruthy();
-  expect(view.getByText("数据新鲜")).toBeTruthy();
   expect(view.getByTestId("watchlist-grid")).toBeTruthy();
+
+  const evidenceAction = view.getByRole("button", { name: "查看完整依据" });
+  expect(StyleSheet.flatten(evidenceAction.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  await fireEvent.press(evidenceAction);
+  expect(view.getByText("市场完整依据")).toBeTruthy();
+  expect(view.getByText("最强反证")).toBeTruthy();
+  expect(view.getByText("失效条件")).toBeTruthy();
+  expect(view.getByText("轻仓，等待量价与广度确认")).toBeTruthy();
 
   [
     "新闻与社交情绪",
@@ -57,26 +62,13 @@ it("shows the short-first conclusion, objective dashboard context, and accessibl
   ].forEach((label) => {
     expect(view.getByText(label)).toBeTruthy();
   });
-  expect(view.getAllByText(/新鲜度：/).length).toBeGreaterThanOrEqual(9);
-  expect(view.getByText("新鲜度：存在冲突")).toBeTruthy();
-  expect(view.getByRole("button", { name: /查看 地缘政治 证据.*新鲜度 存在冲突/ })).toBeTruthy();
-
-  const evidenceAction = view.getByRole("button", { name: "查看市场证据" });
-  expect(evidenceAction.props.accessibilityHint).toContain("引用");
-  expect(StyleSheet.flatten(evidenceAction.props.style).minHeight).toBeGreaterThanOrEqual(44);
-  await fireEvent.press(evidenceAction);
-  expect(view.getByText("市场证据")).toBeTruthy();
   expect(view.getByText("演示：短线新闻与社交情绪快照")).toBeTruthy();
-  expect(view.getAllByText("演示").length).toBeGreaterThanOrEqual(7);
+
+  await fireEvent.press(view.getByRole("button", { name: "关闭市场完整依据" }));
   await fireEvent.press(view.getByText("波段 · 1–8周"));
   await waitFor(() => expect(view.getByText("波段环境")).toBeTruthy());
   expect(view.queryByText("演示：短线新闻与社交情绪快照")).toBeNull();
-  expect(view.getByText("数据存在冲突")).toBeTruthy();
-  const healthEvidence = view.getByRole("button", { name: /查看数据健康与市场时段证据.*存在冲突/ });
-  expect(StyleSheet.flatten(healthEvidence.props.style).minHeight).toBeGreaterThanOrEqual(44);
-  await fireEvent.press(healthEvidence);
-  expect(view.getByText("波段数据健康与市场时段证据")).toBeTruthy();
-  expect(view.getByText("演示：波段数据健康与市场时段快照")).toBeTruthy();
+  expect(view.getByText(/美股盘中 · 演示状态 · 数据冲突/)).toBeTruthy();
 });
 
 it("switches all fixture-backed horizon views independently", async () => {
@@ -85,17 +77,21 @@ it("switches all fixture-backed horizon views independently", async () => {
   await waitFor(() => expect(view.getByText("谨慎偏多")).toBeTruthy());
   await fireEvent.press(view.getByText("波段 · 1–8周"));
   await waitFor(() => expect(view.getByText("波段环境")).toBeTruthy());
-  expect(view.getByText("市场评分 56")).toBeTruthy();
+  expect(view.getByLabelText("市场评分 56")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "查看完整依据" }));
   expect(view.getByText("分批，优先顺势回撤")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "关闭市场完整依据" }));
   expect(view.getByText("NVDA 进入波段趋势验证区")).toBeTruthy();
-  expect(view.getByText("评分 64")).toBeTruthy();
+  expect(view.getByText("64")).toBeTruthy();
 
   await fireEvent.press(view.getByText("中长线 · 2–24月"));
   await waitFor(() => expect(view.getByText("中长期质量优先")).toBeTruthy());
-  expect(view.getByText("市场评分 68")).toBeTruthy();
+  expect(view.getByLabelText("市场评分 68")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "查看完整依据" }));
   expect(view.getByText("耐心，质量优先并容忍波动")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "关闭市场完整依据" }));
   expect(view.getByText("NVDA 长期盈利质量待估值确认")).toBeTruthy();
-  expect(view.getByText("评分 81")).toBeTruthy();
+  expect(view.getByText("81")).toBeTruthy();
 });
 
 it("renders the priority alert and watchlist as compact dashboard surfaces", async () => {
@@ -125,13 +121,10 @@ it("routes alert, quotes, and both long/short candidates while disclosing their 
   expect(view.queryByText("来源覆盖：盘中报价、期权与量价演示快照")).toBeNull();
   expect(view.getByText("我的关注")).toBeTruthy();
   expect(view.getByText("量价待确认")).toBeTruthy();
-  expect(view.getByText("做多 · 非对称上行")).toBeTruthy();
-  expect(view.getByText("做空 · 常规")).toBeTruthy();
-  expect(view.getByText("达到行动研究门槛")).toBeTruthy();
-  expect(view.getByText("观察池")).toBeTruthy();
-  expect(view.getByText("风险升高")).toBeTruthy();
-  expect(view.getAllByText("最强反例").length).toBeGreaterThanOrEqual(3);
-  expect(view.getAllByText("失效条件").length).toBeGreaterThanOrEqual(4);
+  expect(view.getByText("NVDA · 达到行动研究门槛")).toBeTruthy();
+  expect(view.getByText("TSLA · 观察池")).toBeTruthy();
+  expect(view.queryByText("最强反例")).toBeNull();
+  expect(view.queryByText("失效条件")).toBeNull();
 
   const alert = view.getByRole("button", { name: /查看 NVDA 提醒详情：NVDA 接近量价确认区/ });
   expect(StyleSheet.flatten(alert.props.style).minHeight).toBeGreaterThanOrEqual(44);
@@ -141,25 +134,30 @@ it("routes alert, quotes, and both long/short candidates while disclosing their 
   await fireEvent.press(view.getByRole("button", { name: /查看 TSLA 行情详情.*下跌/ }));
   expect(mockPush).toHaveBeenLastCalledWith({ pathname: "/stocks/[symbol]", params: { symbol: "TSLA" } });
 
-  await fireEvent.press(view.getByRole("button", { name: /查看 TSLA 候选详情.*做空.*观察池/ }));
+  const candidate = view.getByRole("button", { name: "查看 TSLA 候选详情" });
+  expect(StyleSheet.flatten(candidate.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  await fireEvent.press(candidate);
   expect(mockPush).toHaveBeenLastCalledWith({ pathname: "/stocks/[symbol]", params: { symbol: "TSLA" } });
 
-  const driver = view.getByRole("button", { name: /新闻与社交情绪.*评分.*新鲜度/ });
-  expect(StyleSheet.flatten(driver.props.style).minHeight).toBeGreaterThanOrEqual(44);
-  await fireEvent.press(driver);
-  expect(view.getByText("新闻与社交情绪证据")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "查看完整依据" }));
+  expect(view.getByText("新闻与社交情绪")).toBeTruthy();
   expect(view.getByText("演示：短线新闻与社交情绪快照")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "关闭市场完整依据" }));
 
   const alertEvidence = view.getByRole("button", { name: "查看 NVDA 提醒依据" });
   expect(StyleSheet.flatten(alertEvidence.props.style).minHeight).toBeGreaterThanOrEqual(44);
   await fireEvent.press(alertEvidence);
-  expect(view.getByText("NVDA 提醒证据")).toBeTruthy();
+  expect(view.getByText("NVDA 提醒依据")).toBeTruthy();
+  expect(view.getByText("盘中报价、期权与量价演示快照")).toBeTruthy();
   expect(view.getByText("演示：短线 NVDA 量价确认快照")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "关闭NVDA 提醒依据" }));
 
-  const candidateEvidence = view.getByRole("button", { name: /TSLA 候选证据.*做空.*观察池/ });
+  const candidateEvidence = view.getByRole("button", { name: "查看 TSLA 候选依据" });
   expect(StyleSheet.flatten(candidateEvidence.props.style).minHeight).toBeGreaterThanOrEqual(44);
   await fireEvent.press(candidateEvidence);
-  expect(view.getByText("TSLA 候选证据")).toBeTruthy();
+  expect(view.getByText("TSLA 候选依据")).toBeTruthy();
+  expect(view.getByText("最强反例")).toBeTruthy();
+  expect(view.getByText("放量突破近期反弹高点并维持两日。")).toBeTruthy();
   expect(view.getByText("演示：TSLA 短线交付预期快照")).toBeTruthy();
 
   const quote = view.getByRole("button", { name: /TSLA 行情详情.*\$318\.20.*下跌.*事件波动高/ });
