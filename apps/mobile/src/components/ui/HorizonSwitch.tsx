@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { Horizon } from "@/domain/models";
-import { colors, radius, spacing } from "@/theme/tokens";
+import { colors } from "@/theme/tokens";
 
 const horizonLabels = {
   short: "短线 · 0–5日",
@@ -39,26 +39,26 @@ export function HorizonSwitch({ value, onChange }: HorizonSwitchProps) {
 
 const styles = StyleSheet.create({
   switch: {
-    backgroundColor: colors.blueSoft,
-    borderRadius: radius.pill,
+    backgroundColor: "#E4E9F1",
+    borderRadius: 10,
     flexDirection: "row",
-    padding: spacing.xs,
+    padding: 3,
   },
   option: {
     alignItems: "center",
-    borderRadius: radius.pill,
+    borderRadius: 8,
     flex: 1,
     minHeight: 44,
     justifyContent: "center",
-    paddingHorizontal: spacing.sm,
+    paddingHorizontal: 4,
   },
   optionSelected: {
     backgroundColor: colors.card,
   },
   label: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: "600",
+    fontSize: 10,
+    fontWeight: "700",
   },
   labelSelected: {
     color: colors.blue,
