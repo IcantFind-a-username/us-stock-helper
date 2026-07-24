@@ -37,38 +37,108 @@ export const adviserOpinions: AdviserOpinion[] = adviserProfiles.map(([id, displ
 const preferences: RiskPreference[] = ["conservative", "balanced", "aggressive"];
 const sides: PlanSide[] = ["long", "short"];
 
-export const tradePlanFixtures: TradePlan[] = sides.flatMap((side) =>
-  preferences.map((preference, index): TradePlan => ({
-    id: `NVDA-${side}-${preference}`,
+type PlanProfile = {
+  symbol: string;
+  objectiveScore: number;
+  confidence: number;
+  longEntry: [number, number];
+  shortEntry: [number, number];
+  longInvalidation: number;
+  shortInvalidation: number;
+  longTarget: [number, number];
+  shortTarget: [number, number];
+  quantityScale: number;
+  borrowFee: number;
+  shortInterest: number;
+  crowding: NonNullable<TradePlan["shortRisk"]>["crowding"];
+};
+
+const planProfiles: PlanProfile[] = [
+  {
     symbol: "NVDA",
-    side,
-    preference,
     objectiveScore: 72,
     confidence: 0.68,
-    entryMethod: preference === "aggressive" ? "突破限价" : "回踩分批限价",
-    entryRange: side === "long" ? [139.8, 141.2] : [143.4, 144.6],
-    quantity: [20, 35, 50][index] ?? 20,
-    riskBudgetPercent: [0.5, 0.8, 1.0][index] ?? 0.5,
-    leverage: [1, 1.25, 1.5][index] ?? 1,
-    maximumLeverage: 1.5,
-    invalidationPrice: side === "long" ? 136.4 : 148.2,
-    stopLogic: "触及失效价后取消原假设；跳空时按首个可执行价格重新评估。",
-    targetRange: side === "long" ? [148, 153] : [134, 137],
-    estimatedRewardRisk: [1.6, 2.1, 2.6][index] ?? 1.6,
-    holdingWindow: "盘中至 5 个交易日",
-    cancelConditions: ["证据包过期", "大盘环境转为空头", "关键消息被证伪"],
-    riskWarning:
-      side === "short"
-        ? "演示方案；需确认借券可用性，做空存在理论上的无限损失风险。"
-        : "演示方案；跳空可能使实际亏损超过计划止损。",
-    evidenceSnapshotId: "NVDA-short-2026-07-24T10:30:00Z",
-    shortRisk: side === "short" ? {
-      borrowAvailable: true,
-      checkedAt: "2026-07-24T10:29:00-04:00",
-      estimatedBorrowFeePercent: 0.35,
-      shortInterestPercent: 1.2,
-      crowding: "low",
-      warnings: ["逼空与跳空风险", "停牌与召回风险", "理论上的无限损失风险"],
-    } : null,
-  })),
+    longEntry: [139.8, 141.2],
+    shortEntry: [143.4, 144.6],
+    longInvalidation: 136.4,
+    shortInvalidation: 148.2,
+    longTarget: [148, 153],
+    shortTarget: [134, 137],
+    quantityScale: 1,
+    borrowFee: 0.35,
+    shortInterest: 1.2,
+    crowding: "low",
+  },
+  {
+    symbol: "TSLA",
+    objectiveScore: 53,
+    confidence: 0.56,
+    longEntry: [309.5, 314],
+    shortEntry: [320, 324],
+    longInvalidation: 299.8,
+    shortInvalidation: 334,
+    longTarget: [331, 342],
+    shortTarget: [290, 302],
+    quantityScale: 0.45,
+    borrowFee: 0.48,
+    shortInterest: 2.7,
+    crowding: "medium",
+  },
+  {
+    symbol: "PLTR",
+    objectiveScore: 46,
+    confidence: 0.51,
+    longEntry: [82.2, 84.1],
+    shortEntry: [86.8, 88.2],
+    longInvalidation: 78.6,
+    shortInvalidation: 92.4,
+    longTarget: [90, 94],
+    shortTarget: [76, 80],
+    quantityScale: 1.4,
+    borrowFee: 0.62,
+    shortInterest: 3.1,
+    crowding: "medium",
+  },
+];
+
+export const tradePlanFixtures: TradePlan[] = planProfiles.flatMap((profile) =>
+  sides.flatMap((side) =>
+    preferences.map((preference, index): TradePlan => ({
+      id: `${profile.symbol}-${side}-${preference}`,
+      symbol: profile.symbol,
+      side,
+      preference,
+      objectiveScore: profile.objectiveScore,
+      confidence: profile.confidence,
+      entryMethod: preference === "aggressive" ? "突破限价" : "回踩分批限价",
+      entryRange: side === "long" ? profile.longEntry : profile.shortEntry,
+      quantity: Math.max(1, Math.round(([20, 35, 50][index] ?? 20) * profile.quantityScale)),
+      riskBudgetPercent: [0.5, 0.8, 1.0][index] ?? 0.5,
+      leverage: [1, 1.25, 1.5][index] ?? 1,
+      maximumLeverage: 1.5,
+      invalidationPrice:
+        side === "long" ? profile.longInvalidation : profile.shortInvalidation,
+      stopLogic: "触及失效价后取消原假设；跳空时按首个可执行价格重新评估。",
+      targetRange: side === "long" ? profile.longTarget : profile.shortTarget,
+      estimatedRewardRisk: [1.6, 2.1, 2.6][index] ?? 1.6,
+      holdingWindow: "盘中至 5 个交易日",
+      cancelConditions: ["证据包过期", "大盘环境转为空头", "关键消息被证伪"],
+      riskWarning:
+        side === "short"
+          ? "演示方案；需确认借券可用性，做空存在理论上的无限损失风险。"
+          : "演示方案；跳空可能使实际亏损超过计划止损。",
+      evidenceSnapshotId: `${profile.symbol}-short-2026-07-24T10:30:00Z`,
+      shortRisk:
+        side === "short"
+          ? {
+              borrowAvailable: true,
+              checkedAt: "2026-07-24T10:29:00-04:00",
+              estimatedBorrowFeePercent: profile.borrowFee,
+              shortInterestPercent: profile.shortInterest,
+              crowding: profile.crowding,
+              warnings: ["逼空与跳空风险", "停牌与召回风险", "理论上的无限损失风险"],
+            }
+          : null,
+    })),
+  ),
 );

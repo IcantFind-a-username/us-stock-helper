@@ -87,6 +87,43 @@ describe("fixtureRepository", () => {
     },
   );
 
+  it.each(["short", "swing", "long"] as const)(
+    "resolves every %s dashboard symbol into stock detail and six analysis plans",
+    (horizon) => {
+      const dashboard = fixtureRepository.getDashboard(horizon);
+      const symbols = [
+        ...new Set([
+          ...dashboard.watchlist.map(({ symbol }) => symbol),
+          ...dashboard.candidates.map(({ symbol }) => symbol),
+          dashboard.priorityAlert.symbol,
+        ]),
+      ];
+
+      expect(symbols).toEqual(["NVDA", "TSLA", "PLTR"]);
+
+      for (const symbol of symbols) {
+        const stock = fixtureRepository.getStock(symbol, horizon);
+        const plans = fixtureRepository.getTradePlans(symbol);
+
+        expect(stock).toMatchObject({ symbol, horizon, demoData: true });
+        expect(plans).toHaveLength(6);
+        expect(plans.every((plan) => plan.symbol === symbol)).toBe(true);
+        expect(
+          new Set(plans.map(({ side, preference }) => `${side}:${preference}`)),
+        ).toEqual(
+          new Set([
+            "long:conservative",
+            "long:balanced",
+            "long:aggressive",
+            "short:conservative",
+            "short:balanced",
+            "short:aggressive",
+          ]),
+        );
+      }
+    },
+  );
+
   it("keeps RSI, MACD, reported ownership, and participation proxy", () => {
     const stock = fixtureRepository.getStock("NVDA", "short");
 
@@ -107,11 +144,20 @@ describe("fixtureRepository", () => {
   });
 
   it("keeps alert invalidation and objective conversation order", () => {
-    expect(fixtureRepository.getAlerts()[0]).toMatchObject({
+    const alerts = fixtureRepository.getAlerts();
+
+    expect(alerts[0]).toMatchObject({
       currentState: "等待量价确认",
       invalidation: "收盘跌破 136.40",
       sourceCoverage: "盘中报价、期权与量价演示快照",
     });
+    expect(alerts.map(({ severity }) => severity)).toEqual([
+      "action",
+      "risk",
+      "observation",
+      "info",
+    ]);
+    expect(alerts.every(({ citations }) => citations.length > 0)).toBe(true);
     expect(
       fixtureRepository
         .getConversation()[0]
