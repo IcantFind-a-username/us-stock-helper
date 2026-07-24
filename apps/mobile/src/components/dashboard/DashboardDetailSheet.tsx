@@ -72,7 +72,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   title: { color: colors.ink, flex: 1, fontSize: 18, fontWeight: "800" },
-  close: { alignItems: "center", justifyContent: "center", minHeight: 44, paddingLeft: spacing.lg },
+  close: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 44, paddingLeft: spacing.lg },
   closeText: { color: colors.blue, fontSize: 15, fontWeight: "800" },
   content: { gap: spacing.md, padding: spacing.lg, paddingBottom: spacing.xl },
   demo: { alignSelf: "flex-start", color: colors.amber, fontSize: 11, fontWeight: "800" },
