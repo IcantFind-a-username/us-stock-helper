@@ -1,0 +1,188 @@
+import type { Candle, Horizon, StockSnapshot } from "@/domain/models";
+
+const closes = [
+  132.1, 132.8, 131.9, 133.2, 134.1, 133.6, 135.0, 136.2,
+  135.7, 136.8, 137.6, 137.1, 138.4, 139.0, 138.5, 139.7,
+  140.2, 139.8, 141.1, 141.8, 141.2, 142.0, 141.6, 142.4,
+  142.9, 142.2, 143.1, 143.8,
+];
+
+const candles: Candle[] = closes.map((close, index) => {
+  const open = index === 0 ? 131.6 : (closes[index - 1] ?? close);
+  return {
+    timestamp: `2026-07-24T${String(9 + Math.floor(index / 12)).padStart(2, "0")}:${String((index * 5) % 60).padStart(2, "0")}:00-04:00`,
+    open,
+    high: Math.max(open, close) + 0.7,
+    low: Math.min(open, close) - 0.6,
+    close,
+    volume: 420_000 + index * 31_000,
+  };
+});
+
+const buildStock = (horizon: Horizon): StockSnapshot => ({
+  demoData: true,
+  symbol: "NVDA",
+  company: "NVIDIA",
+  exchange: "NASDAQ",
+  marketSession: "美股盘中",
+  watchlisted: true,
+  horizon,
+  price: 143.8,
+  changePercent: 2.46,
+  quoteLatencyMs: 850,
+  candles,
+  forecast: {
+    horizon: "未来 5 个交易日",
+    points: Array.from({ length: 8 }, (_, index) => ({
+      timestamp: `T+${index + 1}`,
+      median: 144.2 + index * 0.7,
+      lower50: 142.8 + index * 0.35,
+      upper50: 145.6 + index * 1.05,
+      lower80: 140.9 + index * 0.1,
+      upper80: 147.3 + index * 1.45,
+    })),
+    probability: { up: 0.58, flat: 0.18, down: 0.24 },
+    calibrationError: 0.084,
+    predictedAt: "2026-07-24T10:30:00-04:00",
+    modelVersion: "demo-calibrated-v1",
+    invalidation: "收盘跌破 136.40 或大盘环境转为空头",
+  },
+  magicNine: {
+    count: 7,
+    complete: false,
+    invalidation: "序列中断则重新计数",
+    horizon,
+  },
+  dragonTrend: {
+    state: "bullish",
+    score: 64,
+    methodVersion: "original-demo-v1",
+    invalidation: "趋势强度跌破 45",
+  },
+  patterns: [
+    {
+      name: "回踩五日线后企稳",
+      status: "forming",
+      complete: false,
+      invalidation: "收盘跌破 136.40",
+      horizon,
+    },
+    {
+      name: "三日底分型",
+      status: "confirmed",
+      complete: true,
+      invalidation: "跌破分型最低点",
+      horizon,
+    },
+    {
+      name: "W底",
+      status: "forming",
+      complete: false,
+      invalidation: "右底跌破左底",
+      horizon,
+    },
+    {
+      name: "头肩顶",
+      status: "invalidated",
+      complete: false,
+      invalidation: "价格重新站上右肩",
+      horizon,
+    },
+    {
+      name: "回眸一笑",
+      status: "forming",
+      complete: false,
+      invalidation: "均线重新转弱",
+      horizon,
+    },
+  ],
+  indicators: {
+    rsi: {
+      value: 63.8,
+      period: 14,
+      interval: "5分钟",
+      state: "near-overbought",
+      direction: "rising",
+      divergence: "none",
+    },
+    macd: {
+      dif: 1.42,
+      dea: 1.08,
+      interval: "5分钟",
+      histogram: [0.08, 0.12, 0.18, 0.25, 0.31, 0.34],
+      state: "bull-expanding",
+      crossover: "golden-cross",
+    },
+  },
+  reportedOwnership: {
+    institutionalPercent: 65,
+    insiderPercent: 4,
+    otherPercent: 31,
+    reportedAt: "2026-06-30",
+    changes: ["演示：Top 20 报告机构净增持 1.8%", "演示：内部人持仓无重大变化"],
+    citationIds: ["nvda-source-1"],
+  },
+  participationProxy: {
+    label: "估算代理",
+    institutionalPercent: 58,
+    retailPercent: 42,
+    confidence: "medium",
+    estimatedAt: "2026-07-24T10:30:00-04:00",
+    methodVersion: "demo-v1",
+    sourceCoverage: "演示成交与盘口特征覆盖 82%",
+    citationIds: ["nvda-source-2"],
+  },
+  marketContext: {
+    marketDirection: "纳指短线偏强，但广度一般",
+    sectorState: "半导体板块相对强势",
+    macroState: "利率与美元对高估值板块仍有压制",
+    geopoliticalState: "出口限制消息构成双向事件风险",
+    scoreAdjustment: -3,
+    planChanges: ["杠杆上限从 1.75x 降至 1.5x", "要求大盘广度同步改善"],
+    citationIds: ["nvda-source-2"],
+  },
+  fundamentals: {
+    financialHealth: "演示：现金流健康，估值偏高",
+    cash: "$31.4B",
+    debt: "$11.0B",
+    dilution: "低",
+    runway: "充足",
+    margins: "毛利率 74%（演示）",
+    growth: "收入同比 +122%（演示）",
+    valuation: "远期估值高于行业中位数（演示）",
+    materialRisks: ["出口限制", "客户集中", "高估值回撤"],
+    industryContext: "AI 加速器需求强，但竞争与周期性存在。",
+    supplyChainContext: "先进制程与封装产能是关键约束。",
+    citationIds: ["nvda-source-1"],
+  },
+  baseScore: 70,
+  adjustedScore: 72,
+  conclusion: "谨慎偏多；等待量价确认，不追高。",
+  counterCase: "若指数转弱或出口限制升级，当前形态可能失效。",
+  citations: [
+    {
+      id: "nvda-source-1",
+      title: "演示：机构持仓报告",
+      publisher: "SEC",
+      url: "https://www.sec.gov/",
+      publishedAt: "2026-07-20T14:00:00Z",
+      firstSeenAt: "2026-07-20T14:01:00Z",
+      kind: "fact",
+    },
+    {
+      id: "nvda-source-2",
+      title: "演示：市场与成交结构快照",
+      publisher: "Demo Market Feed",
+      url: "https://example.com/demo-market-feed",
+      publishedAt: "2026-07-24T14:30:00Z",
+      firstSeenAt: "2026-07-24T14:30:01Z",
+      kind: "inference",
+    },
+  ],
+});
+
+export const stockFixtures: Record<string, StockSnapshot> = {
+  "NVDA:short": buildStock("short"),
+  "NVDA:swing": buildStock("swing"),
+  "NVDA:long": buildStock("long"),
+};
