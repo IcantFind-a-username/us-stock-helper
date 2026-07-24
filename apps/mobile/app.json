@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "US Stock Helper",
+    "slug": "us-stock-helper",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "usstockhelper",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.franz.usstockhelper.dev"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-dev-client",
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
