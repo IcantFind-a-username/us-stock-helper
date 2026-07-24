@@ -42,8 +42,7 @@ it("shows the short-first conclusion, objective dashboard context, and accessibl
   expect(view.getAllByText("失效条件").length).toBeGreaterThanOrEqual(1);
   expect(view.getByText("美股盘中 · 演示状态")).toBeTruthy();
   expect(view.getByText("数据新鲜")).toBeTruthy();
-  const watchlist = view.getByTestId("watchlist-scroll");
-  expect(watchlist.props.horizontal).toBe(true);
+  expect(view.getByTestId("watchlist-grid")).toBeTruthy();
 
   [
     "新闻与社交情绪",
@@ -68,7 +67,7 @@ it("shows the short-first conclusion, objective dashboard context, and accessibl
   await fireEvent.press(evidenceAction);
   expect(view.getByText("市场证据")).toBeTruthy();
   expect(view.getByText("演示：短线新闻与社交情绪快照")).toBeTruthy();
-  expect(view.getAllByText("演示").length).toBeGreaterThanOrEqual(8);
+  expect(view.getAllByText("演示").length).toBeGreaterThanOrEqual(7);
   await fireEvent.press(view.getByText("波段 · 1–8周"));
   await waitFor(() => expect(view.getByText("波段环境")).toBeTruthy());
   expect(view.queryByText("演示：短线新闻与社交情绪快照")).toBeNull();
@@ -99,17 +98,33 @@ it("switches all fixture-backed horizon views independently", async () => {
   expect(view.getByText("评分 81")).toBeTruthy();
 });
 
+it("renders the priority alert and watchlist as compact dashboard surfaces", async () => {
+  const view = await renderDashboard();
+
+  await waitFor(() => expect(view.getByText("NVDA 接近量价确认区")).toBeTruthy());
+
+  const alert = view.getByTestId("priority-alert-card");
+  expect(alert).toBeTruthy();
+  expect(view.getByText("证据 5 · 反证 2 · 新鲜")).toBeTruthy();
+  expect(view.queryByText("来源覆盖：盘中报价、期权与量价演示快照")).toBeNull();
+  expect(view.queryByText("顾问有限调整 +2 · 不能独立触发")).toBeNull();
+  expect(view.queryByText("收盘跌破 136.40")).toBeNull();
+
+  expect(view.getByTestId("watchlist-grid")).toBeTruthy();
+  expect(view.queryByTestId("watchlist-scroll")).toBeNull();
+  expect(view.getAllByTestId("watchlist-quote")).toHaveLength(3);
+});
+
 it("routes alert, quotes, and both long/short candidates while disclosing their evidence", async () => {
   const view = await renderDashboard();
 
   await waitFor(() => expect(view.getByText("NVDA 接近量价确认区")).toBeTruthy());
 
-  expect(view.getByText("证据 5 · 反证 2")).toBeTruthy();
-  expect(view.getByText("顾问有限调整 +2 · 不能独立触发")).toBeTruthy();
-  expect(view.getByText("最高优先级提醒")).toBeTruthy();
-  expect(view.getByText("来源覆盖：盘中报价、期权与量价演示快照")).toBeTruthy();
-  expect(view.getByText("moomoo watchlist · 演示占位")).toBeTruthy();
-  expect(view.getByText("当前脉冲：量价待确认")).toBeTruthy();
+  expect(view.getByText("证据 5 · 反证 2 · 新鲜")).toBeTruthy();
+  expect(view.queryByText("顾问有限调整 +2 · 不能独立触发")).toBeNull();
+  expect(view.queryByText("来源覆盖：盘中报价、期权与量价演示快照")).toBeNull();
+  expect(view.getByText("我的关注")).toBeTruthy();
+  expect(view.getByText("量价待确认")).toBeTruthy();
   expect(view.getByText("做多 · 非对称上行")).toBeTruthy();
   expect(view.getByText("做空 · 常规")).toBeTruthy();
   expect(view.getByText("达到行动研究门槛")).toBeTruthy();
@@ -118,7 +133,7 @@ it("routes alert, quotes, and both long/short candidates while disclosing their 
   expect(view.getAllByText("最强反例").length).toBeGreaterThanOrEqual(3);
   expect(view.getAllByText("失效条件").length).toBeGreaterThanOrEqual(4);
 
-  const alert = view.getByRole("button", { name: /查看 NVDA 提醒详情.*当前状态.*来源覆盖/ });
+  const alert = view.getByRole("button", { name: /查看 NVDA 提醒详情：NVDA 接近量价确认区/ });
   expect(StyleSheet.flatten(alert.props.style).minHeight).toBeGreaterThanOrEqual(44);
   await fireEvent.press(alert);
   expect(mockPush).toHaveBeenLastCalledWith({ pathname: "/stocks/[symbol]", params: { symbol: "NVDA" } });
@@ -135,7 +150,7 @@ it("routes alert, quotes, and both long/short candidates while disclosing their 
   expect(view.getByText("新闻与社交情绪证据")).toBeTruthy();
   expect(view.getByText("演示：短线新闻与社交情绪快照")).toBeTruthy();
 
-  const alertEvidence = view.getByRole("button", { name: /NVDA 提醒证据.*当前状态.*证据 5/ });
+  const alertEvidence = view.getByRole("button", { name: "查看 NVDA 提醒依据" });
   expect(StyleSheet.flatten(alertEvidence.props.style).minHeight).toBeGreaterThanOrEqual(44);
   await fireEvent.press(alertEvidence);
   expect(view.getByText("NVDA 提醒证据")).toBeTruthy();

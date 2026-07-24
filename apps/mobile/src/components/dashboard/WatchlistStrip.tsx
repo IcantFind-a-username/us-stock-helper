@@ -1,57 +1,64 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { DashboardSectionHeader } from "@/components/dashboard/DashboardSectionHeader";
+import { MiniSparkline } from "@/components/ui/MiniSparkline";
 import type { WatchlistQuote } from "@/domain/models";
-import { colors, radius, spacing } from "@/theme/tokens";
+import { colors } from "@/theme/tokens";
 
 type WatchlistStripProps = {
-  title: string;
+  title?: string;
   quotes: WatchlistQuote[];
   onPress(symbol: string): void;
 };
 
 const directionCopy = { bullish: "上涨", neutral: "持平", bearish: "下跌" } as const;
 
-export function WatchlistStrip({ title, quotes, onPress }: WatchlistStripProps) {
+export function WatchlistStrip({ quotes, onPress }: WatchlistStripProps) {
   return (
-    <View accessibilityLabel="自选行情，演示" style={styles.card}>
-      <Text style={styles.marker}>演示</Text>
-      <Text style={styles.title}>{title}</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quotes} testID="watchlist-scroll">
-        {quotes.map((quote) => (
+    <View accessibilityLabel="自选行情，演示">
+      <DashboardSectionHeader
+        actionLabel="来自 moomoo ›"
+        onAction={() => undefined}
+        title="我的关注"
+      />
+      <View style={styles.grid} testID="watchlist-grid">
+        {quotes.slice(0, 3).map((quote) => (
           <Pressable
-            accessibilityHint="前往股票详情"
             accessibilityLabel={`查看 ${quote.symbol} 行情详情：$${quote.price.toFixed(2)}，${quote.changePercent >= 0 ? "+" : ""}${quote.changePercent.toFixed(2)}%，${directionCopy[quote.direction]}，当前脉冲 ${quote.summary}`}
             accessibilityRole="button"
             key={quote.symbol}
             onPress={() => onPress(quote.symbol)}
-            style={styles.quote}>
-            <View style={styles.quoteCopy}>
+            style={styles.quote}
+            testID="watchlist-quote">
+            <View style={styles.quoteTop}>
               <Text style={styles.symbol}>{quote.symbol}</Text>
-              <Text style={styles.pulse}>当前脉冲：{quote.summary}</Text>
+              <Text style={[styles.change, toneFor(quote.direction)]}>
+                {quote.changePercent >= 0 ? "+" : ""}
+                {quote.changePercent.toFixed(1)}%
+              </Text>
             </View>
-            <View style={styles.priceArea}>
-              <Text style={styles.price}>${quote.price.toFixed(2)}</Text>
-              <Text style={[styles.change, quote.direction === "bearish" ? styles.down : quote.direction === "bullish" ? styles.up : styles.flat]}>{quote.changePercent >= 0 ? "+" : ""}{quote.changePercent.toFixed(2)}% · {directionCopy[quote.direction]}</Text>
-            </View>
+            <MiniSparkline direction={quote.direction} width={74} />
+            <Text numberOfLines={1} style={styles.pulse}>{quote.summary}</Text>
           </Pressable>
         ))}
-      </ScrollView>
+      </View>
     </View>
   );
 }
 
+function toneFor(direction: WatchlistQuote["direction"]) {
+  if (direction === "bullish") return styles.up;
+  if (direction === "bearish") return styles.down;
+  return styles.flat;
+}
+
 const styles = StyleSheet.create({
-  card: { backgroundColor: colors.card, borderRadius: radius.lg, padding: spacing.lg },
-  marker: { color: colors.amber, fontSize: 11, fontWeight: "800" },
-  title: { color: colors.ink, fontSize: 17, fontWeight: "800", marginBottom: spacing.sm },
-  quotes: { gap: spacing.sm, paddingVertical: spacing.xs },
-  quote: { alignItems: "center", backgroundColor: colors.background, borderColor: colors.line, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, flexDirection: "row", gap: spacing.sm, justifyContent: "space-between", minHeight: 64, padding: spacing.sm, width: 176 },
-  quoteCopy: { flex: 1, minWidth: 0 },
-  symbol: { color: colors.ink, fontSize: 15, fontWeight: "800" },
-  pulse: { color: colors.muted, fontSize: 12, marginTop: 2 },
-  priceArea: { alignItems: "flex-end", flexShrink: 0 },
-  price: { color: colors.ink, fontSize: 14, fontVariant: ["tabular-nums"], fontWeight: "800" },
-  change: { fontSize: 12, fontVariant: ["tabular-nums"], fontWeight: "700", marginTop: 2 },
+  grid: { flexDirection: "row", gap: 7 },
+  quote: { backgroundColor: colors.card, borderColor: colors.line, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, flex: 1, gap: 4, minHeight: 86, minWidth: 0, padding: 9 },
+  quoteTop: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  symbol: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  change: { fontSize: 10, fontVariant: ["tabular-nums"], fontWeight: "800" },
+  pulse: { color: colors.muted, fontSize: 10 },
   up: { color: colors.green },
   down: { color: colors.red },
   flat: { color: colors.muted },
