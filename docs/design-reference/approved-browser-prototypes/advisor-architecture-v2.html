@@ -1,0 +1,528 @@
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #182033;
+    --muted: #647187;
+    --line: #dbe2ed;
+    --paper: #f5f7fb;
+    --white: #fff;
+    --blue: #246bfd;
+    --blue-soft: #eaf1ff;
+    --teal: #087d7e;
+    --teal-soft: #e4f7f4;
+    --purple: #6842c2;
+    --purple-soft: #f0ebff;
+    --amber: #9a5d00;
+    --amber-soft: #fff3db;
+    --red: #aa3838;
+    --red-soft: #ffeded;
+    --green: #17724e;
+    --green-soft: #e7f7ee;
+  }
+
+  * { box-sizing: border-box; }
+
+  .page {
+    min-height: 100vh;
+    padding: 26px;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 92% 3%, rgba(36,107,253,.08), transparent 29rem),
+      var(--paper);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  .hero {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+    margin-bottom: 20px;
+  }
+
+  .eyebrow {
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 850;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    margin: 6px 0 8px;
+    font-size: clamp(26px, 3vw, 40px);
+    line-height: 1.1;
+  }
+
+  .hero p {
+    max-width: 860px;
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.62;
+    font-size: 14px;
+  }
+
+  .constitution {
+    flex: 0 0 285px;
+    padding: 14px 16px;
+    border-radius: 15px;
+    color: #eef4ff;
+    background: linear-gradient(145deg, #162a4f, #193c49);
+    box-shadow: 0 10px 26px rgba(26,46,83,.18);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .constitution strong {
+    display: block;
+    color: #88b8ff;
+    margin-bottom: 4px;
+  }
+
+  .overview {
+    display: grid;
+    grid-template-columns: 1fr 42px 1.1fr 42px 1fr 42px 1fr;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .arrow {
+    display: grid;
+    place-items: center;
+    color: #91a2bb;
+    font-size: 24px;
+    font-weight: 900;
+  }
+
+  .node {
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 15px;
+    background: var(--white);
+    box-shadow: 0 7px 18px rgba(31,48,77,.06);
+  }
+
+  .node .num {
+    display: inline-grid;
+    place-items: center;
+    width: 25px;
+    height: 25px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: var(--blue-soft);
+    color: var(--blue);
+    font-size: 11px;
+    font-weight: 850;
+  }
+
+  .node h2 {
+    margin: 0 0 8px;
+    font-size: 15px;
+  }
+
+  .node ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .node li {
+    position: relative;
+    padding-left: 12px;
+    margin: 4px 0;
+  }
+
+  .node li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: .62em;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #97abc5;
+  }
+
+  .info { border-top: 4px solid var(--teal); }
+  .score { border-top: 4px solid var(--purple); }
+  .adviser { border-top: 4px solid var(--amber); }
+  .output { border-top: 4px solid var(--green); }
+
+  .sections {
+    display: grid;
+    grid-template-columns: 1.15fr 1fr 1fr;
+    gap: 14px;
+    margin-top: 16px;
+  }
+
+  .panel {
+    border: 1px solid var(--line);
+    border-radius: 17px;
+    padding: 17px;
+    background: var(--white);
+    box-shadow: 0 7px 18px rgba(31,48,77,.05);
+  }
+
+  .panel-head {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin-bottom: 12px;
+  }
+
+  .icon {
+    flex: 0 0 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 11px;
+    background: var(--blue-soft);
+  }
+
+  .panel h2 {
+    margin: 0 0 3px;
+    font-size: 16px;
+  }
+
+  .panel-head p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .sentiment-stack {
+    display: grid;
+    gap: 8px;
+  }
+
+  .sentiment-row {
+    display: grid;
+    grid-template-columns: 112px 1fr 55px;
+    gap: 9px;
+    align-items: center;
+    font-size: 11px;
+  }
+
+  .bar {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 99px;
+    background: #e7ebf2;
+  }
+
+  .fill { display: block; height: 100%; border-radius: inherit; }
+  .f1 { width: 67%; background: #32a980; }
+  .f2 { width: 44%; background: #d39428; }
+  .f3 { width: 58%; background: #6d74d8; }
+  .f4 { width: 31%; background: #d66565; }
+  .f5 { width: 73%; background: #2e8bae; }
+
+  .sentiment-row em {
+    color: var(--muted);
+    font-style: normal;
+    text-align: right;
+  }
+
+  .explain-box {
+    margin-top: 11px;
+    padding: 10px 11px;
+    border-radius: 11px;
+    background: var(--teal-soft);
+    color: #226567;
+    font-size: 11px;
+    line-height: 1.48;
+  }
+
+  .ticket {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .field {
+    padding: 9px 10px;
+    border: 1px solid #e0e6ef;
+    border-radius: 10px;
+    background: #fafbfc;
+  }
+
+  .field span {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--muted);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+
+  .field strong { font-size: 12px; }
+  .full { grid-column: 1 / -1; }
+
+  .no-trade {
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: 10px;
+    background: var(--red-soft);
+    color: var(--red);
+    font-size: 11px;
+    font-weight: 750;
+    line-height: 1.45;
+  }
+
+  .memory-lanes {
+    display: grid;
+    gap: 8px;
+  }
+
+  .lane {
+    border-radius: 11px;
+    padding: 10px 11px;
+    font-size: 11px;
+    line-height: 1.47;
+  }
+
+  .lane strong { display: block; font-size: 12px; margin-bottom: 2px; }
+  .market-memory { background: var(--green-soft); color: var(--green); }
+  .user-ledger { background: var(--blue-soft); color: #345da8; }
+  .forbidden { background: var(--red-soft); color: var(--red); }
+
+  .learning-flow {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 9px;
+  }
+
+  .step {
+    flex: 1;
+    padding: 7px 5px;
+    border-radius: 8px;
+    background: #f1f4f8;
+    text-align: center;
+  }
+
+  .firewall {
+    margin-top: 16px;
+    padding: 17px;
+    border: 1px solid #e1d7f7;
+    border-radius: 17px;
+    background: linear-gradient(110deg, #fbf9ff, #f8fbff);
+  }
+
+  .firewall h2 { margin: 0 0 11px; font-size: 16px; }
+
+  .guard-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+  }
+
+  .guard {
+    padding: 10px;
+    border-radius: 10px;
+    background: var(--white);
+    border: 1px solid #e2e4ee;
+    font-size: 10px;
+    line-height: 1.45;
+    color: var(--muted);
+  }
+
+  .guard strong {
+    display: block;
+    color: var(--ink);
+    font-size: 11px;
+    margin-bottom: 3px;
+  }
+
+  .choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 17px;
+  }
+
+  .choice {
+    appearance: none;
+    padding: 11px 16px;
+    border: 1px solid #b9c5d6;
+    border-radius: 11px;
+    background: white;
+    color: var(--ink);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 800;
+    transition: .15s ease;
+  }
+
+  .choice:hover { transform: translateY(-1px); border-color: var(--blue); }
+  .choice.selected { background: var(--blue); border-color: var(--blue); color: white; }
+
+  @media (max-width: 1100px) {
+    .hero { flex-direction: column; }
+    .constitution { flex-basis: auto; }
+    .overview { grid-template-columns: 1fr; }
+    .arrow { transform: rotate(90deg); height: 22px; }
+    .sections { grid-template-columns: 1fr; }
+    .guard-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (max-width: 600px) {
+    .page { padding: 16px; }
+    .guard-grid, .ticket { grid-template-columns: 1fr; }
+    .full { grid-column: auto; }
+    .sentiment-row { grid-template-columns: 92px 1fr 45px; }
+  }
+</style>
+
+<main class="page">
+  <header class="hero">
+    <div>
+      <div class="eyebrow">Revised Architecture · v2</div>
+      <h1>市场情绪进入基础算法，个性化永不污染事实</h1>
+      <p>
+        新闻不只是推送列表，而要经过事件识别、来源权重、情绪聚合和市场联动分析。
+        系统可以给出数量、限价和杠杆等可解释建议，但技术上不具备下单能力。
+      </p>
+    </div>
+    <aside class="constitution">
+      <strong>不可覆盖的“客观性宪法”</strong>
+      事实与可靠来源优先于用户观点；反证必须展示；不确定就降级或弃权；用户偏好只能改变展示、提醒和风险场景，不能改变事实、方向判断或置信度。
+    </aside>
+  </header>
+
+  <section class="overview">
+    <article class="node info">
+      <span class="num">01</span>
+      <h2>信息与情绪感知</h2>
+      <ul>
+        <li>正式消息、新闻、宏观、行业与市场微观结构</li>
+        <li>社媒作为低权重线索，过滤机器人与重复传播</li>
+        <li>区分事件情绪、个股情绪、行业情绪、全市场风险偏好</li>
+      </ul>
+    </article>
+    <div class="arrow">→</div>
+    <article class="node score">
+      <span class="num">02</span>
+      <h2>三周期基础评分</h2>
+      <ul>
+        <li>情绪与新闻冲击正式纳入确定性特征</li>
+        <li>与资金、技术、财务、估值和事件特征融合</li>
+        <li>短线、波段、中长期分别训练与回测，不混权重</li>
+      </ul>
+    </article>
+    <div class="arrow">→</div>
+    <article class="node adviser">
+      <span class="num">03</span>
+      <h2>证据门控顾问</h2>
+      <ul>
+        <li>阅读紧凑证据包，提出反证与补查请求</li>
+        <li>作为有上限软因子，不能越过基础算法门槛</li>
+        <li>输出引用、适用周期、失效条件和弃权状态</li>
+      </ul>
+    </article>
+    <div class="arrow">→</div>
+    <article class="node output">
+      <span class="num">04</span>
+      <h2>iOS 分析与建议</h2>
+      <ul>
+        <li>显示结论、市场情绪、证据链与冲突</li>
+        <li>提供仓位、限价、止损、目标和杠杆场景</li>
+        <li>无交易 API、无下单权限、无自动执行</li>
+      </ul>
+    </article>
+  </section>
+
+  <section class="sections">
+    <article class="panel">
+      <div class="panel-head">
+        <div class="icon">🌐</div>
+        <div>
+          <h2>市场情绪不是一句“看多/看空”</h2>
+          <p>原始维度、聚合分数、变化速度和依据都显示出来。</p>
+        </div>
+      </div>
+      <div class="sentiment-stack">
+        <div class="sentiment-row"><span>新闻事件冲击</span><div class="bar"><i class="fill f1"></i></div><em>+0.67</em></div>
+        <div class="sentiment-row"><span>市场广度</span><div class="bar"><i class="fill f2"></i></div><em>偏弱</em></div>
+        <div class="sentiment-row"><span>期权 / 波动率</span><div class="bar"><i class="fill f3"></i></div><em>谨慎</em></div>
+        <div class="sentiment-row"><span>信用 / 利率 / 美元</span><div class="bar"><i class="fill f4"></i></div><em>逆风</em></div>
+        <div class="sentiment-row"><span>行业相对强度</span><div class="bar"><i class="fill f5"></i></div><em>+0.73</em></div>
+      </div>
+      <div class="explain-box">
+        展示“为什么”：来源可信度、消息新颖度、相对预期的惊喜程度、传播速度、观点分歧、影响范围、预期持续时间，以及相似历史事件反应。
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <div class="icon">🧭</div>
+        <div>
+          <h2>建议单，而不是交易单</h2>
+          <p>风险引擎计算，LLM 解释；所有数字附假设和公式。</p>
+        </div>
+      </div>
+      <div class="ticket">
+        <div class="field"><span>建议限价区间</span><strong>$42.10–42.40</strong></div>
+        <div class="field"><span>建议数量</span><strong>80 股</strong></div>
+        <div class="field"><span>单笔风险</span><strong>账户 0.50%</strong></div>
+        <div class="field"><span>最大杠杆</span><strong>1.0×</strong></div>
+        <div class="field"><span>失效 / 止损条件</span><strong>跌破 $40.85 且成交量确认</strong></div>
+        <div class="field"><span>目标 / 时间窗</span><strong>$46.20 · 1–5 日</strong></div>
+        <div class="field full"><span>计算依据</span><strong>风险预算 ÷（建议入场价 − 失效价），再受流动性、波动率、跳空风险和总敞口约束</strong></div>
+      </div>
+      <div class="no-trade">系统架构中不接入券商交易权限；按钮只能保存方案、记录执行或跳转到券商，不能提交订单。</div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <div class="icon">🧠</div>
+        <div>
+          <h2>Hermes 式记忆，但加投资防火墙</h2>
+          <p>长期积累经验，所有影响生产评分的变化均可见、可回滚。</p>
+        </div>
+      </div>
+      <div class="memory-lanes">
+        <div class="lane market-memory">
+          <strong>市场经验库 · 可影响候选模型</strong>
+          保存 point-in-time 事件、当时可见证据、模型预测、后续反应和市场状态；只从市场事实与已验证结果中学习。
+        </div>
+        <div class="lane user-ledger">
+          <strong>用户日志库 · 与市场判断隔离</strong>
+          记录用户主动填报的操作、盈亏、执行偏差和界面偏好；用于交易复盘、风险提醒与展示，不作为涨跌证据。
+        </div>
+        <div class="lane forbidden">
+          <strong>禁止通道</strong>
+          用户喜欢某股票、过去赚过钱、偏好多头或忽略风险，均不得提高股票评分、新闻可信度或模型置信度。
+        </div>
+      </div>
+      <div class="learning-flow">
+        <span class="step">经验候选</span>→
+        <span class="step">离线回测</span>→
+        <span class="step">样本外验证</span>→
+        <span class="step">人工晋级</span>
+      </div>
+    </article>
+  </section>
+
+  <section class="firewall">
+    <h2>客观性与安全对话口：底层强制规则</h2>
+    <div class="guard-grid">
+      <div class="guard"><strong>事实 / 推断分栏</strong>每句话标记为事实、推断、情景或传闻，并绑定引用。</div>
+      <div class="guard"><strong>反迎合检查</strong>结论发布前主动寻找最强反证，不因用户表态改写方向。</div>
+      <div class="guard"><strong>双输出通道</strong>先给客观市场判断，再给基于风险预算的个性化场景。</div>
+      <div class="guard"><strong>冻结记忆快照</strong>每次分析绑定记忆、证据、模型和提示词版本，支持复现与缓存。</div>
+      <div class="guard"><strong>可撤销学习</strong>自适应更新走 champion / challenger；失效可归零和回滚。</div>
+    </div>
+  </section>
+
+  <div class="choices">
+    <button class="choice" data-choice="approve-architecture-v2" onclick="toggleSelect(this)">A · 认可修订后的总体架构</button>
+    <button class="choice" data-choice="revise-architecture-v2" onclick="toggleSelect(this)">B · 仍需调整</button>
+  </div>
+</main>

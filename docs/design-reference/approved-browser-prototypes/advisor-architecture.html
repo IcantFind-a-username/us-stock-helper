@@ -1,0 +1,503 @@
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #172033;
+    --muted: #637083;
+    --line: #d9e1ec;
+    --paper: #f6f8fb;
+    --card: #ffffff;
+    --blue: #246bfd;
+    --blue-soft: #eaf1ff;
+    --cyan: #007f8b;
+    --cyan-soft: #e7f7f7;
+    --amber: #a85f00;
+    --amber-soft: #fff4df;
+    --red: #b33737;
+    --red-soft: #ffeded;
+    --green: #14734d;
+    --green-soft: #e8f7ef;
+  }
+
+  * { box-sizing: border-box; }
+
+  .canvas {
+    color: var(--ink);
+    background:
+      radial-gradient(circle at top right, rgba(36,107,253,.08), transparent 31rem),
+      var(--paper);
+    min-height: 100vh;
+    padding: 28px;
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    gap: 28px;
+    align-items: flex-start;
+    margin-bottom: 22px;
+  }
+
+  .eyebrow {
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    font-size: clamp(24px, 3vw, 40px);
+    line-height: 1.12;
+    margin: 7px 0 8px;
+    max-width: 900px;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    line-height: 1.65;
+    max-width: 880px;
+    margin: 0;
+  }
+
+  .principle {
+    flex: 0 0 270px;
+    padding: 14px 16px;
+    border: 1px solid #bdd0ff;
+    border-radius: 14px;
+    background: rgba(255,255,255,.82);
+    box-shadow: 0 8px 26px rgba(48,73,118,.08);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .principle strong {
+    display: block;
+    color: var(--blue);
+    margin-bottom: 4px;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 290px;
+    gap: 18px;
+    align-items: stretch;
+  }
+
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(160px, 1fr));
+    gap: 12px;
+    position: relative;
+  }
+
+  .stage {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 7px 18px rgba(37,50,72,.06);
+    min-height: 188px;
+    position: relative;
+  }
+
+  .stage::after {
+    content: "→";
+    position: absolute;
+    right: -12px;
+    top: 50%;
+    transform: translate(50%,-50%);
+    color: #9aabc2;
+    background: var(--paper);
+    border-radius: 50%;
+    padding: 3px;
+    font-weight: 800;
+    z-index: 2;
+  }
+
+  .stage:nth-child(4)::after,
+  .stage:nth-child(8)::after { display: none; }
+
+  .stage-number {
+    display: inline-grid;
+    place-items: center;
+    width: 25px;
+    height: 25px;
+    border-radius: 8px;
+    background: var(--blue-soft);
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 800;
+    margin-bottom: 9px;
+  }
+
+  .stage h2 {
+    font-size: 16px;
+    margin: 0 0 9px;
+  }
+
+  .stage ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .stage li {
+    margin: 4px 0;
+    padding-left: 13px;
+    position: relative;
+  }
+
+  .stage li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: .67em;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #9eb0c7;
+  }
+
+  .source { border-top: 4px solid var(--cyan); }
+  .evidence { border-top: 4px solid var(--blue); }
+  .algorithm { border-top: 4px solid #7446d7; }
+  .advisor { border-top: 4px solid var(--amber); }
+  .fusion { border-top: 4px solid #b54f8a; }
+  .product { border-top: 4px solid var(--green); }
+  .ledger { border-top: 4px solid #5f6e82; }
+  .watchlist { border-top: 4px solid #1694c4; }
+
+  .span-two { grid-column: span 2; min-height: 158px; }
+
+  .horizons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 7px;
+    margin-top: 10px;
+  }
+
+  .horizon {
+    padding: 8px 7px;
+    border-radius: 9px;
+    background: #f2f5f9;
+    text-align: center;
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .horizon strong {
+    display: block;
+    color: var(--ink);
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+
+  .token-rail {
+    border-radius: 18px;
+    padding: 18px;
+    color: #eef5ff;
+    background: linear-gradient(160deg, #182848 0%, #11213d 60%, #0f3a42 100%);
+    box-shadow: 0 12px 30px rgba(19,36,67,.22);
+  }
+
+  .token-rail h2 {
+    margin: 0 0 6px;
+    font-size: 18px;
+  }
+
+  .token-rail > p {
+    color: #aebfd7;
+    font-size: 12px;
+    line-height: 1.55;
+    margin: 0 0 14px;
+  }
+
+  .gate {
+    display: grid;
+    grid-template-columns: 27px 1fr;
+    gap: 9px;
+    padding: 10px 0;
+    border-top: 1px solid rgba(255,255,255,.11);
+  }
+
+  .gate:first-of-type { border-top: 0; }
+
+  .gate-num {
+    display: grid;
+    place-items: center;
+    width: 27px;
+    height: 27px;
+    border-radius: 9px;
+    background: rgba(84,158,255,.18);
+    color: #77b3ff;
+    font-weight: 800;
+    font-size: 11px;
+  }
+
+  .gate strong {
+    display: block;
+    font-size: 12px;
+    margin-bottom: 2px;
+  }
+
+  .gate span {
+    display: block;
+    color: #aebfd7;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .metric {
+    margin-top: 13px;
+    padding: 12px;
+    background: rgba(54,202,171,.11);
+    border: 1px solid rgba(80,218,188,.26);
+    border-radius: 12px;
+    color: #bcf4e7;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .rules {
+    margin-top: 18px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 17px;
+    padding: 17px 18px;
+  }
+
+  .rules h2 { font-size: 16px; margin: 0 0 12px; }
+
+  .rule-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+
+  .rule {
+    border-radius: 12px;
+    padding: 11px 12px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .rule strong { display: block; font-size: 12px; margin-bottom: 3px; }
+  .up { background: var(--green-soft); color: var(--green); }
+  .conflict { background: var(--amber-soft); color: var(--amber); }
+  .watch { background: var(--blue-soft); color: #315aac; }
+  .block { background: var(--red-soft); color: var(--red); }
+
+  .guardrail {
+    margin-top: 12px;
+    display: flex;
+    gap: 9px;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 11px;
+    background: #fff7f7;
+    color: #8a3030;
+    font-size: 12px;
+  }
+
+  .choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 18px;
+  }
+
+  .choice {
+    appearance: none;
+    border: 1px solid #b9c5d7;
+    background: white;
+    color: var(--ink);
+    border-radius: 11px;
+    padding: 11px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 750;
+    transition: .15s ease;
+  }
+
+  .choice:hover { transform: translateY(-1px); border-color: var(--blue); }
+  .choice.selected { border-color: var(--blue); background: var(--blue); color: white; }
+
+  @media (max-width: 1050px) {
+    .header { flex-direction: column; }
+    .principle { flex-basis: auto; }
+    .layout { grid-template-columns: 1fr; }
+    .pipeline { grid-template-columns: repeat(2, 1fr); }
+    .stage:nth-child(2n)::after { display: none; }
+    .stage:nth-child(4)::after { display: block; }
+  }
+
+  @media (max-width: 650px) {
+    .canvas { padding: 17px; }
+    .pipeline, .rule-grid { grid-template-columns: 1fr; }
+    .span-two { grid-column: auto; }
+    .stage::after { display: none !important; }
+    .horizons { grid-template-columns: 1fr; }
+  }
+</style>
+
+<main class="canvas">
+  <header class="header">
+    <div>
+      <div class="eyebrow">US Stock Helper · Architecture v1</div>
+      <h1>证据先行，算法打底，顾问校准</h1>
+      <p class="subtitle">
+        先用全网信息与确定性算法缩小范围，再让大模型只阅读高密度证据包。
+        顾问不能凭空制造行动提醒，也不能直接控制仓位或交易。
+      </p>
+    </div>
+    <aside class="principle">
+      <strong>系统最高原则</strong>
+      信息层是事实来源；算法层给出基础分；顾问层是有上限、经回测校准的软因子。所有结论可追溯、可复现、可质疑。
+    </aside>
+  </header>
+
+  <section class="layout">
+    <div class="pipeline">
+      <article class="stage watchlist">
+        <span class="stage-number">01</span>
+        <h2>关注范围</h2>
+        <ul>
+          <li>moomoo 仅读取 Watchlist / 持仓标的</li>
+          <li>另有全市场候选发现器</li>
+          <li>每个标的绑定三个独立周期</li>
+        </ul>
+      </article>
+
+      <article class="stage source">
+        <span class="stage-number">02</span>
+        <h2>信息获取层</h2>
+        <ul>
+          <li>监管、交易所、公司 IR、财报与公告</li>
+          <li>实时行情、期权、做空与机构披露</li>
+          <li>新闻、行业源、社媒仅作线索入口</li>
+          <li>检测异动后主动补充调查</li>
+        </ul>
+      </article>
+
+      <article class="stage evidence">
+        <span class="stage-number">03</span>
+        <h2>证据引擎</h2>
+        <ul>
+          <li>去重、实体对齐、可信度与冲突检测</li>
+          <li>first-seen 时间与 point-in-time 快照</li>
+          <li>事实、推断、传闻严格分层</li>
+          <li>每条事实都有 source ID 与原文引用</li>
+        </ul>
+      </article>
+
+      <article class="stage algorithm">
+        <span class="stage-number">04</span>
+        <h2>确定性算法层</h2>
+        <ul>
+          <li>事件冲击、资金代理、技术面与基本面</li>
+          <li>候选股发现与异常模式扫描</li>
+          <li>神奇九转、自研神龙等无未来函数指标</li>
+          <li>先输出可复算的基础分</li>
+        </ul>
+        <div class="horizons">
+          <div class="horizon"><strong>短线</strong>盘中–5日</div>
+          <div class="horizon"><strong>波段</strong>1–8周</div>
+          <div class="horizon"><strong>中长线</strong>2–24月</div>
+        </div>
+      </article>
+
+      <article class="stage advisor span-two">
+        <span class="stage-number">05</span>
+        <h2>证据门控的 Agent 顾问层</h2>
+        <ul>
+          <li>只读版本化“紧凑证据包”，不把整篇网页和行情流水塞进上下文</li>
+          <li>按周期选择顾问；高分候选、重大分歧或用户深度咨询才触发辩论</li>
+          <li>可向信息层发结构化补查请求，等待新证据包后再判断</li>
+          <li>输出论点、反证、引用、缺失证据、置信度、弃权状态与 Token 成本</li>
+        </ul>
+      </article>
+
+      <article class="stage fusion">
+        <span class="stage-number">06</span>
+        <h2>校准与融合</h2>
+        <ul>
+          <li>样本外表现决定顾问权重，失效可降至 0</li>
+          <li>市场状态感知，顾问与周期各自设上限</li>
+          <li>算法与顾问互补，但不允许顾问越过证据门槛</li>
+          <li>冲突不被抹平，直接展示给用户</li>
+        </ul>
+      </article>
+
+      <article class="stage product">
+        <span class="stage-number">07</span>
+        <h2>排序、提醒与 iOS</h2>
+        <ul>
+          <li>Dashboard 默认短线，周期一键切换</li>
+          <li>提醒附触发原因、失效条件与原始引用</li>
+          <li>观察池、行动提醒、风险警报分级</li>
+          <li>只提供决策辅助，MVP 不自动下单</li>
+        </ul>
+      </article>
+
+      <article class="stage ledger span-two">
+        <span class="stage-number">08</span>
+        <h2>审计与学习闭环</h2>
+        <ul>
+          <li>保存快照哈希、提示词/模型版本、引用、Token 花费和最终结果</li>
+          <li>同一条管线贯穿回测、模拟盘和实盘观察，避免研究/线上口径漂移</li>
+          <li>评估“提醒是否及时且有用”，而不仅是模型文案看起来是否聪明</li>
+        </ul>
+      </article>
+    </div>
+
+    <aside class="token-rail">
+      <h2>Token 效率路由</h2>
+      <p>大模型是一种昂贵推理资源，不是数据管道。每次调用都要有明确的信息增益。</p>
+
+      <div class="gate">
+        <div class="gate-num">1</div>
+        <div><strong>程序先过滤</strong><span>采集、去重、计算指标、排序、规则判断均不调用 LLM。</span></div>
+      </div>
+      <div class="gate">
+        <div class="gate-num">2</div>
+        <div><strong>证据压缩</strong><span>只发送结构化事实、关键数字、短摘录和引用指针。</span></div>
+      </div>
+      <div class="gate">
+        <div class="gate-num">3</div>
+        <div><strong>小模型先行</strong><span>分类、抽取、去重用便宜模型；复杂冲突才升级强模型。</span></div>
+      </div>
+      <div class="gate">
+        <div class="gate-num">4</div>
+        <div><strong>缓存与批处理</strong><span>按快照哈希＋顾问＋版本复用结果，合并相似任务，取消过时工作。</span></div>
+      </div>
+      <div class="gate">
+        <div class="gate-num">5</div>
+        <div><strong>有限辩论</strong><span>不让所有顾问扫描所有股票；只为高价值候选启用。</span></div>
+      </div>
+
+      <div class="metric">
+        核心运营指标：缓存命中率、每条有效提醒 Token、每 1k Token 的预期信息增益、调用后排序变化、提醒收益/误报率。
+      </div>
+    </aside>
+  </section>
+
+  <section class="rules">
+    <h2>算法优先的非对称融合规则</h2>
+    <div class="rule-grid">
+      <div class="rule up"><strong>算法强＋顾问同意</strong>在软因子上限内提高排名与提醒等级。</div>
+      <div class="rule conflict"><strong>算法强＋顾问反对</strong>保留提醒，展示冲突并降低置信度。</div>
+      <div class="rule watch"><strong>算法弱＋顾问强</strong>只进入观察池或触发补查，不发行动提醒。</div>
+      <div class="rule block"><strong>证据不足</strong>禁止升级；顾问应弃权而不是补全故事。</div>
+    </div>
+    <div class="guardrail">🛡️ 任一 LLM 都不能单独制造“立即买入”类行动提醒，也不能直接决定仓位或执行交易。</div>
+  </section>
+
+  <div class="choices">
+    <button class="choice" data-choice="approve-architecture" onclick="toggleSelect(this)">A · 认可这套总体架构</button>
+    <button class="choice" data-choice="revise-architecture" onclick="toggleSelect(this)">B · 需要调整总体架构</button>
+  </div>
+</main>

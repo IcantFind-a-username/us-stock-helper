@@ -1,0 +1,691 @@
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #eef1f5;
+    --ink: #0d1729;
+    --muted: #718096;
+    --line: #dce2eb;
+    --navy: #0b1424;
+    --navy-2: #111e33;
+    --blue: #4285ff;
+    --blue-soft: #eaf2ff;
+    --green: #20bf79;
+    --green-soft: #e8f8f0;
+    --red: #ef5b62;
+    --red-soft: #ffedef;
+    --amber: #f4ad42;
+    --amber-soft: #fff4df;
+  }
+
+  * { box-sizing: border-box; }
+
+  .demo-page {
+    min-height: 100vh;
+    padding: 25px;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 10% 10%, rgba(66,133,255,.1), transparent 27rem),
+      var(--bg);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  .demo-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 20px;
+    max-width: 1180px;
+    margin: 0 auto 18px;
+  }
+
+  .eyebrow {
+    color: var(--blue);
+    font-size: 11px;
+    font-weight: 850;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    margin: 6px 0 7px;
+    font-size: clamp(24px, 3vw, 38px);
+    line-height: 1.12;
+  }
+
+  .demo-head p {
+    margin: 0;
+    max-width: 760px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .sample {
+    flex: 0 0 auto;
+    padding: 8px 11px;
+    border-radius: 999px;
+    color: #8e5a0b;
+    background: var(--amber-soft);
+    font-size: 11px;
+    font-weight: 800;
+  }
+
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(390px, 1fr) minmax(330px, .85fr);
+    gap: 26px;
+    max-width: 1180px;
+    margin: 0 auto;
+    align-items: start;
+  }
+
+  .phone-stage {
+    min-height: 790px;
+    display: grid;
+    place-items: start center;
+    padding: 10px;
+  }
+
+  .phone {
+    width: 390px;
+    height: 782px;
+    overflow: hidden;
+    border: 8px solid #131923;
+    border-radius: 46px;
+    background: #f5f7fa;
+    box-shadow:
+      0 28px 60px rgba(22,35,57,.24),
+      inset 0 0 0 1px rgba(255,255,255,.35);
+    position: relative;
+  }
+
+  .dynamic-island {
+    position: absolute;
+    top: 9px;
+    left: 50%;
+    z-index: 3;
+    width: 112px;
+    height: 29px;
+    transform: translateX(-50%);
+    border-radius: 18px;
+    background: #05070a;
+  }
+
+  .screen {
+    height: 100%;
+    overflow: hidden;
+    padding: 48px 16px 76px;
+    background:
+      linear-gradient(180deg, #eef4ff 0, #f7f9fc 168px, #f5f7fa 100%);
+  }
+
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 11px;
+  }
+
+  .greeting small {
+    display: block;
+    color: var(--muted);
+    font-size: 10px;
+    margin-bottom: 2px;
+  }
+
+  .greeting strong {
+    font-size: 18px;
+    letter-spacing: -.02em;
+  }
+
+  .icons { display: flex; gap: 7px; }
+
+  .round-icon {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border: 1px solid rgba(13,23,41,.07);
+    border-radius: 50%;
+    background: rgba(255,255,255,.84);
+    font-size: 13px;
+  }
+
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3px;
+    padding: 3px;
+    margin-bottom: 10px;
+    border-radius: 10px;
+    background: #e4e9f1;
+  }
+
+  .tab {
+    padding: 6px;
+    border-radius: 8px;
+    color: var(--muted);
+    text-align: center;
+    font-size: 10px;
+    font-weight: 750;
+  }
+
+  .tab.active {
+    color: var(--ink);
+    background: #fff;
+    box-shadow: 0 2px 7px rgba(45,61,84,.11);
+  }
+
+  .regime {
+    padding: 13px;
+    border-radius: 17px;
+    color: #eff6ff;
+    background:
+      radial-gradient(circle at 88% 0, rgba(77,158,255,.31), transparent 11rem),
+      linear-gradient(145deg, var(--navy), var(--navy-2));
+    box-shadow: 0 12px 25px rgba(13,29,55,.18);
+  }
+
+  .regime-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .regime-label {
+    color: #8da2c2;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+  }
+
+  .regime h2 {
+    margin: 4px 0 3px;
+    font-size: 19px;
+  }
+
+  .regime p {
+    margin: 0;
+    max-width: 245px;
+    color: #aabbd3;
+    font-size: 10px;
+    line-height: 1.45;
+  }
+
+  .score-ring {
+    flex: 0 0 53px;
+    height: 53px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: conic-gradient(var(--green) 0 67%, #243653 67% 100%);
+    position: relative;
+  }
+
+  .score-ring::before {
+    content: "";
+    position: absolute;
+    width: 41px;
+    height: 41px;
+    border-radius: 50%;
+    background: #101d31;
+  }
+
+  .score-ring strong {
+    z-index: 1;
+    font-size: 14px;
+  }
+
+  .playbook {
+    margin-top: 10px;
+    padding: 9px 10px;
+    border: 1px solid rgba(79,155,255,.22);
+    border-radius: 10px;
+    background: rgba(53,113,194,.13);
+    font-size: 10px;
+    line-height: 1.45;
+  }
+
+  .playbook strong {
+    color: #77b7ff;
+    margin-right: 5px;
+  }
+
+  .regime-factors {
+    display: flex;
+    gap: 5px;
+    margin-top: 9px;
+    overflow: hidden;
+  }
+
+  .factor {
+    white-space: nowrap;
+    padding: 4px 6px;
+    border-radius: 6px;
+    color: #b5c4da;
+    background: rgba(255,255,255,.07);
+    font-size: 8px;
+  }
+
+  .factor b { color: #f0f5fb; }
+
+  .section-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 13px 1px 7px;
+  }
+
+  .section-title strong { font-size: 12px; }
+  .section-title span { color: var(--blue); font-size: 9px; }
+
+  .alert-card {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    padding: 10px 11px;
+    border: 1px solid #e1e6ee;
+    border-radius: 13px;
+    background: #fff;
+    box-shadow: 0 5px 12px rgba(35,50,74,.05);
+  }
+
+  .ticker-line {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+
+  .ticker-line strong { font-size: 13px; }
+
+  .badge {
+    padding: 2px 5px;
+    border-radius: 5px;
+    background: var(--green-soft);
+    color: #14885a;
+    font-size: 7px;
+    font-weight: 800;
+  }
+
+  .alert-card p {
+    margin: 0 0 5px;
+    color: #43516a;
+    font-size: 9px;
+    line-height: 1.4;
+  }
+
+  .evidence {
+    color: var(--muted);
+    font-size: 8px;
+  }
+
+  .score-pill {
+    min-width: 43px;
+    padding: 7px 5px;
+    align-self: center;
+    border-radius: 10px;
+    color: #12734d;
+    background: var(--green-soft);
+    text-align: center;
+  }
+
+  .score-pill strong { display: block; font-size: 15px; }
+  .score-pill span { font-size: 7px; }
+
+  .watchlist {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 7px;
+  }
+
+  .quote {
+    padding: 9px;
+    border: 1px solid #e1e6ee;
+    border-radius: 12px;
+    background: #fff;
+  }
+
+  .quote-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 3px;
+    font-size: 9px;
+  }
+
+  .quote-top strong { font-size: 10px; }
+  .up { color: var(--green); }
+  .down { color: var(--red); }
+
+  .spark {
+    height: 22px;
+    margin: 5px 0;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .spark::after {
+    content: "";
+    position: absolute;
+    inset: 5px 0 2px;
+    background:
+      linear-gradient(135deg, transparent 0 12%, currentColor 13% 15%, transparent 16% 28%, currentColor 29% 32%, transparent 33% 44%, currentColor 45% 49%, transparent 50% 61%, currentColor 62% 66%, transparent 67% 79%, currentColor 80% 84%, transparent 85%);
+    opacity: .55;
+  }
+
+  .quote small {
+    color: var(--muted);
+    font-size: 7px;
+  }
+
+  .candidate {
+    display: grid;
+    grid-template-columns: 34px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid #e1e6ee;
+    border-radius: 12px;
+    background: #fff;
+  }
+
+  .candidate + .candidate { margin-top: 6px; }
+
+  .logo {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    color: #fff;
+    background: #5c6bc0;
+    font-size: 9px;
+    font-weight: 900;
+  }
+
+  .candidate strong { display: block; font-size: 10px; margin-bottom: 2px; }
+  .candidate p { margin: 0; color: var(--muted); font-size: 8px; }
+
+  .rank {
+    color: var(--green);
+    text-align: right;
+    font-size: 8px;
+  }
+
+  .rank b { display: block; font-size: 12px; }
+
+  .bottom-nav {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 66px;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    padding: 8px 12px 12px;
+    border-top: 1px solid rgba(18,33,55,.07);
+    background: rgba(255,255,255,.96);
+    backdrop-filter: blur(12px);
+  }
+
+  .nav-item {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 2px;
+    color: #8a96a8;
+    font-size: 7px;
+  }
+
+  .nav-item i {
+    font-size: 14px;
+    font-style: normal;
+  }
+
+  .nav-item.active { color: var(--blue); font-weight: 800; }
+
+  .inventory {
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: rgba(255,255,255,.88);
+    box-shadow: 0 10px 28px rgba(27,42,66,.08);
+  }
+
+  .inventory h2 { margin: 0 0 5px; font-size: 18px; }
+  .inventory > p { margin: 0 0 15px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+  .module-list { display: grid; gap: 8px; }
+
+  .module {
+    display: grid;
+    grid-template-columns: 29px 1fr;
+    gap: 9px;
+    padding: 10px;
+    border: 1px solid #e3e7ed;
+    border-radius: 11px;
+    background: #fff;
+  }
+
+  .module-num {
+    width: 29px;
+    height: 29px;
+    display: grid;
+    place-items: center;
+    border-radius: 9px;
+    color: var(--blue);
+    background: var(--blue-soft);
+    font-size: 10px;
+    font-weight: 850;
+  }
+
+  .module strong { display: block; font-size: 11px; margin-bottom: 2px; }
+  .module span { display: block; color: var(--muted); font-size: 9px; line-height: 1.4; }
+
+  .page-map {
+    margin-top: 14px;
+    padding-top: 13px;
+    border-top: 1px solid var(--line);
+  }
+
+  .page-map h3 { margin: 0 0 8px; font-size: 12px; }
+
+  .map-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .map-chip {
+    padding: 6px 8px;
+    border-radius: 7px;
+    color: #52617a;
+    background: #f0f3f7;
+    font-size: 9px;
+  }
+
+  .decision-note {
+    margin-top: 13px;
+    padding: 10px;
+    border-radius: 10px;
+    color: #75500c;
+    background: var(--amber-soft);
+    font-size: 10px;
+    line-height: 1.45;
+  }
+
+  .choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    max-width: 1180px;
+    margin: 17px auto 0;
+  }
+
+  .choice {
+    appearance: none;
+    padding: 10px 14px;
+    border: 1px solid #b9c4d4;
+    border-radius: 10px;
+    color: var(--ink);
+    background: #fff;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 800;
+    transition: .15s ease;
+  }
+
+  .choice:hover { transform: translateY(-1px); border-color: var(--blue); }
+  .choice.selected { color: #fff; background: var(--blue); border-color: var(--blue); }
+
+  @media (max-width: 880px) {
+    .workspace { grid-template-columns: 1fr; }
+    .phone-stage { min-height: auto; }
+  }
+
+  @media (max-width: 450px) {
+    .demo-page { padding: 13px; }
+    .phone-stage { padding: 0; }
+    .phone { width: 100%; max-width: 390px; }
+    .demo-head { flex-direction: column; }
+  }
+</style>
+
+<main class="demo-page">
+  <header class="demo-head">
+    <div>
+      <div class="eyebrow">iOS Product Demo · Dashboard v1</div>
+      <h1>短线首页：先给判断，再给行动框架</h1>
+      <p>这是页面部件原型，不是真实行情。市场情绪不再只展示数字：系统先说清当前环境、适合做什么、该控制多少风险，再允许进入证据和明细。</p>
+    </div>
+    <span class="sample">仅演示数据</span>
+  </header>
+
+  <section class="workspace">
+    <div class="phone-stage">
+      <div class="phone">
+        <div class="dynamic-island"></div>
+        <div class="screen">
+          <div class="topbar">
+            <div class="greeting">
+              <small>美股盘中 · 09:41 ET</small>
+              <strong>早上好，Franz</strong>
+            </div>
+            <div class="icons">
+              <span class="round-icon">⌕</span>
+              <span class="round-icon">🔔</span>
+            </div>
+          </div>
+
+          <div class="tabs">
+            <div class="tab active">短线 · 0–5日</div>
+            <div class="tab">波段 · 1–8周</div>
+            <div class="tab">中长线 · 2–24月</div>
+          </div>
+
+          <section class="regime">
+            <div class="regime-top">
+              <div>
+                <div class="regime-label">市场情绪结论 · 5分钟前更新</div>
+                <h2>谨慎偏多</h2>
+                <p>利好扩散，但市场广度和宏观条件尚未同步确认，追高胜率偏低。</p>
+              </div>
+              <div class="score-ring"><strong>67</strong></div>
+            </div>
+            <div class="playbook"><strong>今日建议</strong>只做事件明确的强势股回踩；总风险仓位 ≤35%，杠杆 0–1×，避免开盘追价。</div>
+            <div class="regime-factors">
+              <span class="factor">新闻 <b>+78</b></span>
+              <span class="factor">广度 <b>43</b></span>
+              <span class="factor">波动 <b>谨慎</b></span>
+              <span class="factor">行业 <b>+71</b></span>
+            </div>
+          </section>
+
+          <div class="section-title"><strong>需要关注</strong><span>全部提醒 6 ›</span></div>
+          <article class="alert-card">
+            <div>
+              <div class="ticker-line"><strong>NVDA</strong><span class="badge">事件确认</span><span class="badge">量价共振</span></div>
+              <p>供应链上修信号被两条高可信来源交叉确认；等待回踩，不建议追高。</p>
+              <span class="evidence">12 条证据 · 2 条反证 · 更新于 3 分钟前</span>
+            </div>
+            <div class="score-pill"><strong>84</strong><span>短线分</span></div>
+          </article>
+
+          <div class="section-title"><strong>我的关注</strong><span>来自 moomoo ›</span></div>
+          <div class="watchlist">
+            <div class="quote">
+              <div class="quote-top"><strong>TSLA</strong><span class="up">+2.4%</span></div>
+              <div class="spark up"></div>
+              <small>中性 · 有分歧</small>
+            </div>
+            <div class="quote">
+              <div class="quote-top"><strong>AMD</strong><span class="up">+1.1%</span></div>
+              <div class="spark up"></div>
+              <small>偏多 · 等确认</small>
+            </div>
+            <div class="quote">
+              <div class="quote-top"><strong>PLTR</strong><span class="down">−0.8%</span></div>
+              <div class="spark down"></div>
+              <small>风险升高</small>
+            </div>
+          </div>
+
+          <div class="section-title"><strong>潜力候选</strong><span>发现器 ›</span></div>
+          <article class="candidate">
+            <div class="logo">RKLB</div>
+            <div><strong>RKLB · 观察池</strong><p>催化临近 · 机构代理流入 · 波动率偏高</p></div>
+            <div class="rank"><b>79</b>证据 9</div>
+          </article>
+          <article class="candidate">
+            <div class="logo" style="background:#00897b">CRDO</div>
+            <div><strong>CRDO · 等待突破确认</strong><p>行业强度领先 · 新闻情绪持续改善</p></div>
+            <div class="rank"><b>76</b>证据 7</div>
+          </article>
+        </div>
+
+        <nav class="bottom-nav">
+          <div class="nav-item active"><i>⌂</i><span>首页</span></div>
+          <div class="nav-item"><i>⌁</i><span>发现</span></div>
+          <div class="nav-item"><i>⚡</i><span>提醒</span></div>
+          <div class="nav-item"><i>▤</i><span>复盘</span></div>
+          <div class="nav-item"><i>✦</i><span>Agent</span></div>
+        </nav>
+      </div>
+    </div>
+
+    <aside class="inventory">
+      <h2>首页组件清单</h2>
+      <p>首页只放“现在最需要知道的事”。行情细节、K 线、财报、证据全文和建议单进入二级页面。</p>
+
+      <div class="module-list">
+        <div class="module"><span class="module-num">01</span><div><strong>周期切换器</strong><span>三套模型完全隔离，默认展示短线。</span></div></div>
+        <div class="module"><span class="module-num">02</span><div><strong>市场结论与今日打法</strong><span>情绪结论、自然语言判断、总风险建议及关键因子。</span></div></div>
+        <div class="module"><span class="module-num">03</span><div><strong>高优先级提醒</strong><span>只显示最新且达到门槛的事件，附证据数与反证数。</span></div></div>
+        <div class="module"><span class="module-num">04</span><div><strong>moomoo Watchlist 脉搏</strong><span>价格变化、综合方向、分歧或风险状态。</span></div></div>
+        <div class="module"><span class="module-num">05</span><div><strong>潜力候选发现</strong><span>全市场扫描结果，先进入观察池，再经证据门控升级。</span></div></div>
+        <div class="module"><span class="module-num">06</span><div><strong>全局搜索与通知中心</strong><span>快速查股票、新闻事件、证据、历史分析和预警。</span></div></div>
+      </div>
+
+      <div class="page-map">
+        <h3>第一版底部导航</h3>
+        <div class="map-row">
+          <span class="map-chip">首页 Dashboard</span>
+          <span class="map-chip">发现 Scanner</span>
+          <span class="map-chip">提醒 Alerts</span>
+          <span class="map-chip">复盘 Journal</span>
+          <span class="map-chip">Agent 对话</span>
+        </div>
+      </div>
+
+      <div class="decision-note">本轮只确认首页的信息层级与组件。确认后再逐页设计“个股详情、发现器、提醒、复盘、Agent 对话”。</div>
+    </aside>
+  </section>
+
+  <div class="choices">
+    <button class="choice" data-choice="dashboard-v1-approve" onclick="toggleSelect(this)">A · 保留这版首页结构</button>
+    <button class="choice" data-choice="dashboard-v1-density" onclick="toggleSelect(this)">B · 结构可以，调整信息密度</button>
+    <button class="choice" data-choice="dashboard-v1-rethink" onclick="toggleSelect(this)">C · 重新组织首页</button>
+  </div>
+</main>
