@@ -1,22 +1,112 @@
 import type { Candle, Horizon, StockSnapshot } from "@/domain/models";
 
-const closes = [
-  132.1, 132.8, 131.9, 133.2, 134.1, 133.6, 135.0, 136.2,
-  135.7, 136.8, 137.6, 137.1, 138.4, 139.0, 138.5, 139.7,
-  140.2, 139.8, 141.1, 141.8, 141.2, 142.0, 141.6, 142.4,
-  142.9, 142.2, 143.1, 143.8,
-];
+const closeSeries: Record<string, number[]> = {
+  NVDA: [
+    132.1, 132.8, 131.9, 133.2, 134.1, 133.6, 135, 136.2, 135.7, 136.8,
+    137.6, 137.1, 138.4, 139, 138.5, 139.7, 140.2, 139.8, 141.1, 141.8,
+    141.2, 142, 141.6, 142.4, 142.9, 142.2, 143.1, 143.8,
+  ],
+  TSLA: [
+    330.2, 328.8, 331.4, 329.6, 327.9, 326.5, 329.1, 325.8, 324.4, 326.2,
+    323.7, 321.9, 324.1, 322.5, 320.8, 319.4, 321.6, 320.1, 318.9, 320.7,
+    319.5, 317.8, 319.3, 318.6, 317.4, 319, 318.5, 318.2,
+  ],
+  PLTR: [
+    78.2, 79.1, 78.7, 80, 80.8, 80.4, 81.6, 82.1, 81.7, 82.8, 83.3, 82.9,
+    83.8, 84.2, 83.9, 84.8, 85.1, 84.7, 85.6, 86, 85.5, 86.3, 85.9, 86.6,
+    86.1, 86.8, 86.2, 86.4,
+  ],
+};
 
-const buildCandles = (price: number): Candle[] => {
-  const scale = price / 143.8;
-  return closes.map((rawClose, index) => {
-    const close = rawClose * scale;
-    const open = (index === 0 ? 131.6 : (closes[index - 1] ?? rawClose)) * scale;
+const horizonSettings = {
+  short: {
+    interval: "5分钟",
+    amplitude: 1,
+    range: 0.7,
+    scoreAdjustment: 0,
+    slopeScale: 1,
+    forecastStepDays: 1,
+    label: "未来 5 个交易日",
+  },
+  swing: {
+    interval: "日线",
+    amplitude: 0.62,
+    range: 1.4,
+    scoreAdjustment: -3,
+    slopeScale: 2.4,
+    forecastStepDays: 7,
+    label: "未来 1–8 周",
+  },
+  long: {
+    interval: "周线",
+    amplitude: 0.38,
+    range: 2.2,
+    scoreAdjustment: 4,
+    slopeScale: 5.5,
+    forecastStepDays: 90,
+    label: "未来 2–24 个月",
+  },
+} as const;
+
+const horizonConclusions: Record<string, Record<Horizon, string>> = {
+  NVDA: {
+    short: "谨慎偏多；等待量价确认，不追高。",
+    swing: "波段偏多；等待日线回踩与板块广度确认。",
+    long: "长期偏多；现金流质量与 AI 资本开支持续性优先。",
+  },
+  TSLA: {
+    short: "中性偏空；事件分歧高，等待反弹量能确认。",
+    swing: "波段中性偏空；反弹结构与利润率仍需验证。",
+    long: "长期中性；新业务兑现与汽车现金流是分水岭。",
+  },
+  PLTR: {
+    short: "趋势仍强但估值拥挤；只观察，不追涨。",
+    swing: "波段中性；趋势尚在，估值与订单兑现互相拉扯。",
+    long: "长期观察；客户留存改善但估值缓冲有限。",
+  },
+};
+
+function businessDayCloses(count: number) {
+  const dates: Date[] = [];
+  const cursor = new Date(Date.UTC(2026, 6, 24, 20, 0, 0));
+  while (dates.length < count) {
+    const day = cursor.getUTCDay();
+    if (day !== 0 && day !== 6) dates.push(new Date(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return dates.reverse();
+}
+
+function closeTimeFor(horizon: Horizon, index: number, count: number) {
+  if (horizon === "short") {
+    const closeMinutes = 9 * 60 + 30 + (index + 1) * 5;
+    const hour = Math.floor(closeMinutes / 60);
+    const minute = closeMinutes % 60;
+    return `2026-07-24T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00-04:00`;
+  }
+  if (horizon === "swing") return businessDayCloses(count)[index]!.toISOString();
+  const weeksFromEnd = count - index - 1;
+  return new Date(Date.UTC(2026, 6, 24 - weeksFromEnd * 7, 20, 0, 0)).toISOString();
+}
+
+const buildCandles = (symbol: string, price: number, horizon: Horizon): Candle[] => {
+  const rawSeries = closeSeries[symbol] ?? closeSeries.NVDA!;
+  const rawEnd = rawSeries.at(-1) ?? price;
+  const setting = horizonSettings[horizon];
+  const adjustedSeries = rawSeries.map(
+    (rawClose) => price + (rawClose - rawEnd) * setting.amplitude,
+  );
+  return adjustedSeries.map((close, index) => {
+    const open = index === 0 ? (adjustedSeries[0] ?? close) - setting.range * 0.7 : adjustedSeries[index - 1] ?? close;
+    const closeTime = closeTimeFor(horizon, index, adjustedSeries.length);
+    const availableAt = new Date(Date.parse(closeTime) + 1_000).toISOString();
     return {
-      timestamp: `2026-07-24T${String(9 + Math.floor(index / 12)).padStart(2, "0")}:${String((index * 5) % 60).padStart(2, "0")}:00-04:00`,
+      timestamp: closeTime,
+      availableAt,
+      complete: true,
       open,
-      high: Math.max(open, close) + 0.7 * scale,
-      low: Math.min(open, close) - 0.6 * scale,
+      high: Math.max(open, close) + setting.range,
+      low: Math.min(open, close) - setting.range * 0.86,
       close,
       volume: 420_000 + index * 31_000,
     };
@@ -33,15 +123,18 @@ type StockProfile = {
   adjustedScore: number;
   conclusion: string;
   counterCase: string;
-  rsi: StockSnapshot["indicators"]["rsi"];
-  macd: StockSnapshot["indicators"]["macd"];
-  reportedOwnership: Omit<StockSnapshot["reportedOwnership"], "reportedAt" | "citationIds">;
+  rsi: Omit<StockSnapshot["indicators"]["rsi"], "asOf">;
+  macd: Omit<StockSnapshot["indicators"]["macd"], "asOf">;
+  reportedOwnership: Omit<
+    StockSnapshot["reportedOwnership"],
+    "reportedAt" | "availableAt" | "citationIds"
+  >;
   participation: Pick<
     StockSnapshot["participationProxy"],
     "institutionalPercent" | "retailPercent" | "confidence" | "sourceCoverage"
   >;
   fundamentals: Omit<StockSnapshot["fundamentals"], "citationIds">;
-  marketContext: Omit<StockSnapshot["marketContext"], "citationIds">;
+  marketContext: Omit<StockSnapshot["marketContext"], "asOf" | "citationIds">;
 };
 
 const stockProfiles: StockProfile[] = [
@@ -188,13 +281,18 @@ const stockProfiles: StockProfile[] = [
 const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
   const scale = profile.price / 143.8;
   const sourcePrefix = profile.symbol.toLowerCase();
-  const candles = buildCandles(profile.price);
-  const horizonLabel = {
-    short: "未来 5 个交易日",
-    swing: "未来 1–8 周",
-    long: "未来 2–24 个月",
-  }[horizon];
-  const invalidationPrice = profile.price * (profile.forecastSlope >= 0 ? 0.9485 : 1.052);
+  const setting = horizonSettings[horizon];
+  const candles = buildCandles(profile.symbol, profile.price, horizon);
+  const predictedAt = new Date(
+    Date.parse(candles.at(-1)?.availableAt ?? "2026-07-24T20:00:00Z") + 1_000,
+  ).toISOString();
+  const forecastSlope = profile.forecastSlope * setting.slopeScale;
+  const adjustedScore = Math.max(
+    0,
+    Math.min(100, profile.adjustedScore + setting.scoreAdjustment),
+  );
+  const baseScore = Math.max(0, Math.min(100, profile.baseScore + setting.scoreAdjustment));
+  const invalidationPrice = profile.price * (forecastSlope >= 0 ? 0.9485 : 1.052);
 
   return {
   demoData: true,
@@ -209,12 +307,15 @@ const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
   quoteLatencyMs: 850,
   candles,
   forecast: {
-    horizon: horizonLabel,
+    horizon: setting.label,
     points: Array.from({ length: 8 }, (_, index) => {
-      const median = profile.price + profile.forecastSlope * (index + 1);
+      const median = profile.price + forecastSlope * (index + 1);
       const width50 = (1.4 + index * 0.35) * scale;
       return {
-        timestamp: `T+${index + 1}`,
+        timestamp: new Date(
+          Date.parse(predictedAt) +
+            setting.forecastStepDays * (index + 1) * 24 * 60 * 60 * 1_000,
+        ).toISOString(),
         median,
         lower50: median - width50,
         upper50: median + width50,
@@ -223,26 +324,35 @@ const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
       };
     }),
     probability:
-      profile.forecastSlope > 0.2
+      forecastSlope > 0.2
         ? { up: 0.58, flat: 0.18, down: 0.24 }
-        : profile.forecastSlope < 0
+        : forecastSlope < 0
           ? { up: 0.29, flat: 0.21, down: 0.5 }
           : { up: 0.41, flat: 0.25, down: 0.34 },
     calibrationError: 0.084,
-    predictedAt: "2026-07-24T10:30:00-04:00",
-    modelVersion: "demo-calibrated-v1",
+    predictedAt,
+    modelVersion: `demo-calibrated-${horizon}-v1`,
     invalidation: `${profile.forecastSlope >= 0 ? "收盘跌破" : "收盘站上"} ${invalidationPrice.toFixed(2)} 或大盘环境反向`,
   },
   magicNine: {
-    count: profile.symbol === "PLTR" ? 9 : profile.symbol === "TSLA" ? 4 : 7,
-    complete: false,
+    count:
+      horizon === "short"
+        ? profile.symbol === "PLTR"
+          ? 9
+          : profile.symbol === "TSLA"
+            ? 4
+            : 7
+        : horizon === "swing"
+          ? 5
+          : 3,
+    complete: horizon === "short" && profile.symbol === "PLTR",
     invalidation: "序列中断则重新计数",
     horizon,
   },
   dragonTrend: {
-    state: profile.adjustedScore >= 60 ? "bullish" : profile.adjustedScore < 50 ? "bearish" : "neutral",
-    score: profile.adjustedScore,
-    methodVersion: "original-demo-v1",
+    state: adjustedScore >= 60 ? "bullish" : adjustedScore < 50 ? "bearish" : "neutral",
+    score: adjustedScore,
+    methodVersion: `original-demo-${horizon}-v1`,
     invalidation: "趋势强度跌破 45",
   },
   patterns: [
@@ -283,32 +393,46 @@ const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
     },
   ],
   indicators: {
-    rsi: profile.rsi,
-    macd: profile.macd,
+    rsi: {
+      ...profile.rsi,
+      asOf: predictedAt,
+      interval: setting.interval,
+      value: Math.max(0, Math.min(100, profile.rsi.value + setting.scoreAdjustment)),
+    },
+    macd: {
+      ...profile.macd,
+      asOf: predictedAt,
+      interval: setting.interval,
+      dif: profile.macd.dif * setting.slopeScale,
+      dea: profile.macd.dea * setting.slopeScale,
+      histogram: profile.macd.histogram.map((value) => value * setting.slopeScale),
+    },
   },
   reportedOwnership: {
     ...profile.reportedOwnership,
     reportedAt: "2026-06-30",
+    availableAt: "2026-07-20T14:01:00Z",
     citationIds: [`${sourcePrefix}-source-1`],
   },
   participationProxy: {
     label: "估算代理",
     ...profile.participation,
-    estimatedAt: "2026-07-24T10:30:00-04:00",
-    methodVersion: "demo-v1",
+    estimatedAt: predictedAt,
+    methodVersion: `demo-${horizon}-v1`,
     citationIds: [`${sourcePrefix}-source-2`],
   },
   marketContext: {
     ...profile.marketContext,
+    asOf: predictedAt,
     citationIds: [`${sourcePrefix}-source-2`],
   },
   fundamentals: {
     ...profile.fundamentals,
     citationIds: [`${sourcePrefix}-source-1`],
   },
-  baseScore: profile.baseScore,
-  adjustedScore: profile.adjustedScore,
-  conclusion: profile.conclusion,
+  baseScore,
+  adjustedScore,
+  conclusion: horizonConclusions[profile.symbol]?.[horizon] ?? profile.conclusion,
   counterCase: profile.counterCase,
   citations: [
     {

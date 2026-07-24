@@ -36,6 +36,7 @@ export const adviserOpinions: AdviserOpinion[] = adviserProfiles.map(([id, displ
 
 const preferences: RiskPreference[] = ["conservative", "balanced", "aggressive"];
 const sides: PlanSide[] = ["long", "short"];
+const horizons = ["short", "swing", "long"] as const;
 
 type PlanProfile = {
   symbol: string;
@@ -102,14 +103,21 @@ const planProfiles: PlanProfile[] = [
 ];
 
 export const tradePlanFixtures: TradePlan[] = planProfiles.flatMap((profile) =>
-  sides.flatMap((side) =>
-    preferences.map((preference, index): TradePlan => ({
-      id: `${profile.symbol}-${side}-${preference}`,
+  horizons.flatMap((horizon) =>
+    sides.flatMap((side) =>
+      preferences.map((preference, index): TradePlan => ({
+      id:
+        horizon === "short"
+          ? `${profile.symbol}-${side}-${preference}`
+          : `${profile.symbol}-${horizon}-${side}-${preference}`,
       symbol: profile.symbol,
+      horizon,
       side,
       preference,
-      objectiveScore: profile.objectiveScore,
-      confidence: profile.confidence,
+      objectiveScore:
+        profile.objectiveScore + (horizon === "swing" ? -3 : horizon === "long" ? 4 : 0),
+      confidence:
+        profile.confidence + (horizon === "swing" ? -0.04 : horizon === "long" ? 0.04 : 0),
       entryMethod: preference === "aggressive" ? "突破限价" : "回踩分批限价",
       entryRange: side === "long" ? profile.longEntry : profile.shortEntry,
       quantity: Math.max(1, Math.round(([20, 35, 50][index] ?? 20) * profile.quantityScale)),
@@ -121,24 +129,36 @@ export const tradePlanFixtures: TradePlan[] = planProfiles.flatMap((profile) =>
       stopLogic: "触及失效价后取消原假设；跳空时按首个可执行价格重新评估。",
       targetRange: side === "long" ? profile.longTarget : profile.shortTarget,
       estimatedRewardRisk: [1.6, 2.1, 2.6][index] ?? 1.6,
-      holdingWindow: "盘中至 5 个交易日",
+      holdingWindow:
+        horizon === "short"
+          ? "盘中至 5 个交易日"
+          : horizon === "swing"
+            ? "1–8 周"
+            : "2–24 个月",
       cancelConditions: ["证据包过期", "大盘环境转为空头", "关键消息被证伪"],
       riskWarning:
         side === "short"
           ? "演示方案；需确认借券可用性，做空存在理论上的无限损失风险。"
           : "演示方案；跳空可能使实际亏损超过计划止损。",
-      evidenceSnapshotId: `${profile.symbol}-short-2026-07-24T10:30:00Z`,
+      evidenceSnapshotId: `${profile.symbol}-${horizon}-2026-07-24`,
+      generatedAt: "2026-07-24T15:50:02Z",
+      methodVersion: `demo-risk-${horizon}-v1`,
+      citationIds: [
+        `${profile.symbol.toLowerCase()}-source-1`,
+        `${profile.symbol.toLowerCase()}-source-2`,
+      ],
       shortRisk:
         side === "short"
           ? {
               borrowAvailable: true,
-              checkedAt: "2026-07-24T10:29:00-04:00",
+              checkedAt: "2026-07-24T11:49:00-04:00",
               estimatedBorrowFeePercent: profile.borrowFee,
               shortInterestPercent: profile.shortInterest,
               crowding: profile.crowding,
               warnings: ["逼空与跳空风险", "停牌与召回风险", "理论上的无限损失风险"],
             }
           : null,
-    })),
+      })),
+    ),
   ),
 );

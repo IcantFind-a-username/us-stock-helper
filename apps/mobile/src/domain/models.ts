@@ -110,7 +110,11 @@ export interface Candidate {
 }
 
 export interface Candle {
+  /** Bar-close time. Indicators and patterns may only consume completed bars. */
   timestamp: string;
+  /** First instant this completed bar was available to the decision engine. */
+  availableAt: string;
+  complete: boolean;
   open: number;
   high: number;
   low: number;
@@ -138,6 +142,7 @@ export interface ForecastSnapshot {
 }
 
 export interface RsiSnapshot {
+  asOf: string;
   value: number;
   period: number;
   interval: string;
@@ -147,6 +152,7 @@ export interface RsiSnapshot {
 }
 
 export interface MacdSnapshot {
+  asOf: string;
   dif: number;
   dea: number;
   interval: string;
@@ -160,6 +166,7 @@ export interface ReportedOwnership {
   insiderPercent: number;
   otherPercent: number;
   reportedAt: string;
+  availableAt: string;
   changes: string[];
   citationIds: string[];
 }
@@ -176,6 +183,7 @@ export interface ParticipationProxy {
 }
 
 export interface MarketContext {
+  asOf: string;
   marketDirection: string;
   sectorState: string;
   macroState: string;
@@ -252,6 +260,7 @@ export interface AdviserOpinion {
 export interface TradePlan {
   id: string;
   symbol: string;
+  horizon: Horizon;
   side: PlanSide;
   preference: RiskPreference;
   objectiveScore: number;
@@ -270,6 +279,9 @@ export interface TradePlan {
   cancelConditions: string[];
   riskWarning: string;
   evidenceSnapshotId: string;
+  generatedAt: string;
+  methodVersion: string;
+  citationIds: string[];
   shortRisk: {
     borrowAvailable: boolean;
     checkedAt: string;

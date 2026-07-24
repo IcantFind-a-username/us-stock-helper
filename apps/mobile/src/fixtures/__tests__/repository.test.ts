@@ -131,7 +131,7 @@ describe("fixtureRepository", () => {
     expect(stock.indicators.macd.histogram.length).toBeGreaterThan(0);
     expect(stock.candles).toHaveLength(28);
     expect(stock.forecast.points).toHaveLength(8);
-    expect(stock.dragonTrend.methodVersion).toBe("original-demo-v1");
+    expect(stock.dragonTrend.methodVersion).toBe("original-demo-short-v1");
     expect(stock.patterns[0]?.complete).toBe(false);
     expect(stock.fundamentals.materialRisks.length).toBeGreaterThan(0);
     expect(stock.reportedOwnership.reportedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -141,6 +141,52 @@ describe("fixtureRepository", () => {
       stock.participationProxy.institutionalPercent +
         stock.participationProxy.retailPercent,
     ).toBe(100);
+  });
+
+  it("keeps stock horizons genuinely independent and point-in-time safe", () => {
+    const snapshots = (["short", "swing", "long"] as const).map((horizon) =>
+      fixtureRepository.getStock("NVDA", horizon),
+    );
+
+    expect(new Set(snapshots.map(({ conclusion }) => conclusion)).size).toBe(3);
+    expect(new Set(snapshots.map(({ adjustedScore }) => adjustedScore)).size).toBe(3);
+    expect(new Set(snapshots.map(({ indicators }) => indicators.rsi.interval))).toEqual(
+      new Set(["5分钟", "日线", "周线"]),
+    );
+
+    for (const stock of snapshots) {
+      const predictedAt = Date.parse(stock.forecast.predictedAt);
+      expect(Number.isFinite(predictedAt)).toBe(true);
+      expect(
+        stock.candles.every(
+          (candle) =>
+            candle.complete &&
+            Number.isFinite(Date.parse(candle.availableAt)) &&
+            Date.parse(candle.availableAt) <= predictedAt,
+        ),
+      ).toBe(true);
+      expect(
+        stock.forecast.points.every(
+          (point) =>
+            Number.isFinite(Date.parse(point.timestamp)) &&
+            Date.parse(point.timestamp) > predictedAt,
+        ),
+      ).toBe(true);
+      expect(Date.parse(stock.indicators.rsi.asOf)).toBeLessThanOrEqual(predictedAt);
+      expect(Date.parse(stock.indicators.macd.asOf)).toBeLessThanOrEqual(predictedAt);
+      expect(Date.parse(stock.marketContext.asOf)).toBeLessThanOrEqual(predictedAt);
+      expect(Date.parse(stock.participationProxy.estimatedAt)).toBeLessThanOrEqual(
+        predictedAt,
+      );
+      expect(Date.parse(stock.reportedOwnership.availableAt)).toBeLessThanOrEqual(
+        predictedAt,
+      );
+      expect(
+        stock.forecast.probability.up +
+          stock.forecast.probability.flat +
+          stock.forecast.probability.down,
+      ).toBeCloseTo(1);
+    }
   });
 
   it("keeps alert invalidation and objective conversation order", () => {
@@ -171,4 +217,47 @@ describe("fixtureRepository", () => {
       "引用",
     ]);
   });
+
+  it.each(["NVDA", "TSLA", "PLTR"] as const)(
+    "binds %s adviser opinions and plans only to resolvable same-symbol evidence",
+    (symbol) => {
+      const advisers = fixtureRepository.getAdvisers(symbol, "short");
+      const plans = fixtureRepository.getTradePlans(symbol, "short");
+      const expectedPrefix = `${symbol.toLowerCase()}-source-`;
+
+      expect(advisers).toHaveLength(13);
+      expect(
+        advisers.every(
+          (opinion) =>
+            opinion.evidenceIds.every((id) => id.startsWith(expectedPrefix)) &&
+            fixtureRepository.getCitations(opinion.evidenceIds).length ===
+              opinion.evidenceIds.length,
+        ),
+      ).toBe(true);
+      expect(plans).toHaveLength(6);
+      expect(plans.every((plan) => plan.horizon === "short")).toBe(true);
+      expect(
+        plans.every(
+          (plan) =>
+            plan.citationIds.every((id) => id.startsWith(expectedPrefix)) &&
+            fixtureRepository.getCitations(plan.citationIds).length ===
+              plan.citationIds.length,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each(["NVDA", "TSLA", "PLTR"] as const)(
+    "freezes %s objective score and confidence across every risk preference",
+    (symbol) => {
+      for (const horizon of ["short", "swing", "long"] as const) {
+        const stock = fixtureRepository.getStock(symbol, horizon);
+        const plans = fixtureRepository.getTradePlans(symbol, horizon);
+        expect(new Set(plans.map(({ objectiveScore }) => objectiveScore))).toEqual(
+          new Set([stock.adjustedScore]),
+        );
+        expect(new Set(plans.map(({ confidence }) => confidence)).size).toBe(1);
+      }
+    },
+  );
 });

@@ -34,6 +34,7 @@ export function CitationRow({ citation }: CitationRowProps) {
         </View>
         <Text numberOfLines={2} style={styles.title}>{citation.title}</Text>
         <Text style={styles.time}>发布时间：{formatPublishedAt(citation.publishedAt)}</Text>
+        <Text style={styles.time}>首次发现：{formatPublishedAt(citation.firstSeenAt)}</Text>
       </View>
       <Text accessibilityElementsHidden style={styles.arrow}>›</Text>
     </Pressable>

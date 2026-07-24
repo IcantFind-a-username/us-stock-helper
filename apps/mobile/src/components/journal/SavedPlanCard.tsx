@@ -8,7 +8,8 @@ export function SavedPlanCard({ plan }: { plan: TradePlan }) {
     <View style={styles.card}>
       <View style={styles.top}>
         <Text style={styles.symbol}>
-          {plan.symbol} · {plan.side === "long" ? "做多" : "做空"}
+          {plan.symbol} · {plan.side === "long" ? "做多" : "做空"} ·{" "}
+          {plan.horizon === "short" ? "短线" : plan.horizon === "swing" ? "波段" : "中长期"}
         </Text>
         <Text style={styles.preference}>{preferenceLabel[plan.preference]}</Text>
       </View>

@@ -18,7 +18,7 @@ export interface FixtureRepository {
   getDashboard(horizon: Horizon): DashboardSnapshot;
   getStock(symbol: string, horizon: Horizon): StockSnapshot;
   getAdvisers(symbol: string, horizon: Horizon): AdviserOpinion[];
-  getTradePlans(symbol: string): TradePlan[];
+  getTradePlans(symbol: string, horizon?: Horizon): TradePlan[];
   getAlerts(): AlertThread[];
   getConversation(): ConversationTurn[];
   getCitations(ids: string[]): Citation[];
@@ -32,9 +32,24 @@ export const fixtureRepository: FixtureRepository = {
     if (!stock) throw new Error(`Missing stock fixture: ${key}`);
     return stock;
   },
-  getAdvisers: () => adviserOpinions,
-  getTradePlans: (symbol) =>
-    tradePlanFixtures.filter((plan) => plan.symbol === symbol.toUpperCase()),
+  getAdvisers: (symbol, horizon) => {
+    const normalized = symbol.toUpperCase();
+    const directionBySymbol: Record<string, AdviserOpinion["direction"][]> = {
+      NVDA: ["bullish", "bullish", "bullish", "bearish"],
+      TSLA: ["neutral", "bearish", "bearish", "bullish"],
+      PLTR: ["bullish", "neutral", "bearish", "bullish"],
+    };
+    return adviserOpinions.map((opinion, index) => ({
+      ...opinion,
+      direction: directionBySymbol[normalized]?.[index] ?? opinion.direction,
+      thesis: `基于 ${normalized} ${horizon} 演示证据包的风格化观点。`,
+      evidenceIds: [`${normalized.toLowerCase()}-source-1`],
+    }));
+  },
+  getTradePlans: (symbol, horizon = "short") =>
+    tradePlanFixtures.filter(
+      (plan) => plan.symbol === symbol.toUpperCase() && plan.horizon === horizon,
+    ),
   getAlerts: () => alertThreads,
   getConversation: () => conversationTurns,
   getCitations: (ids) => {
