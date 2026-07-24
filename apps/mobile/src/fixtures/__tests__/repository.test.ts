@@ -55,6 +55,7 @@ describe("fixtureRepository", () => {
         ["geopolitics"],
       ]);
       expect(dashboard.marketDrivers.every((driver) => driver.freshness.length > 0)).toBe(true);
+      expect(dashboard.marketDrivers.find((driver) => driver.category === "geopolitics")?.freshness).toBe("conflict");
       expect(dashboard.dataHealthCitationIds).toEqual([`${horizon}-data-health`]);
       expect(fixtureRepository.getCitations(dashboard.dataHealthCitationIds)[0]?.title).toBe(`演示：${horizon === "short" ? "短线" : horizon === "swing" ? "波段" : "长期"}数据健康与市场时段快照`);
       expect(dashboard.watchlist.length).toBeGreaterThanOrEqual(3);

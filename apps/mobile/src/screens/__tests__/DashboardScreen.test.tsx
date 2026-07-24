@@ -59,6 +59,8 @@ it("shows the short-first conclusion, objective dashboard context, and accessibl
     expect(view.getByText(label)).toBeTruthy();
   });
   expect(view.getAllByText(/新鲜度：/).length).toBeGreaterThanOrEqual(9);
+  expect(view.getByText("新鲜度：存在冲突")).toBeTruthy();
+  expect(view.getByRole("button", { name: /查看 地缘政治 证据.*新鲜度 存在冲突/ })).toBeTruthy();
 
   const evidenceAction = view.getByRole("button", { name: "查看市场证据" });
   expect(evidenceAction.props.accessibilityHint).toContain("引用");
