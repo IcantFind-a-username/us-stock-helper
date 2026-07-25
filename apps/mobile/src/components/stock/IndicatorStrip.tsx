@@ -1,59 +1,59 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import type { MacdSnapshot, RsiSnapshot } from "@/domain/models";
+import type {
+  ChartIndicatorValue,
+  ChartMacdIndicator,
+} from "@/domain/models";
 import { colors, radius, spacing } from "@/theme/tokens";
 
-const rsiStateLabels: Record<RsiSnapshot["state"], string> = {
-  oversold: "超卖",
-  neutral: "中性",
-  "near-overbought": "接近超买",
-  overbought: "超买",
-};
-
-const rsiDirectionLabels: Record<RsiSnapshot["direction"], string> = {
-  rising: "向上",
-  flat: "走平",
-  falling: "向下",
-};
-
-const macdStateLabels: Record<MacdSnapshot["state"], string> = {
-  "bull-expanding": "多头扩张",
-  "bull-contracting": "多头收缩",
-  "bear-expanding": "空头扩张",
-  "bear-contracting": "空头收缩",
-};
-
-const divergenceLabels: Record<RsiSnapshot["divergence"], string> = {
-  bullish: "看涨背离",
-  none: "无背离",
-  bearish: "看跌背离",
-};
-
 type IndicatorStripProps = {
-  rsi: RsiSnapshot;
-  macd: MacdSnapshot;
+  rsi: ChartIndicatorValue;
+  macd: ChartMacdIndicator;
 };
 
-const shortTime = (value: string) => {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-};
+function formatUtc(value: string) {
+  return value.replace("T", " ").replace(".000Z", " UTC");
+}
+
+function rsiLabel(value: number) {
+  if (value >= 70) return "超买";
+  if (value >= 60) return "接近超买";
+  if (value <= 30) return "超卖";
+  return "中性";
+}
+
+function lastHistogram(value: ChartMacdIndicator["histogram"]) {
+  return Array.isArray(value) ? (value.at(-1) ?? null) : value;
+}
 
 export function IndicatorStrip({ rsi, macd }: IndicatorStripProps) {
-  const histogramMax = Math.max(...macd.histogram.map(Math.abs), 0.01);
-  const normalizedRsi = Math.max(0, Math.min(100, rsi.value));
-  const bearishMacd = macd.state.startsWith("bear-");
+  const histogram = lastHistogram(macd.histogram);
+  const rsiAvailable = rsi.qualityStatus !== "unavailable" && rsi.value !== null;
+  const macdAvailable =
+    macd.qualityStatus !== "unavailable" &&
+    macd.line !== null &&
+    macd.signal !== null &&
+    histogram !== null;
+  const normalizedRsi = Math.max(0, Math.min(100, rsi.value ?? 0));
+
   return (
     <View style={styles.row}>
       <View style={styles.card} testID="indicator-rsi">
         <View style={styles.headingRow}>
-          <Text style={styles.title}>{`RSI ${rsi.value.toFixed(1)}`}</Text>
-          <Text style={styles.warm}>{rsiStateLabels[rsi.state]}</Text>
+          <Text style={styles.title}>
+            {rsiAvailable ? `RSI ${rsi.value!.toFixed(1)}` : "RSI 暂不可用"}
+          </Text>
+          <Text style={styles.warm}>
+            {rsiAvailable ? rsiLabel(rsi.value!) : "缺失"}
+          </Text>
         </View>
         <View style={styles.rsiTrack}>
-          <View style={[styles.rsiFill, { width: `${normalizedRsi}%` }]} />
+          <View
+            style={[
+              styles.rsiFill,
+              { width: `${rsiAvailable ? normalizedRsi : 0}%` },
+            ]}
+          />
           <View
             style={[styles.threshold, { left: "30%" }]}
             testID="rsi-threshold-30"
@@ -63,49 +63,50 @@ export function IndicatorStrip({ rsi, macd }: IndicatorStripProps) {
             testID="rsi-threshold-70"
           />
         </View>
-        <Text style={styles.meta}>
-          {`${rsi.interval} · ${rsi.period}期 · ${rsiDirectionLabels[rsi.direction]} · ${divergenceLabels[rsi.divergence]}`}
+        <Text style={styles.meta}>{rsi.methodVersion}</Text>
+        <Text style={styles.asOf}>
+          仅用已完成 K 线 · 截止 {formatUtc(rsi.asOf)}
         </Text>
-        <Text style={styles.asOf}>仅用已收盘 K 线 · 截止 {shortTime(rsi.asOf)}</Text>
       </View>
 
       <View style={styles.card} testID="indicator-macd">
         <View style={styles.headingRow}>
           <Text style={styles.title}>MACD</Text>
-          <Text style={bearishMacd ? styles.bad : styles.good}>
-            {macdStateLabels[macd.state]}
+          <Text
+            style={
+              !macdAvailable
+                ? styles.warm
+                : macd.line! >= macd.signal!
+                  ? styles.good
+                  : styles.bad
+            }>
+            {!macdAvailable
+              ? "暂不可用"
+              : macd.line! >= macd.signal!
+                ? "多头"
+                : "空头"}
           </Text>
         </View>
         <View style={styles.histogram}>
           <View style={styles.zeroAxis} testID="macd-zero-axis" />
-          {macd.histogram.map((value, index) => {
-            const height = 2 + (Math.abs(value) / histogramMax) * 13;
-            return (
-              <View key={`${value}-${index}`} style={styles.histogramSlot}>
-                <View
-                  style={[
-                    styles.histogramBar,
-                    {
-                      backgroundColor: value >= 0 ? colors.green : colors.red,
-                      height,
-                      [value >= 0 ? "bottom" : "top"]: 14,
-                    },
-                  ]}
-                />
-              </View>
-            );
-          })}
+          {macdAvailable ? (
+            <View
+              style={[
+                styles.histogramBar,
+                histogram! >= 0 ? styles.positiveBar : styles.negativeBar,
+                { height: 4 + Math.min(Math.abs(histogram!) * 24, 18) },
+              ]}
+            />
+          ) : null}
         </View>
         <Text style={styles.meta}>
-          {`${macd.interval} · DIF ${macd.dif.toFixed(2)} · DEA ${macd.dea.toFixed(2)} · ${
-            macd.crossover === "golden-cross"
-              ? "金叉"
-              : macd.crossover === "death-cross"
-                ? "死叉"
-                : "无交叉"
-          }`}
+          {macdAvailable
+            ? `DIF ${macd.line!.toFixed(2)} · DEA ${macd.signal!.toFixed(2)} · 柱 ${histogram!.toFixed(2)}`
+            : macd.methodVersion}
         </Text>
-        <Text style={styles.asOf}>仅用已收盘 K 线 · 截止 {shortTime(macd.asOf)}</Text>
+        <Text style={styles.asOf}>
+          仅用已完成 K 线 · 截止 {formatUtc(macd.asOf)}
+        </Text>
       </View>
     </View>
   );
@@ -123,7 +124,11 @@ const styles = StyleSheet.create({
     minHeight: 112,
     padding: spacing.md,
   },
-  headingRow: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  headingRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
   title: { color: colors.ink, fontSize: 13, fontWeight: "900" },
   warm: { color: colors.amber, fontSize: 9, fontWeight: "800" },
   good: { color: colors.green, fontSize: 9, fontWeight: "800" },
@@ -143,7 +148,12 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 1,
   },
-  histogram: { flexDirection: "row", gap: 3, height: 28, position: "relative" },
+  histogram: {
+    alignItems: "center",
+    height: 28,
+    justifyContent: "center",
+    position: "relative",
+  },
   zeroAxis: {
     backgroundColor: colors.line,
     height: StyleSheet.hairlineWidth,
@@ -152,8 +162,18 @@ const styles = StyleSheet.create({
     right: 0,
     top: 14,
   },
-  histogramSlot: { flex: 1, height: 28, position: "relative" },
-  histogramBar: { borderRadius: 2, left: 0, minWidth: 3, position: "absolute", right: 0 },
-  meta: { color: colors.muted, fontSize: 9, fontWeight: "600", lineHeight: 13 },
+  histogramBar: {
+    borderRadius: 2,
+    position: "absolute",
+    width: "42%",
+  },
+  positiveBar: { backgroundColor: colors.green, bottom: 14 },
+  negativeBar: { backgroundColor: colors.red, top: 14 },
+  meta: {
+    color: colors.muted,
+    fontSize: 9,
+    fontWeight: "600",
+    lineHeight: 13,
+  },
   asOf: { color: colors.muted, fontSize: 8, fontWeight: "600" },
 });

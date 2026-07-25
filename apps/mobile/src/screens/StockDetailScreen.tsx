@@ -3,98 +3,220 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { PriceChart } from "@/components/chart/PriceChart";
-import {
-  DashboardDetailSheet,
-  type DetailSection,
-} from "@/components/dashboard/DashboardDetailSheet";
 import { IndicatorStrip } from "@/components/stock/IndicatorStrip";
-import { MarketContextCard } from "@/components/stock/MarketContextCard";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
-import { PatternCard } from "@/components/stock/PatternCard";
 import { StockHeader } from "@/components/stock/StockHeader";
 import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
 import { Screen } from "@/components/ui/Screen";
-import type { Citation } from "@/domain/models";
+import {
+  toDemoChartSnapshot,
+  type ChartSnapshot,
+  type LiveStockSnapshot,
+} from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useAppState } from "@/state/AppStateProvider";
+import {
+  type MarketDataState,
+  useStockSnapshot,
+} from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
-type DetailState = {
-  title: string;
-  sections: DetailSection[];
-  citations: Citation[];
-} | null;
+type VisibleTool = "ma5" | "magicNine" | "participation" | "forecast";
 
-const tools = ["MA5", "九转", "预测区间", "机构流代理", "形态"] as const;
-type Tool = (typeof tools)[number];
+function formatUtc(value: string) {
+  return value.replace("T", " ").replace(".000Z", " UTC");
+}
+
+function DisabledAnalysisCard({ title }: { title: string }) {
+  return (
+    <View style={styles.disabledCard}>
+      <Text style={styles.disabledTitle}>{title}</Text>
+      <Text style={styles.disabledText}>尚未接入真实分析</Text>
+    </View>
+  );
+}
+
+function StockPageState({
+  market,
+  onBack,
+}: {
+  market: MarketDataState<ChartSnapshot>;
+  onBack(): void;
+}) {
+  const unavailable = market.status === "unavailable";
+  return (
+    <Screen hideGlobalHeader style={styles.screen}>
+      <Pressable
+        accessibilityLabel="返回自选列表"
+        accessibilityRole="button"
+        onPress={onBack}
+        style={({ pressed }) => [
+          styles.stateBack,
+          pressed && styles.pressed,
+        ]}>
+        <Text style={styles.stateBackText}>‹ 返回</Text>
+      </Pressable>
+      <View style={styles.stateCard}>
+        <Text style={styles.stateTitle}>
+          {unavailable
+            ? `行情不可用 · ${market.error?.category ?? "offline"}`
+            : "正在连接 moomoo 行情…"}
+        </Text>
+        <Text style={styles.stateBody}>
+          {unavailable
+            ? "请检查 OpenD、网络或行情权限后重试。不会自动切换为演示数据。"
+            : "正在读取实时只读快照。你可以返回自选列表稍后再试。"}
+        </Text>
+        {unavailable ? (
+          <Pressable
+            accessibilityLabel="重试行情"
+            accessibilityRole="button"
+            onPress={market.refresh}
+            style={({ pressed }) => [
+              styles.retryButton,
+              pressed && styles.pressed,
+            ]}>
+            <Text style={styles.retryText}>重试行情</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </Screen>
+  );
+}
 
 export function StockDetailScreen() {
   const params = useLocalSearchParams<{ symbol?: string | string[] }>();
   const router = useRouter();
   const { horizon, setHorizon } = useAppState();
-  const symbolParam = Array.isArray(params.symbol) ? params.symbol[0] : params.symbol;
+  const symbolParam = Array.isArray(params.symbol)
+    ? params.symbol[0]
+    : params.symbol;
   const symbol = (symbolParam ?? "NVDA").toUpperCase();
-  const stock = fixtureRepository.getStock(symbol, horizon);
-  const [detail, setDetail] = useState<DetailState>(null);
-  const [visibleTools, setVisibleTools] = useState<Record<Tool, boolean>>({
-    MA5: true,
-    九转: true,
-    预测区间: true,
-    机构流代理: true,
-    形态: true,
+  const market = useStockSnapshot(symbol, "5m", 200);
+  const stock =
+    market.status === "demo"
+      ? toDemoChartSnapshot(fixtureRepository.getStock(symbol, horizon))
+      : market.data;
+  const [visibleTools, setVisibleTools] = useState<
+    Record<VisibleTool, boolean>
+  >({
+    ma5: true,
+    magicNine: true,
+    participation: true,
+    forecast: true,
   });
 
-  const openEvidence = (title: string, sections: DetailSection[], citationIds: string[]) =>
-    setDetail({
-      title,
-      sections,
-      citations: fixtureRepository.getCitations(citationIds),
-    });
+  if (!stock) {
+    return (
+      <StockPageState
+        market={market as MarketDataState<ChartSnapshot>}
+        onBack={() => router.back()}
+      />
+    );
+  }
+
+  const liveStock = stock.demoData
+    ? null
+    : (stock as LiveStockSnapshot);
+  const latestCandle = stock.candles.at(-1);
+  const histogram = Array.isArray(stock.indicators.macd.histogram)
+    ? (stock.indicators.macd.histogram.at(-1) ?? null)
+    : stock.indicators.macd.histogram;
+  const toolOptions: { key: VisibleTool; label: string }[] = [
+    { key: "ma5", label: "MA5" },
+    { key: "magicNine", label: "九转" },
+    { key: "participation", label: "参与结构" },
+    ...(stock.forecast ? [{ key: "forecast" as const, label: "预测区间" }] : []),
+  ];
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>
+      {stock.demoData ? (
+        <View accessibilityRole="alert" style={styles.demoBanner}>
+          <Text style={styles.demoBannerText}>演示数据 · 非实时行情</Text>
+        </View>
+      ) : null}
       <StockHeader onBack={() => router.back()} stock={stock} />
-      <HorizonSwitch
-        onChange={(next) => {
-          setHorizon(next);
-          setDetail(null);
-        }}
-        value={horizon}
-      />
+      {stock.demoData ? (
+        <HorizonSwitch
+          onChange={setHorizon}
+          value={horizon}
+        />
+      ) : null}
 
-      <View style={styles.verdict}>
-        <View style={styles.verdictCopy}>
-          <Text style={styles.eyebrow}>
-            客观{horizon === "short" ? "短线" : horizon === "swing" ? "波段" : "中长期"}结论 ·
-            调整后 {stock.adjustedScore}
+      {market.status === "stale" ? (
+        <View accessibilityRole="alert" style={styles.staleBanner}>
+          <Text style={styles.staleText}>
+            行情已延迟 · 原始时间{" "}
+            {formatUtc(market.lastVerifiedAt ?? stock.source.asOf)}
           </Text>
-          <Text style={styles.verdictTitle}>{stock.conclusion}</Text>
-          <Text style={styles.counter}>{stock.counterCase}</Text>
+          <Pressable
+            accessibilityLabel="刷新行情"
+            accessibilityRole="button"
+            onPress={market.refresh}
+            style={styles.refreshButton}>
+            <Text style={styles.refreshText}>刷新</Text>
+          </Pressable>
         </View>
-        <View style={styles.score}>
-          <Text style={styles.scoreValue}>{stock.adjustedScore}</Text>
-          <Text style={styles.scoreLabel}>综合分</Text>
+      ) : null}
+
+      <View style={styles.summary}>
+        <Text style={styles.eyebrow}>
+          {stock.demoData ? "演示事实摘要" : "实时事实摘要"}
+        </Text>
+        <Text style={styles.summaryTitle}>
+          {latestCandle
+            ? `最新已完成 K 线 · 收 ${latestCandle.close.toFixed(2)}`
+            : "暂无已完成 K 线"}
+        </Text>
+        <View style={styles.factRow}>
+          <Text style={styles.fact}>
+            MA5{" "}
+            {stock.indicators.ma5.value === null
+              ? "暂不可用"
+              : stock.indicators.ma5.value.toFixed(2)}
+          </Text>
+          <Text style={styles.fact}>
+            RSI{" "}
+            {stock.indicators.rsi.value === null
+              ? "暂不可用"
+              : stock.indicators.rsi.value.toFixed(1)}
+          </Text>
+          <Text style={styles.fact}>
+            MACD {histogram === null ? "暂不可用" : histogram.toFixed(2)}
+          </Text>
         </View>
+        <Text style={styles.summaryMeta}>
+          九转 {stock.magicNine.count} ·{" "}
+          {stock.magicNine.completed ? "序列完成" : "尚未完成"} · 来源{" "}
+          {stock.source.source} · 截止 {formatUtc(stock.source.asOf)}
+        </Text>
       </View>
 
       <View accessibilityLabel="图表工具" style={styles.tools}>
-        {tools.map((tool) => {
-          const visible = visibleTools[tool];
+        {toolOptions.map(({ key, label }) => {
+          const visible = visibleTools[key];
           return (
             <Pressable
-              accessibilityLabel={`${tool}，${visible ? "已显示" : "已隐藏"}`}
+              accessibilityLabel={`${label}，${visible ? "已显示" : "已隐藏"}`}
               accessibilityRole="button"
               accessibilityState={{ selected: visible }}
-              key={tool}
+              key={key}
               onPress={() =>
-                setVisibleTools((current) => ({ ...current, [tool]: !current[tool] }))
+                setVisibleTools((current) => ({
+                  ...current,
+                  [key]: !current[key],
+                }))
               }
               style={({ pressed }) => [
                 styles.tool,
                 visible && styles.toolActive,
                 pressed && styles.pressed,
               ]}>
-              <Text style={[styles.toolText, visible && styles.toolTextActive]}>{tool}</Text>
+              <Text
+                style={[styles.toolText, visible && styles.toolTextActive]}>
+                {label}
+              </Text>
             </Pressable>
           );
         })}
@@ -102,121 +224,126 @@ export function StockDetailScreen() {
 
       <PriceChart
         compact
-        showForecast={visibleTools["预测区间"]}
-        showMagicNine={visibleTools.九转}
-        showMovingAverage={visibleTools.MA5}
+        showForecast={visibleTools.forecast}
+        showMagicNine={visibleTools.magicNine}
+        showMovingAverage={visibleTools.ma5}
         stock={stock}
       />
-      {visibleTools["预测区间"] ? <View style={styles.forecastNotice}>
-        <Text style={styles.forecastTitle}>概率预测，不是未来价格承诺</Text>
-        <Text style={styles.forecastBody}>
-          {stock.forecast.horizon} · 中位路径 + 50% / 80% 区间 · 模型{" "}
-          {stock.forecast.modelVersion} · 失效：{stock.forecast.invalidation}
-        </Text>
-      </View> : null}
+      {stock.forecast && visibleTools.forecast ? (
+        <View style={styles.forecastNotice}>
+          <Text style={styles.forecastTitle}>演示概率预测 · 非投资承诺</Text>
+          <Text style={styles.forecastBody}>
+            {stock.forecast.horizon} · {stock.forecast.modelVersion}
+          </Text>
+        </View>
+      ) : null}
 
-      <IndicatorStrip macd={stock.indicators.macd} rsi={stock.indicators.rsi} />
-      {visibleTools["机构流代理"] ? (
+      <IndicatorStrip
+        macd={stock.indicators.macd}
+        rsi={stock.indicators.rsi}
+      />
+      {visibleTools.participation ? (
         <ParticipationCard
-          proxy={stock.participationProxy}
-          reported={stock.reportedOwnership}
+          bars={stock.participationBars}
+          holdings={liveStock?.institutionalHoldings ?? []}
         />
       ) : null}
-      <PatternCard
-        dragonTrend={stock.dragonTrend}
-        fundamentals={stock.fundamentals}
-        magicNine={stock.magicNine}
-        patterns={stock.patterns}
-        showTechnical={visibleTools.形态}
-      />
-      <MarketContextCard context={stock.marketContext} />
 
-      <View style={styles.actions}>
-        <Pressable
-          accessibilityLabel="查看完整图表"
-          accessibilityRole="button"
-          onPress={() =>
-            router.push({
-              pathname: "/stocks/[symbol]/chart",
-              params: { symbol },
-            })
-          }
-          style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
-          <Text style={styles.secondaryText}>查看大图</Text>
-        </Pressable>
-        <Pressable
-          accessibilityLabel="查看证据"
-          accessibilityRole="button"
-          onPress={() =>
-            openEvidence(
-              `${symbol} 证据包`,
-              [
-                { label: "客观结论", body: stock.conclusion },
-                { label: "最强反证", body: stock.counterCase },
-                { label: "预测失效", body: stock.forecast.invalidation },
-                {
-                  label: "市场调整",
-                  body: `${stock.marketContext.scoreAdjustment} 分 · ${stock.marketContext.planChanges.join("\n")}`,
-                },
-              ],
-              stock.citations.map(({ id }) => id),
-            )
-          }
-          style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
-          <Text style={styles.secondaryText}>查看证据</Text>
-        </Pressable>
-      </View>
+      {!stock.forecast ? <DisabledAnalysisCard title="预测分析" /> : null}
+      <DisabledAnalysisCard title="基本面与形态" />
+      <DisabledAnalysisCard title="市场环境" />
+
       <Pressable
-        accessibilityLabel="问顾问 / 制定方案"
+        accessibilityLabel="查看完整图表"
         accessibilityRole="button"
         onPress={() =>
           router.push({
-            pathname: "/stocks/[symbol]/advisers",
+            pathname: "/stocks/[symbol]/chart",
             params: { symbol },
           })
         }
-        style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
-        <Text style={styles.primaryText}>问顾问 / 制定方案</Text>
+        style={({ pressed }) => [
+          styles.secondaryButton,
+          pressed && styles.pressed,
+        ]}>
+        <Text style={styles.secondaryText}>查看大图</Text>
       </Pressable>
-      <Text style={styles.boundary}>仅分析与建议 · 不连接券商 · 不会自动下单</Text>
-
-      <DashboardDetailSheet
-        citations={detail?.citations ?? []}
-        onClose={() => setDetail(null)}
-        sections={detail?.sections ?? []}
-        title={detail?.title ?? ""}
-        visible={detail !== null}
-      />
+      <Pressable
+        accessibilityLabel="顾问分析尚未接入真实分析"
+        accessibilityRole="button"
+        accessibilityState={{ disabled: true }}
+        disabled
+        style={styles.disabledButton}>
+        <Text style={styles.disabledButtonTitle}>顾问分析</Text>
+        <Text style={styles.disabledButtonText}>尚未接入真实分析</Text>
+      </Pressable>
+      <Text style={styles.boundary}>
+        仅分析与建议 · 不连接券商 · 不会自动下单
+      </Text>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { gap: spacing.md, paddingTop: spacing.xs },
-  verdict: {
+  demoBanner: {
     alignItems: "center",
+    backgroundColor: colors.amberSoft,
+    borderRadius: radius.md,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+  },
+  demoBannerText: { color: "#8B5C08", fontSize: 11, fontWeight: "900" },
+  staleBanner: {
+    alignItems: "center",
+    backgroundColor: colors.amberSoft,
+    borderRadius: radius.md,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 44,
+    paddingLeft: spacing.md,
+  },
+  staleText: { color: "#8B5C08", fontSize: 9, fontWeight: "800" },
+  refreshButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    minWidth: 56,
+  },
+  refreshText: { color: colors.blue, fontSize: 10, fontWeight: "900" },
+  summary: {
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: "row",
-    gap: spacing.md,
+    gap: spacing.xs,
     padding: spacing.md,
   },
-  verdictCopy: { flex: 1 },
   eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "800" },
-  verdictTitle: { color: colors.ink, fontSize: 15, fontWeight: "900", lineHeight: 20, marginTop: 3 },
-  counter: { color: colors.muted, fontSize: 10, lineHeight: 15, marginTop: 4 },
-  score: {
-    alignItems: "center",
-    backgroundColor: colors.blueSoft,
-    borderRadius: radius.round,
-    height: 56,
-    justifyContent: "center",
-    width: 56,
+  summaryTitle: {
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: "900",
+    lineHeight: 20,
   },
-  scoreValue: { color: colors.blue, fontSize: 20, fontVariant: ["tabular-nums"], fontWeight: "900" },
-  scoreLabel: { color: colors.blue, fontSize: 8, fontWeight: "800" },
+  factRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  fact: {
+    backgroundColor: colors.background,
+    borderRadius: radius.pill,
+    color: colors.ink,
+    fontSize: 9,
+    fontWeight: "800",
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  summaryMeta: {
+    color: colors.muted,
+    fontSize: 9,
+    fontWeight: "600",
+    lineHeight: 14,
+  },
   tools: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   tool: {
     alignItems: "center",
@@ -229,29 +356,75 @@ const styles = StyleSheet.create({
   toolActive: { backgroundColor: colors.navyRaised },
   toolText: { color: colors.muted, fontSize: 9, fontWeight: "800" },
   toolTextActive: { color: colors.card },
-  forecastNotice: { backgroundColor: colors.blueSoft, borderRadius: radius.md, gap: 3, padding: spacing.sm },
+  forecastNotice: {
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    gap: 3,
+    padding: spacing.sm,
+  },
   forecastTitle: { color: colors.blue, fontSize: 10, fontWeight: "900" },
   forecastBody: { color: "#3B5F91", fontSize: 9, lineHeight: 14 },
-  actions: { flexDirection: "row", gap: spacing.sm },
+  disabledCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+    opacity: 0.72,
+    padding: spacing.md,
+  },
+  disabledTitle: { color: colors.ink, fontSize: 11, fontWeight: "800" },
+  disabledText: { color: colors.muted, fontSize: 9, fontWeight: "700" },
   secondaryButton: {
     alignItems: "center",
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderRadius: radius.md,
     borderWidth: 1,
-    flex: 1,
     justifyContent: "center",
     minHeight: 44,
   },
   secondaryText: { color: colors.ink, fontSize: 12, fontWeight: "800" },
-  primaryButton: {
+  disabledButton: {
+    alignItems: "center",
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    gap: 2,
+    justifyContent: "center",
+    minHeight: 48,
+    opacity: 0.72,
+  },
+  disabledButtonTitle: { color: colors.blue, fontSize: 12, fontWeight: "900" },
+  disabledButtonText: { color: colors.muted, fontSize: 9, fontWeight: "700" },
+  pressed: { opacity: 0.68 },
+  boundary: {
+    color: colors.muted,
+    fontSize: 9,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  stateBack: {
+    alignItems: "flex-start",
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  stateBackText: { color: colors.blue, fontSize: 12, fontWeight: "900" },
+  stateCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    padding: spacing.lg,
+  },
+  stateTitle: { color: colors.ink, fontSize: 16, fontWeight: "900" },
+  stateBody: { color: colors.muted, fontSize: 10, lineHeight: 16 },
+  retryButton: {
     alignItems: "center",
     backgroundColor: colors.blue,
     borderRadius: radius.md,
     justifyContent: "center",
-    minHeight: 48,
+    minHeight: 44,
   },
-  primaryText: { color: colors.card, fontSize: 13, fontWeight: "900" },
-  pressed: { opacity: 0.68 },
-  boundary: { color: colors.muted, fontSize: 9, fontWeight: "700", textAlign: "center" },
+  retryText: { color: colors.card, fontSize: 11, fontWeight: "900" },
 });

@@ -1,76 +1,103 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import type { ParticipationProxy, ReportedOwnership } from "@/domain/models";
+import type {
+  DelayedInstitutionalHolding,
+  ParticipationBar,
+} from "@/domain/models";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 type ParticipationCardProps = {
-  proxy: ParticipationProxy;
-  reported: ReportedOwnership;
+  bars: ParticipationBar[];
+  holdings: DelayedInstitutionalHolding[];
 };
 
-const confidenceLabels = { low: "低", medium: "中", high: "高" } as const;
+function formatUtc(value: string) {
+  return value.replace("T", " ").replace(".000Z", " UTC");
+}
 
-export function ParticipationCard({ proxy, reported }: ParticipationCardProps) {
-  const uncertainty = { low: 12, medium: 8, high: 5 }[proxy.confidence];
+export function ParticipationCard({
+  bars,
+  holdings,
+}: ParticipationCardProps) {
+  const latestAvailable = [...bars]
+    .reverse()
+    .find(
+      (bar) =>
+        bar.qualityStatus === "live" &&
+        bar.mainShare !== null &&
+        bar.retailShare !== null,
+    );
+  const missing = bars.filter(
+    ({ qualityStatus }) => qualityStatus === "unavailable",
+  );
+  const latestHolding = holdings[0];
+
   return (
-    <View style={styles.card} testID="participation-proxy">
+    <View style={styles.card} testID="participation-summary">
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>盘中参与结构</Text>
-          <Text style={styles.title}>主力 / 散户资金代理</Text>
+          <Text style={styles.title}>订单规模活动占比</Text>
         </View>
         <View style={styles.proxyBadge}>
-          <Text style={styles.proxyText}>{proxy.label}</Text>
+          <Text style={styles.proxyText}>非账户身份</Text>
         </View>
       </View>
-      <View
-        accessibilityLabel={`机构代理 ${proxy.institutionalPercent}%，散户代理 ${proxy.retailPercent}%`}
-        style={styles.bar}>
-        <View style={[styles.institution, { flex: proxy.institutionalPercent }]}>
-          <Text style={styles.barText}>{`机构代理 ${proxy.institutionalPercent}%`}</Text>
+
+      {latestAvailable ? (
+        <View
+          accessibilityLabel={`主力代理 ${(latestAvailable.mainShare! * 100).toFixed(1)}%，散户代理 ${(latestAvailable.retailShare! * 100).toFixed(1)}%`}
+          style={styles.bar}>
+          <View
+            style={[
+              styles.institution,
+              { flex: latestAvailable.mainShare! },
+            ]}
+          />
+          <View
+            style={[styles.retail, { flex: latestAvailable.retailShare! }]}
+          />
         </View>
-        <View style={[styles.retail, { flex: proxy.retailPercent }]}>
-          <Text style={styles.barText}>{`散户代理 ${proxy.retailPercent}%`}</Text>
-        </View>
-      </View>
+      ) : null}
+      <Text style={styles.latest}>
+        {latestAvailable
+          ? `主力代理 ${(latestAvailable.mainShare! * 100).toFixed(1)}% · 散户代理 ${(latestAvailable.retailShare! * 100).toFixed(1)}%`
+          : "暂无可用活动占比"}
+      </Text>
       <Text style={styles.note}>
-        并非真实账户身份；由成交规模、场所与时序特征估算。置信度{" "}
-        {confidenceLabels[proxy.confidence]} · {proxy.sourceCoverage} · {proxy.methodVersion}
+        订单规模活动代理 · 非真实机构身份 · 每根活动柱与已完成 K 线一一对应
       </Text>
-      <Text style={styles.uncertainty}>
-        估算时点 {formatAsOf(proxy.estimatedAt)} · 误差带约 ±{uncertainty} 个百分点；未分类流量会降低置信度。
-      </Text>
+      {missing.length ? (
+        <Text style={styles.uncertainty}>
+          {missing.length} 根缺失 ·{" "}
+          {missing.map(({ missingReason }) => missingReason).join("；")}
+        </Text>
+      ) : null}
+
       <View style={styles.divider} />
       <View style={styles.reportedHeader}>
-        <Text style={styles.reportedTitle}>正式申报持仓</Text>
-        <Text style={styles.date}>{`报告期 ${reported.reportedAt}`}</Text>
+        <Text style={styles.reportedTitle}>机构持仓披露 · 延迟数据</Text>
+        <Text style={styles.date}>独立于盘中活动</Text>
       </View>
-      <View style={styles.ownershipRow}>
-        <Text style={styles.ownership}>机构 {reported.institutionalPercent}%</Text>
-        <Text style={styles.ownership}>内部人 {reported.insiderPercent}%</Text>
-        <Text style={styles.ownership}>其他 {reported.otherPercent}%</Text>
-      </View>
-      {reported.changes.map((change) => (
-        <Text key={change} style={styles.change}>
-          · {change}
-        </Text>
-      ))}
-      <Text style={styles.uncertainty}>披露可用时间 {formatAsOf(reported.availableAt)}</Text>
+      {latestHolding ? (
+        <>
+          <Text style={styles.ownership}>
+            {latestHolding.period} · {latestHolding.holdingPercent.toFixed(2)}% ·{" "}
+            {latestHolding.institutionCount} 家机构
+          </Text>
+          <Text style={styles.uncertainty}>
+            报告期 {formatUtc(latestHolding.reportedAt)} · 可用时间{" "}
+            {formatUtc(latestHolding.availableAt)}
+          </Text>
+          <Text style={styles.uncertainty}>
+            {latestHolding.source} · {latestHolding.methodVersion}
+          </Text>
+        </>
+      ) : (
+        <Text style={styles.uncertainty}>暂无延迟申报持仓</Text>
+      )}
     </View>
   );
-}
-
-function formatAsOf(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleString("zh-CN", {
-        hour12: false,
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
 }
 
 const styles = StyleSheet.create({
@@ -82,22 +109,48 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.md,
   },
-  header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  header: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
   eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "700" },
   title: { color: colors.ink, fontSize: 15, fontWeight: "900", marginTop: 1 },
-  proxyBadge: { backgroundColor: colors.amberSoft, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 4 },
+  proxyBadge: {
+    backgroundColor: colors.amberSoft,
+    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
   proxyText: { color: "#8B5C08", fontSize: 9, fontWeight: "900" },
-  bar: { borderRadius: radius.sm, flexDirection: "row", height: 31, overflow: "hidden" },
-  institution: { alignItems: "center", backgroundColor: colors.navyRaised, justifyContent: "center" },
-  retail: { alignItems: "center", backgroundColor: colors.blue, justifyContent: "center" },
-  barText: { color: colors.card, fontSize: 9, fontWeight: "800" },
+  bar: {
+    borderRadius: radius.sm,
+    flexDirection: "row",
+    height: 12,
+    overflow: "hidden",
+  },
+  institution: { backgroundColor: colors.navyRaised },
+  retail: { backgroundColor: colors.blue },
+  latest: {
+    color: colors.ink,
+    fontSize: 10,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "800",
+  },
   note: { color: colors.muted, fontSize: 10, lineHeight: 15 },
   uncertainty: { color: colors.muted, fontSize: 8, lineHeight: 12 },
   divider: { backgroundColor: colors.line, height: StyleSheet.hairlineWidth },
-  reportedHeader: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  reportedHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
   reportedTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
   date: { color: colors.muted, fontSize: 9, fontWeight: "700" },
-  ownershipRow: { flexDirection: "row", gap: spacing.md },
-  ownership: { color: colors.ink, fontSize: 10, fontVariant: ["tabular-nums"], fontWeight: "700" },
-  change: { color: colors.muted, fontSize: 10, lineHeight: 14 },
+  ownership: {
+    color: colors.ink,
+    fontSize: 10,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "700",
+  },
 });
