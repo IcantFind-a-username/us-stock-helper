@@ -6,6 +6,7 @@ import type { WatchlistQuote } from "@/domain/models";
 import { colors } from "@/theme/tokens";
 
 type WatchlistStripProps = {
+  accessibilityLabel: string;
   title?: string;
   quotes: WatchlistQuote[];
   onPress(symbol: string): void;
@@ -14,9 +15,14 @@ type WatchlistStripProps = {
 
 const directionCopy = { bullish: "上涨", neutral: "持平", bearish: "下跌" } as const;
 
-export function WatchlistStrip({ quotes, onOpenSource, onPress }: WatchlistStripProps) {
+export function WatchlistStrip({
+  accessibilityLabel,
+  quotes,
+  onOpenSource,
+  onPress,
+}: WatchlistStripProps) {
   return (
-    <View accessibilityLabel="自选行情，演示">
+    <View accessibilityLabel={accessibilityLabel}>
       <DashboardSectionHeader
         actionLabel="来自 moomoo ›"
         onAction={onOpenSource}

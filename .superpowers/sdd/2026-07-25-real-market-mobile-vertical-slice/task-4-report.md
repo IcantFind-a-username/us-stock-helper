@@ -99,3 +99,84 @@ Unrelated untracked plan documents were preserved and excluded from the commit.
   `自选行情，演示` even when supplied live rows. It was outside the brief and
   was not changed; visual state and row data are explicit, but that legacy
   accessibility label should be parameterized in a follow-up.
+
+## Fix Round 1
+
+### Status
+
+Complete. Both concerns above are resolved, and the review-requested strict
+watchlist and runtime-config boundaries are covered at their production entry
+points.
+
+### Changes
+
+- Gateway snapshot, candle, and watchlist requests now accept a caller
+  `AbortSignal`. The gateway combines it with its own timeout controller,
+  removes the caller listener, and clears the timeout in `finally`.
+- The production repository forwards request cancellation through to the
+  gateway. Unmounting the last provider consumer now aborts the actual fetch
+  signal, while the gateway timeout still aborts and reports `timeout`.
+- Added strict `getWatchlist`; the production repository no longer calls the
+  fixture fallback API. Login-required, permission, offline, stale, and schema
+  validation errors keep their categories through the repository. Only
+  offline, stale, and timeout failures retry while a consumer remains mounted.
+- The real runtime-config getter now reads
+  `EXPO_PUBLIC_MARKET_GATEWAY_TOKEN` in every build so production fails closed
+  if it is present; only development returns it as an authorization token.
+  Tests restore both `__DEV__` and environment variables after every case.
+- `WatchlistStrip` now receives its accessibility label from Dashboard.
+  VoiceOver distinguishes demo, verified-live time, and stale original time.
+
+### TDD Evidence
+
+RED:
+
+- Caller-cancellation tests observed that both the strict snapshot fetch and
+  the provider's last-consumer unmount left the actual fetch signal un-aborted.
+- Strict watchlist tests initially failed because `getWatchlist` did not exist.
+- Repository category tests observed `validation` instead of
+  `login-required`, `permission`, and `stale` while the legacy fallback helper
+  was still in use.
+- The real config getter neither rejected the production gateway token nor
+  returned it in development.
+- Dashboard live and stale accessibility queries found only the hard-coded
+  `自选行情，演示` label.
+
+GREEN:
+
+- Focused config + gateway + repository + provider + Dashboard:
+  5 suites, 77 tests passed.
+- Full mobile: 25 suites, 132 tests passed.
+- `npm run typecheck`: exit 0.
+- `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin npm run lint`: exit 0
+  under Node `22.23.1`, with no warnings.
+- `git diff --check`: clean.
+
+### Files
+
+- `apps/mobile/src/config/runtimeConfig.ts`
+- `apps/mobile/src/config/__tests__/runtimeConfig.test.ts`
+- `apps/mobile/src/data/marketGateway.ts`
+- `apps/mobile/src/data/__tests__/marketGateway.test.ts`
+- `apps/mobile/src/data/marketRepository.ts`
+- `apps/mobile/src/data/__tests__/marketRepository.test.ts`
+- `apps/mobile/src/state/__tests__/MarketDataProvider.test.tsx`
+- `apps/mobile/src/components/dashboard/WatchlistStrip.tsx`
+- `apps/mobile/src/screens/DashboardScreen.tsx`
+- `apps/mobile/src/screens/__tests__/DashboardScreen.test.tsx`
+
+### Self-Review
+
+- Abort propagation is transport-level, not merely subscription-level, and
+  listener/timer cleanup is deterministic.
+- Production watchlist code has no fixture fallback and preserves actionable
+  error categories.
+- Production rejects any configured public gateway token rather than silently
+  ignoring it.
+- Accessibility metadata matches the same market state and verified timestamp
+  shown visually.
+- Unrelated untracked plan documents remain untouched and excluded.
+
+### Concerns
+
+None.

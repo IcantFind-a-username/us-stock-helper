@@ -227,24 +227,14 @@ export function createGatewayMarketRepository(
   });
 
   return createMarketRepository({
-    loadSnapshot: (query) =>
-      client.getStockSnapshot(query.symbol, query.interval, query.count),
-    async loadWatchlist() {
-      const result = await client.getWatchlistOrFallback([]);
-      if (result.source !== "moomoo" || result.asOf === null) {
-        throw new MarketDataError(
-          result.fallbackReason === "gateway-invalid"
-            ? "validation"
-            : "offline",
-          "live watchlist is unavailable",
-        );
-      }
-      return {
-        source: "moomoo",
-        asOf: result.asOf,
-        quotes: result.quotes,
-      };
-    },
+    loadSnapshot: (query, signal) =>
+      client.getStockSnapshot(
+        query.symbol,
+        query.interval,
+        query.count,
+        signal,
+      ),
+    loadWatchlist: (signal) => client.getWatchlist(signal),
   });
 }
 

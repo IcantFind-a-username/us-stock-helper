@@ -35,6 +35,12 @@ export type WatchlistResult = {
   fallbackReason?: "gateway-unavailable" | "gateway-invalid";
 };
 
+export type LiveWatchlistResult = {
+  source: "moomoo";
+  asOf: string;
+  quotes: WatchlistQuote[];
+};
+
 export type CandleResult = {
   source: "moomoo";
   symbol: string;
@@ -139,7 +145,7 @@ function decodeEnvelope(value: unknown, options: DecodeOptions = {}): GatewayEnv
     throw new GatewayValidationError("response is not yet available at this decision time");
   }
   if (now.getTime() - availableAt.getTime() > maxAgeMs) {
-    throw new GatewayValidationError("response is stale");
+    throw new GatewayRequestError("stale", "response is stale");
   }
 
   return { asOf, availableAt, items: value.items };
@@ -161,7 +167,7 @@ function directionFor(changePercent: number): Direction {
 export function decodeWatchlistEnvelope(
   value: unknown,
   options: DecodeOptions = {},
-): WatchlistResult {
+): LiveWatchlistResult {
   const envelope = decodeEnvelope(value, options);
   const quotes = envelope.items.map((item) => {
     if (!isRecord(item)) throw new GatewayValidationError("watchlist item must be an object");
@@ -674,8 +680,14 @@ export function createMarketGatewayClient({
     );
   }
 
-  async function fetchJson(path: string) {
+  async function fetchJson(path: string, callerSignal?: AbortSignal) {
     const controller = new AbortController();
+    const abortFromCaller = () => controller.abort();
+    if (callerSignal?.aborted) {
+      abortFromCaller();
+    } else {
+      callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+    }
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(`${normalizedBaseUrl}${path}`, {
@@ -698,19 +710,20 @@ export function createMarketGatewayClient({
       return payload;
     } finally {
       clearTimeout(timeout);
+      callerSignal?.removeEventListener("abort", abortFromCaller);
     }
   }
 
   function toSnapshotRequestError(error: unknown): GatewayRequestError {
     if (error instanceof GatewayRequestError) return error;
     if (error instanceof GatewayHttpError) {
+      if (error.status === 401) return new GatewayRequestError("login-required", error.message);
+      if (error.status === 403) return new GatewayRequestError("permission", error.message);
+      if (error.status === 408 || error.status === 504) return new GatewayRequestError("timeout", error.message);
       if (isRecord(error.payload)) {
         const snapshotError = decodeSnapshotError(error.payload);
         if (snapshotError) return snapshotError;
       }
-      if (error.status === 401) return new GatewayRequestError("login-required", error.message);
-      if (error.status === 403) return new GatewayRequestError("permission", error.message);
-      if (error.status === 408 || error.status === 504) return new GatewayRequestError("timeout", error.message);
       return new GatewayRequestError("malformed", error.message);
     }
     if (error instanceof Error && error.name === "AbortError") {
@@ -722,22 +735,41 @@ export function createMarketGatewayClient({
     return new GatewayRequestError("offline", "gateway request is unavailable");
   }
 
+  async function getWatchlist(signal?: AbortSignal): Promise<LiveWatchlistResult> {
+    let payload: unknown;
+    try {
+      payload = await fetchJson("/watchlist", signal);
+    } catch (error) {
+      if (
+        signal?.aborted &&
+        error instanceof Error &&
+        error.name === "AbortError"
+      ) {
+        throw error;
+      }
+      throw toSnapshotRequestError(error);
+    }
+    return decodeWatchlistEnvelope(payload, { maxAgeMs, now: now() });
+  }
+
   return {
+    getWatchlist,
     async getWatchlistOrFallback(
       fallbackQuotes: WatchlistQuote[],
     ): Promise<WatchlistResult> {
       try {
-        const payload = await fetchJson("/watchlist");
-        return decodeWatchlistEnvelope(payload, { maxAgeMs, now: now() });
+        return await getWatchlist();
       } catch (error) {
+        const gatewayUnavailable =
+          error instanceof GatewayRequestError &&
+          (error.kind === "offline" || error.kind === "timeout");
         return {
           source: "fixture",
           asOf: null,
           quotes: fallbackQuotes,
-          fallbackReason:
-            error instanceof GatewayValidationError
-              ? "gateway-invalid"
-              : "gateway-unavailable",
+          fallbackReason: gatewayUnavailable
+            ? "gateway-unavailable"
+            : "gateway-invalid",
         };
       }
     },
@@ -745,6 +777,7 @@ export function createMarketGatewayClient({
       symbol: string,
       interval: CandleInterval,
       count = 200,
+      signal?: AbortSignal,
     ): Promise<CandleResult> {
       const normalizedSymbol = normalizeUsSymbol(symbol);
       if (!Number.isInteger(count) || count < 1 || count > 1_000) {
@@ -757,7 +790,7 @@ export function createMarketGatewayClient({
         interval,
         count: String(count),
       });
-      const payload = await fetchJson(`/candles?${query.toString()}`);
+      const payload = await fetchJson(`/candles?${query.toString()}`, signal);
       const result = decodeCandleEnvelope(payload, {
         maxAgeMs,
         now: now(),
@@ -776,6 +809,7 @@ export function createMarketGatewayClient({
       symbol: string,
       interval: CandleInterval,
       count = 200,
+      signal?: AbortSignal,
     ): Promise<LiveStockSnapshot> {
       const normalizedSymbol = normalizeUsSymbol(symbol);
       if (!Number.isInteger(count) || count < 1 || count > 1_000) {
@@ -789,7 +823,10 @@ export function createMarketGatewayClient({
         count: String(count),
       });
       try {
-        const payload = await fetchJson(`/stock-snapshot?${query.toString()}`);
+        const payload = await fetchJson(
+          `/stock-snapshot?${query.toString()}`,
+          signal,
+        );
         const snapshot = decodeStockSnapshotEnvelope(payload, {
           maxAgeMs,
           now: now(),
@@ -799,6 +836,13 @@ export function createMarketGatewayClient({
         }
         return snapshot;
       } catch (error) {
+        if (
+          signal?.aborted &&
+          error instanceof Error &&
+          error.name === "AbortError"
+        ) {
+          throw error;
+        }
         throw toSnapshotRequestError(error);
       }
     },

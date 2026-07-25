@@ -127,6 +127,13 @@ export function DashboardScreen() {
     );
   };
 
+  const watchlistAccessibilityLabel =
+    marketWatchlist.status === "demo"
+      ? "自选行情，演示"
+      : marketWatchlist.status === "stale"
+        ? `自选行情，陈旧，原始时间 ${marketWatchlist.lastVerifiedAt ?? "未知"}`
+        : `自选行情，实时，验证时间 ${marketWatchlist.lastVerifiedAt ?? "未知"}`;
+
   const watchlistSurface =
     marketWatchlist.status === "unavailable" ? (
       <View style={styles.watchlistState}>
@@ -172,6 +179,7 @@ export function DashboardScreen() {
           ) : null}
         </View>
         <WatchlistStrip
+          accessibilityLabel={watchlistAccessibilityLabel}
           onOpenSource={openWatchlistSource}
           onPress={openStock}
           quotes={watchlistQuotes}

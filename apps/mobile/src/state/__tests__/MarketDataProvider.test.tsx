@@ -1,5 +1,6 @@
 import { expect, it, jest } from "@jest/globals";
 import {
+  act,
   fireEvent,
   render,
   waitFor,
@@ -8,6 +9,7 @@ import { Pressable, Text, View } from "react-native";
 
 import { readRuntimeConfig } from "@/config/runtimeConfig";
 import {
+  createGatewayMarketRepository,
   createMarketRepository,
   MarketDataError,
   type MarketDataSource,
@@ -87,6 +89,7 @@ function WatchlistProbe() {
       <Text testID="watchlist-source">{result.data?.source ?? "none"}</Text>
       <Text testID="watchlist-count">{result.data?.quotes.length ?? 0}</Text>
       <Text testID="watchlist-verified">{result.lastVerifiedAt ?? "none"}</Text>
+      <Text testID="watchlist-error">{result.error?.category ?? "none"}</Text>
     </View>
   );
 }
@@ -281,6 +284,56 @@ it("starts a new request when the same key remounts after every consumer cancels
   firstRequest.resolve(liveSnapshot());
 });
 
+it("aborts the production fetch when its last mounted consumer unmounts", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchSignal: AbortSignal | undefined;
+  let resolveFetch!: (response: Response) => void;
+  const fetchImpl = jest.fn(
+    async (_url: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        resolveFetch = resolve;
+        fetchSignal = init?.signal as AbortSignal;
+        fetchSignal.addEventListener(
+          "abort",
+          () =>
+            reject(
+              Object.assign(new Error("consumer cancelled"), {
+                name: "AbortError",
+              }),
+            ),
+          { once: true },
+        );
+      }),
+  ) as unknown as typeof fetch;
+  globalThis.fetch = fetchImpl;
+
+  try {
+    const repository = createGatewayMarketRepository({
+      apiUrl: "http://127.0.0.1:8765",
+    });
+    const view = await render(
+      <MarketDataProvider repository={repository}>
+        <SnapshotProbe symbol="NVDA" />
+      </MarketDataProvider>,
+    );
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+    await view.unmount();
+    const aborted = fetchSignal?.aborted;
+    if (!aborted) {
+      resolveFetch({
+        ok: true,
+        status: 200,
+        json: async () => stockSnapshotFixture(),
+      } as Response);
+      await Promise.resolve();
+    }
+    expect(aborted).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 it("rejects embedded development tokens from production runtime configuration", () => {
   expect(() =>
     readRuntimeConfig({
@@ -338,4 +391,73 @@ it("does not schedule endless retries for permission or validation failures", as
   jest.runOnlyPendingTimers();
   expect(loadSnapshot).toHaveBeenCalledTimes(1);
   jest.useRealTimers();
+});
+
+it.each(["login-required", "permission", "validation"] as const)(
+  "does not retry a watchlist %s failure",
+  async (category) => {
+    jest.useFakeTimers();
+    try {
+      const loadWatchlist = jest.fn<MarketDataSource["loadWatchlist"]>(
+        async () => {
+          throw new MarketDataError(category, category);
+        },
+      );
+      const repository = repositoryWith(
+        async () => liveSnapshot(),
+        loadWatchlist,
+      );
+      const view = await render(
+        <MarketDataProvider
+          repository={repository}
+          retryDelaysMs={[1, 2, 4, 8, 30]}>
+          <WatchlistProbe />
+        </MarketDataProvider>,
+      );
+
+      await waitFor(() =>
+        expect(view.getByTestId("watchlist-status").props.children).toBe(
+          "unavailable",
+        ),
+      );
+      jest.runOnlyPendingTimers();
+      expect(loadWatchlist).toHaveBeenCalledTimes(1);
+      expect(view.getByTestId("watchlist-error").props.children).toBe(category);
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
+it("retries an offline watchlist while a consumer remains mounted", async () => {
+  jest.useFakeTimers();
+  try {
+    const loadWatchlist = jest.fn<MarketDataSource["loadWatchlist"]>(
+      async () => {
+        throw new MarketDataError("offline", "offline");
+      },
+    );
+    const repository = repositoryWith(
+      async () => liveSnapshot(),
+      loadWatchlist,
+    );
+    const view = await render(
+      <MarketDataProvider repository={repository} retryDelaysMs={[10]}>
+        <WatchlistProbe />
+      </MarketDataProvider>,
+    );
+    await waitFor(() =>
+      expect(view.getByTestId("watchlist-status").props.children).toBe(
+        "unavailable",
+      ),
+    );
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10);
+    });
+    expect(loadWatchlist).toHaveBeenCalledTimes(2);
+    await view.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
 });

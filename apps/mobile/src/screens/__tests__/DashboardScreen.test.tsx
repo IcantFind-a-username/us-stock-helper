@@ -73,6 +73,7 @@ it("shows the short-first conclusion, objective dashboard context, and accessibl
   expect(view.getByText("短线 · 0–5日")).toBeTruthy();
   expect(view.getByText("谨慎偏多")).toBeTruthy();
   expect(view.getByText("新闻与社交情绪改善，但市场广度和期限结构仍要求确认。")).toBeTruthy();
+  expect(view.getByLabelText("自选行情，演示")).toBeTruthy();
   expect(view.getByTestId("watchlist-grid")).toBeTruthy();
 
   const evidenceAction = view.getByRole("button", { name: "查看完整依据" });
@@ -256,6 +257,11 @@ it("renders verified moomoo watchlist rows without fixture fallback", async () =
   const view = await renderDashboard({ repository, demoMode: false });
 
   await waitFor(() => expect(view.getByText("实时行情")).toBeTruthy());
+  expect(
+    view.getByLabelText(
+      "自选行情，实时，验证时间 2026-07-25T15:59:50.000Z",
+    ),
+  ).toBeTruthy();
   expect(view.getAllByTestId("watchlist-quote")).toHaveLength(2);
   expect(view.getByText("AAPL")).toBeTruthy();
   expect(view.getByText("MSFT")).toBeTruthy();
@@ -291,6 +297,11 @@ it("keeps verified rows and their original time when a refresh becomes stale", a
   await waitFor(() => expect(view.getByText("实时行情")).toBeTruthy());
   await fireEvent.press(view.getByRole("button", { name: "刷新行情" }));
   await waitFor(() => expect(view.getByText(/^行情已延迟/)).toBeTruthy());
+  expect(
+    view.getByLabelText(
+      "自选行情，陈旧，原始时间 2026-07-25T15:59:50.000Z",
+    ),
+  ).toBeTruthy();
   expect(view.getByText("AAPL")).toBeTruthy();
   expect(view.getByText(/2026-07-25T15:59:50.000Z/)).toBeTruthy();
 });
@@ -307,6 +318,19 @@ it("shows one actionable unavailable state with the error category", async () =>
   expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
   expect(view.queryByTestId("watchlist-grid")).toBeNull();
   expect(view.queryByTestId("watchlist-quote")).toBeNull();
+});
+
+it("shows login-required without rendering fallback rows", async () => {
+  const repository = repositoryWithWatchlist(async () => {
+    throw new MarketDataError("login-required", "login required");
+  });
+  const view = await renderDashboard({ repository, demoMode: false });
+
+  await waitFor(() =>
+    expect(view.getByText("行情不可用 · login-required")).toBeTruthy(),
+  );
+  expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
+  expect(view.queryByTestId("watchlist-grid")).toBeNull();
 });
 
 it("shows the explicit demo switch only to developers", async () => {

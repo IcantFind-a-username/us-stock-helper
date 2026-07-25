@@ -32,16 +32,9 @@ export function readRuntimeConfig({
 export function getMarketRuntimeConfig(): MarketRuntimeConfig {
   const development = typeof __DEV__ !== "undefined" && __DEV__;
 
-  if (development) {
-    return readRuntimeConfig({
-      apiUrl: process.env.EXPO_PUBLIC_MARKET_API_URL,
-      development: true,
-      developmentToken: process.env.EXPO_PUBLIC_MARKET_API_DEV_TOKEN,
-    });
-  }
-
   return readRuntimeConfig({
     apiUrl: process.env.EXPO_PUBLIC_MARKET_API_URL,
-    development: false,
+    development,
+    developmentToken: process.env.EXPO_PUBLIC_MARKET_GATEWAY_TOKEN,
   });
 }
