@@ -19,17 +19,25 @@ class SmokeFailure(ValueError):
     pass
 
 
-_TRADING_CAPABILITIES = {
+_TRADING_CAPABILITY_IDENTIFIERS = {
     "opensectradecontext",
     "unlocktrade",
     "placeorder",
     "modifyorder",
     "cancelorder",
+}
+_TRADING_STRUCTURE_KEYS = {
     "orders",
     "tradeorders",
     "tradecontext",
     "tradeendpoint",
     "tradingcapability",
+}
+_SNAPSHOT_STATUSES = {"live", "delayed", "stale", "unavailable", "demo"}
+_PROVENANCE_SOURCES = {
+    "moomoo",
+    "analysis-core",
+    "moomoo-delayed-institutional-disclosure",
 }
 
 
@@ -80,45 +88,119 @@ def _number(value: object, label: str) -> float:
     return result
 
 
+def _non_empty_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SmokeFailure(f"{label} must be non-empty")
+    return value
+
+
+def _normalized_identifier(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def _has_trade_order_path(value: str) -> bool:
+    segments = [
+        _normalized_identifier(segment)
+        for segment in re.split(r"[/?#]+", value)
+        if segment
+    ]
+    return any(
+        left == "trade" and right == "orders"
+        for left, right in zip(segments, segments[1:])
+    )
+
+
+def _has_trading_capability(value: object, *, is_key: bool) -> bool:
+    normalized = _normalized_identifier(value)
+    if any(
+        capability in normalized
+        for capability in _TRADING_CAPABILITY_IDENTIFIERS
+    ):
+        return True
+    if is_key and normalized in _TRADING_STRUCTURE_KEYS:
+        return True
+    return isinstance(value, str) and _has_trade_order_path(value)
+
+
 def _reject_trading_surface(value: object, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
-            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized in _TRADING_CAPABILITIES:
+            if _has_trading_capability(key, is_key=True):
                 raise SmokeFailure(f"trading capability found at {path}.{key}")
             _reject_trading_surface(child, f"{path}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _reject_trading_surface(child, f"{path}[{index}]")
-    elif isinstance(value, str):
-        normalized = re.sub(r"[^a-z0-9]", "", value.lower())
-        if normalized in _TRADING_CAPABILITIES:
-            raise SmokeFailure(f"trading capability found at {path}")
+    elif isinstance(value, str) and _has_trading_capability(value, is_key=False):
+        raise SmokeFailure(f"trading capability found at {path}")
 
 
-def _validate_source_children(
+def _validate_metadata(
     value: object,
+    label: str,
     cutoff: datetime,
-    path: str = "$",
-) -> None:
-    if isinstance(value, dict):
-        if path != "$" and "source" in value:
-            if not isinstance(value["source"], str) or not value["source"]:
-                raise SmokeFailure(f"{path}.source must be non-empty")
-            as_of = _timestamp(value.get("asOf"), f"{path}.asOf")
-            available_at = _timestamp(
-                value.get("availableAt"),
-                f"{path}.availableAt",
-            )
-            if as_of > cutoff or available_at > cutoff:
-                raise SmokeFailure(f"{path} is after the decision cutoff")
-            if as_of > available_at:
-                raise SmokeFailure(f"{path}.asOf follows availableAt")
-        for key, child in value.items():
-            _validate_source_children(child, cutoff, f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            _validate_source_children(child, cutoff, f"{path}[{index}]")
+) -> tuple[dict[str, Any], str, datetime, datetime, str, str]:
+    record = _record(value, label)
+    source = _non_empty_string(record.get("source"), f"{label}.source")
+    as_of = _timestamp(record.get("asOf"), f"{label}.asOf")
+    available_at = _timestamp(record.get("availableAt"), f"{label}.availableAt")
+    method = _non_empty_string(
+        record.get("methodVersion"),
+        f"{label}.methodVersion",
+    )
+    status = _non_empty_string(
+        record.get("qualityStatus"),
+        f"{label}.qualityStatus",
+    )
+    if status not in _SNAPSHOT_STATUSES:
+        raise SmokeFailure(f"{label}.qualityStatus is unsupported")
+    if as_of > cutoff or available_at > cutoff:
+        raise SmokeFailure(f"{label} is after the decision cutoff")
+    if as_of > available_at:
+        raise SmokeFailure(f"{label}.asOf follows availableAt")
+    return record, source, as_of, available_at, method, status
+
+
+def _validate_quote(payload: dict[str, Any], cutoff: datetime) -> None:
+    quote, source, _, _, method, status = _validate_metadata(
+        payload.get("quote"),
+        "quote",
+        cutoff,
+    )
+    if source != "moomoo":
+        raise SmokeFailure("quote has an unexpected source")
+    if method != "provider-quote-v1":
+        raise SmokeFailure("quote has an unexpected method")
+    if status != "live":
+        raise SmokeFailure("quote is not live")
+    if _number(quote.get("price"), "quote.price") <= 0:
+        raise SmokeFailure("quote.price must be positive")
+    _number(quote.get("changePercent"), "quote.changePercent")
+
+
+def _validate_provenance(payload: dict[str, Any], cutoff: datetime) -> None:
+    provenance = _array(payload.get("provenance"), "provenance")
+    for index, raw in enumerate(provenance):
+        label = f"provenance[{index}]"
+        _, source, _, _, _, _ = _validate_metadata(raw, label, cutoff)
+        if source not in _PROVENANCE_SOURCES:
+            raise SmokeFailure(f"{label} has an unsupported source")
+
+
+def _validate_holdings(payload: dict[str, Any], cutoff: datetime) -> None:
+    holdings = _array(
+        payload.get("institutionalHoldings"),
+        "institutionalHoldings",
+    )
+    for index, raw in enumerate(holdings):
+        label = f"institutionalHoldings[{index}]"
+        _, source, _, _, method, status = _validate_metadata(raw, label, cutoff)
+        if source != "moomoo-delayed-institutional-disclosure":
+            raise SmokeFailure(f"{label} has an unexpected source")
+        if method != "reported-holdings-v1":
+            raise SmokeFailure(f"{label} has an unexpected method")
+        if status != "delayed":
+            raise SmokeFailure(f"{label} is not delayed")
 
 
 def _validate_candles(payload: dict[str, Any], cutoff: datetime) -> list[datetime]:
@@ -211,6 +293,9 @@ def _validate_participation(
             }
             main_share = values["mainShare"]
             retail_share = values["retailShare"]
+            main_activity = values["mainActivity"]
+            retail_activity = values["retailActivity"]
+            activity_denominator = main_activity + retail_activity
             if (
                 not 0 <= main_share <= 1
                 or not 0 <= retail_share <= 1
@@ -219,8 +304,22 @@ def _validate_participation(
                 raise SmokeFailure(
                     f"{label} shares must exactly sum to one within [0, 1]"
                 )
-            if values["mainActivity"] < 0 or values["retailActivity"] < 0:
+            if main_activity < 0 or retail_activity < 0:
                 raise SmokeFailure(f"{label} activity must be non-negative")
+            if coverage <= 0:
+                raise SmokeFailure(f"{label} live coverage must be positive")
+            if activity_denominator <= 0:
+                raise SmokeFailure(
+                    f"{label} live activity denominator must be positive"
+                )
+            expected_main_share = main_activity / activity_denominator
+            if (
+                main_share != expected_main_share
+                or retail_share != 1.0 - expected_main_share
+            ):
+                raise SmokeFailure(
+                    f"{label} shares are inconsistent with activity"
+                )
             if bar.get("missingReason") is not None:
                 raise SmokeFailure(f"{label} live data cannot have a missing reason")
             valid_count += 1
@@ -246,15 +345,16 @@ def _validate_indicators(payload: dict[str, Any], cutoff: datetime) -> None:
         "magicNine": "sequential-close-4-v1",
     }
     for name, method in expected.items():
-        indicator = _record(indicators.get(name), f"indicators.{name}")
-        if indicator.get("source") != "analysis-core":
-            raise SmokeFailure(f"indicators.{name} has an unexpected source")
-        if indicator.get("methodVersion") != method:
-            raise SmokeFailure(f"indicators.{name} has an unexpected method")
-        available_at = _timestamp(
-            indicator.get("availableAt"),
-            f"indicators.{name}.availableAt",
+        label = f"indicators.{name}"
+        _, source, _, available_at, actual_method, status = (
+            _validate_metadata(indicators.get(name), label, cutoff)
         )
+        if source != "analysis-core":
+            raise SmokeFailure(f"indicators.{name} has an unexpected source")
+        if actual_method != method:
+            raise SmokeFailure(f"indicators.{name} has an unexpected method")
+        if status not in {"live", "unavailable"}:
+            raise SmokeFailure(f"indicators.{name} has an invalid quality status")
         if available_at != cutoff:
             raise SmokeFailure(
                 f"indicators.{name} does not use the common decision cutoff"
@@ -283,12 +383,12 @@ def validate_snapshot(
     cutoff = _timestamp(snapshot.get("decisionCutoff"), "decisionCutoff")
     if cutoff > (now or datetime.now(UTC)):
         raise SmokeFailure("decision cutoff is in the future")
-    _validate_source_children(snapshot, cutoff)
+    _validate_quote(snapshot, cutoff)
     closes = _validate_candles(snapshot, cutoff)
     _validate_participation(snapshot, closes, cutoff)
     _validate_indicators(snapshot, cutoff)
-    _array(snapshot.get("institutionalHoldings"), "institutionalHoldings")
-    _array(snapshot.get("provenance"), "provenance")
+    _validate_holdings(snapshot, cutoff)
+    _validate_provenance(snapshot, cutoff)
     warnings = _array(snapshot.get("warnings"), "warnings")
     if any(not isinstance(warning, str) for warning in warnings):
         raise SmokeFailure("warnings must contain only strings")

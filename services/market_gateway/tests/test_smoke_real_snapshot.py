@@ -243,6 +243,59 @@ class SmokeRealSnapshotTests(unittest.TestCase):
                 child["availableAt"] = "2026-07-25T04:00:06Z"
                 self.assert_rejected(payload)
 
+    def test_rejects_a_missing_or_incomplete_required_quote(self) -> None:
+        payloads = []
+
+        payload = valid_snapshot()
+        payload["quote"] = None
+        payloads.append(payload)
+
+        for field in (
+            "source",
+            "asOf",
+            "availableAt",
+            "methodVersion",
+            "qualityStatus",
+        ):
+            payload = valid_snapshot()
+            payload["quote"].pop(field)
+            payloads.append(payload)
+
+        for field, value in (
+            ("price", "172.8"),
+            ("price", -1),
+            ("changePercent", None),
+        ):
+            payload = valid_snapshot()
+            payload["quote"][field] = value
+            payloads.append(payload)
+
+        for payload in payloads:
+            with self.subTest(quote=payload["quote"]):
+                self.assert_rejected(payload)
+
+    def test_rejects_provenance_that_omits_required_contract_fields(self) -> None:
+        payloads = []
+
+        payload = valid_snapshot()
+        payload["provenance"] = ["moomoo"]
+        payloads.append(payload)
+
+        for field in (
+            "source",
+            "asOf",
+            "availableAt",
+            "methodVersion",
+            "qualityStatus",
+        ):
+            payload = valid_snapshot()
+            payload["provenance"][0].pop(field)
+            payloads.append(payload)
+
+        for payload in payloads:
+            with self.subTest(provenance=payload["provenance"]):
+                self.assert_rejected(payload)
+
     def test_rejects_out_of_order_or_duplicate_candles(self) -> None:
         payload = valid_snapshot()
         payload["completedCandles"].reverse()
@@ -273,6 +326,30 @@ class SmokeRealSnapshotTests(unittest.TestCase):
     def test_rejects_live_shares_without_any_numeric_tolerance(self) -> None:
         payload = valid_snapshot()
         payload["participationBars"][1]["mainShare"] = 0.6000000001
+
+        self.assert_rejected(payload)
+
+    def test_rejects_live_participation_without_positive_activity(self) -> None:
+        payload = valid_snapshot()
+        bar = payload["participationBars"][1]
+        bar["mainShare"] = 0.5
+        bar["retailShare"] = 0.5
+        bar["mainActivity"] = 0.0
+        bar["retailActivity"] = 0.0
+
+        self.assert_rejected(payload)
+
+    def test_rejects_live_participation_without_positive_coverage(self) -> None:
+        payload = valid_snapshot()
+        payload["participationBars"][1]["coverage"] = 0.0
+
+        self.assert_rejected(payload)
+
+    def test_rejects_live_shares_not_derived_from_activity(self) -> None:
+        payload = valid_snapshot()
+        bar = payload["participationBars"][1]
+        bar["mainShare"] = 0.5
+        bar["retailShare"] = 0.5
 
         self.assert_rejected(payload)
 
@@ -321,6 +398,52 @@ class SmokeRealSnapshotTests(unittest.TestCase):
         for payload in payloads:
             with self.subTest(extra=payload["quote"]):
                 self.assert_rejected(payload)
+
+    def test_rejects_prefixed_capabilities_and_nested_trade_paths(self) -> None:
+        payloads = []
+        for key, value in (
+            ("canUseOpenSec" + "TradeContext", False),
+            ("nested", {"endpoint": "/trade/orders/NVDA"}),
+            ("nested", {"endpoint": "/api/v2/trade/orders/NVDA"}),
+        ):
+            payload = valid_snapshot()
+            payload["quote"][key] = value
+            payloads.append(payload)
+
+        for warning in (
+            "SDK symbol OpenSec" + "TradeContext is present",
+            "call unlock_" + "trade before use",
+            "call place_" + "order before use",
+            "call modify_" + "order before use",
+            "call cancel_" + "order before use",
+        ):
+            payload = valid_snapshot()
+            payload["warnings"] = [warning]
+            payloads.append(payload)
+
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                self.assert_rejected(payload)
+
+    def test_allows_ordinary_read_only_explanatory_text(self) -> None:
+        payload = valid_snapshot()
+        payload["warnings"] = [
+            "Analysis only; no trading or order submission is available."
+        ]
+
+        result = self.run_fixture(payload)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_does_not_treat_an_unknown_object_as_required_snapshot_metadata(
+        self,
+    ) -> None:
+        payload = valid_snapshot()
+        payload["diagnostic"] = {"source": "internal-note", "message": "read only"}
+
+        result = self.run_fixture(payload)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_live_smoke_gets_health_then_the_read_only_snapshot(self) -> None:
         health = {
