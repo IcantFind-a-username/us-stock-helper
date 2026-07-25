@@ -26,18 +26,30 @@ export function ChartLegend({
       : []),
   ];
   return (
-    <View accessibilityLabel="图表图例" style={styles.row}>
-      {items.map((item) => (
-        <View key={item.label} style={styles.item}>
-          <View style={[styles.dot, { backgroundColor: item.color }]} />
-          <Text style={styles.label}>{item.label}</Text>
-        </View>
-      ))}
+    <View accessibilityLabel="图表图例" style={styles.legend}>
+      <View style={styles.row}>
+        {items.map((item) => (
+          <View key={item.label} style={styles.item}>
+            <View style={[styles.dot, { backgroundColor: item.color }]} />
+            <Text style={styles.label}>{item.label}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={styles.participation}>
+        <View style={[styles.bar, styles.mainBar]} />
+        <View style={[styles.bar, styles.retailBar]} />
+        <Text style={styles.participationLabel}>
+          订单规模活动占比 · 深色主力代理 / 浅色散户代理
+        </Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  legend: {
+    gap: spacing.xs,
+  },
   row: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -55,6 +67,27 @@ const styles = StyleSheet.create({
   },
   label: {
     color: colors.muted,
+    fontSize: 9,
+    fontWeight: "700",
+  },
+  participation: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
+  bar: {
+    height: 7,
+    width: 5,
+  },
+  mainBar: {
+    backgroundColor: colors.blue,
+  },
+  retailBar: {
+    backgroundColor: colors.navyMuted,
+  },
+  participationLabel: {
+    color: colors.navyMuted,
+    flexShrink: 1,
     fontSize: 9,
     fontWeight: "700",
   },

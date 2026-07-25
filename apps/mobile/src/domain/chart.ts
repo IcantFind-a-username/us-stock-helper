@@ -1,4 +1,8 @@
-import type { Candle, ForecastSnapshot } from "./models";
+import type {
+  Candle,
+  ForecastSnapshot,
+  ParticipationBar,
+} from "./models";
 
 export type CandleGeometry = {
   timestamp: string;
@@ -23,9 +27,21 @@ export type ForecastGeometry = {
   upper80Y: number;
 };
 
+export type ParticipationGeometry = {
+  timestamp: string;
+  x: number;
+  width: number;
+  top: number;
+  height: number;
+  mainHeight: number;
+  retailHeight: number;
+  available: boolean;
+};
+
 export type ChartGeometry = {
   candles: CandleGeometry[];
   forecastPoints: ForecastGeometry[];
+  participation: ParticipationGeometry[];
   boundaryX: number;
   band50: string;
   band80: string;
@@ -41,6 +57,7 @@ export type ChartGeometry = {
 const emptyGeometry = (width: number, height: number): ChartGeometry => ({
   candles: [],
   forecastPoints: [],
+  participation: [],
   boundaryX: width * 0.66,
   band50: "",
   band80: "",
@@ -72,32 +89,43 @@ export const resolveChartWidth = (viewportWidth: number) =>
 
 export function buildChartGeometry(
   candles: Candle[],
-  forecast: ForecastSnapshot,
+  forecast: ForecastSnapshot | null,
+  participationBars: ParticipationBar[],
   width: number,
   height: number,
 ): ChartGeometry {
-  const decisionTime = Date.parse(forecast.predictedAt);
-  const pointInTimeCandles = Number.isFinite(decisionTime)
+  const decisionTime =
+    forecast === null ? null : Date.parse(forecast.predictedAt);
+  const hasValidCutoff = decisionTime === null || Number.isFinite(decisionTime);
+  const pointInTimeCandles = hasValidCutoff
     ? candles
         .filter((candle) => {
           const availableAt = Date.parse(candle.availableAt);
-          return candle.complete && Number.isFinite(availableAt) && availableAt <= decisionTime;
+          return (
+            candle.complete &&
+            Number.isFinite(availableAt) &&
+            (decisionTime === null || availableAt <= decisionTime)
+          );
         })
         .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
+        .slice(-200)
     : [];
+  const forecastPoints = forecast?.points ?? [];
 
-  if (!pointInTimeCandles.length && !forecast.points.length) {
+  if (!pointInTimeCandles.length && !forecastPoints.length) {
     return emptyGeometry(width, height);
   }
 
   const inset = { left: 8, right: 42, top: 14 };
-  const priceBottom = height * 0.75;
-  const volumeTop = height * 0.82;
-  const volumeBottom = height - 8;
+  const priceBottom = height * 0.67;
+  const volumeTop = height * 0.73;
+  const participationHeight = 16;
+  const participationTop = height - participationHeight - 4;
+  const volumeBottom = participationTop - 8;
   const boundaryX = inset.left + (width - inset.left - inset.right) * 0.68;
   const allPrices = [
     ...pointInTimeCandles.flatMap(({ high, low }) => [high, low]),
-    ...forecast.points.flatMap(({ upper80, lower80 }) => [upper80, lower80]),
+    ...forecastPoints.flatMap(({ upper80, lower80 }) => [upper80, lower80]),
   ];
   const rawMin = Math.min(...allPrices);
   const rawMax = Math.max(...allPrices);
@@ -131,6 +159,38 @@ export function buildChartGeometry(
       volumeHeight,
     };
   });
+  const participationByTimestamp = new Map(
+    participationBars.map((bar) => [bar.closedAt, bar]),
+  );
+  const participation = candleGeometry.map(
+    (candle): ParticipationGeometry => {
+      const bar = participationByTimestamp.get(candle.timestamp);
+      const availableAt = bar ? Date.parse(bar.availableAt) : Number.NaN;
+      const hasShares =
+        bar?.qualityStatus === "live" &&
+        bar.mainShare !== null &&
+        bar.retailShare !== null &&
+        Number.isFinite(bar.mainShare) &&
+        Number.isFinite(bar.retailShare) &&
+        bar.mainShare >= 0 &&
+        bar.retailShare >= 0 &&
+        Math.abs(bar.mainShare + bar.retailShare - 1) <= 1e-9;
+      const available =
+        hasShares &&
+        Number.isFinite(availableAt) &&
+        (decisionTime === null || availableAt <= decisionTime);
+      return {
+        timestamp: candle.timestamp,
+        x: candle.x,
+        width: candle.bodyWidth,
+        top: participationTop,
+        height: participationHeight,
+        mainHeight: available ? participationHeight * bar.mainShare! : 0,
+        retailHeight: available ? participationHeight * bar.retailShare! : 0,
+        available,
+      };
+    },
+  );
   const ma5Path = linePath(
     pointInTimeCandles.flatMap((_, index) => {
       if (index < 4) return [];
@@ -142,8 +202,8 @@ export function buildChartGeometry(
   );
 
   const forecastSpan = Math.max(width - inset.right - boundaryX, 1);
-  const forecastGeometry = forecast.points.map((point, index): ForecastGeometry => {
-    const x = boundaryX + (forecastSpan * (index + 1)) / (forecast.points.length + 0.35);
+  const forecastGeometry = forecastPoints.map((point, index): ForecastGeometry => {
+    const x = boundaryX + (forecastSpan * (index + 1)) / (forecastPoints.length + 0.35);
     return {
       x,
       medianY: mapY(point.median),
@@ -166,6 +226,7 @@ export function buildChartGeometry(
   return {
     candles: candleGeometry,
     forecastPoints: forecastGeometry,
+    participation,
     boundaryX,
     band50: bandPath(forecastGeometry, "upper50Y", "lower50Y"),
     band80: bandPath(forecastGeometry, "upper80Y", "lower80Y"),
