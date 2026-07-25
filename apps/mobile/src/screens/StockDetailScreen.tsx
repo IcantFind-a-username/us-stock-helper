@@ -6,6 +6,7 @@ import { PriceChart } from "@/components/chart/PriceChart";
 import { IndicatorStrip } from "@/components/stock/IndicatorStrip";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { StockHeader } from "@/components/stock/StockHeader";
+import { getChartDataStatus } from "@/components/stock/chartDataStatus";
 import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
 import { Screen } from "@/components/ui/Screen";
 import {
@@ -118,12 +119,7 @@ export function StockDetailScreen() {
   const liveStock = stock.demoData
     ? null
     : (stock as LiveStockSnapshot);
-  const dataStatus =
-    market.status === "stale"
-      ? "stale"
-      : stock.demoData
-        ? "demo"
-        : "live";
+  const dataStatus = getChartDataStatus(market.status, stock.demoData);
   const magicNineAvailable =
     stock.magicNine.qualityStatus !== "unavailable";
   const magicNineSummary = magicNineAvailable
@@ -168,11 +164,17 @@ export function StockDetailScreen() {
             {formatUtc(market.lastVerifiedAt ?? stock.source.asOf)}
           </Text>
           <Pressable
-            accessibilityLabel="刷新行情"
+            accessibilityLabel={
+              market.refreshing ? "正在刷新行情" : "刷新行情"
+            }
             accessibilityRole="button"
+            accessibilityState={{ disabled: market.refreshing }}
+            disabled={market.refreshing}
             onPress={market.refresh}
             style={styles.refreshButton}>
-            <Text style={styles.refreshText}>刷新</Text>
+            <Text style={styles.refreshText}>
+              {market.refreshing ? "刷新中…" : "刷新"}
+            </Text>
           </Pressable>
         </View>
       ) : null}

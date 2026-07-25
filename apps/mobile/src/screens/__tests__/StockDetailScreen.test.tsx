@@ -39,6 +39,14 @@ function liveSnapshot() {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function unavailableMagicSnapshot() {
   const payload = stockSnapshotFixture();
   Object.assign(payload.indicators.magicNine as {
@@ -244,6 +252,51 @@ it("preserves the original timestamp when cached live data becomes stale", async
   expect(view.queryByText("5m · LIVE")).toBeNull();
   expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
   expect(view.getByRole("button", { name: "刷新行情" })).toBeTruthy();
+});
+
+it("keeps stale labels and timestamp while a refresh is pending", async () => {
+  const cached = liveSnapshot();
+  const pendingRefresh = deferred<LiveStockSnapshot>();
+  let attempts = 0;
+  const repository: MarketRepository = {
+    peekStockSnapshot: () => cached,
+    getStockSnapshot: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new MarketDataError("offline", "gateway offline");
+      }
+      return pendingRefresh.promise;
+    },
+    peekWatchlist: () => null,
+    getWatchlist: async () => {
+      throw new MarketDataError("offline", "gateway offline");
+    },
+  };
+  const view = await renderDetail({ repository });
+
+  await waitFor(() =>
+    expect(view.getByRole("button", { name: "刷新行情" })).toBeTruthy(),
+  );
+  fireEvent.press(view.getByRole("button", { name: "刷新行情" }));
+  await waitFor(() => expect(attempts).toBe(2));
+
+  expect(
+    view.getByText("行情已延迟 · 原始时间 2026-07-25 15:59:50 UTC"),
+  ).toBeTruthy();
+  expect(view.getByText("缓存数据")).toBeTruthy();
+  expect(view.getByText("5m · STALE")).toBeTruthy();
+  expect(view.queryByText("实时只读")).toBeNull();
+  expect(view.queryByText("5m · LIVE")).toBeNull();
+  const refreshing = view.getByRole("button", { name: "正在刷新行情" });
+  expect(refreshing.props.accessibilityState).toEqual({ disabled: true });
+
+  fireEvent.press(refreshing);
+  expect(attempts).toBe(2);
+
+  pendingRefresh.resolve(cached);
+  await waitFor(() => expect(view.getByText("实时只读")).toBeTruthy());
+  expect(view.getByText("5m · LIVE")).toBeTruthy();
+  expect(view.queryByText(/行情已延迟/)).toBeNull();
 });
 
 it("offers actionable loading and unavailable states without rendering fixture data", async () => {

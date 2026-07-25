@@ -33,6 +33,7 @@ export type MarketDataStatus =
 
 export type MarketDataState<T> = {
   status: MarketDataStatus;
+  refreshing: boolean;
   data: T | null;
   error: MarketDataError | null;
   lastVerifiedAt: string | null;
@@ -176,6 +177,7 @@ function useLiveResource<T>({
   >({
     resourceKey,
     status: "loading",
+    refreshing: false,
     data: null,
     error: null,
     lastVerifiedAt: null,
@@ -184,10 +186,14 @@ function useLiveResource<T>({
     data: T;
     verifiedAt: string;
   }>());
+  const refreshingRef = useRef(false);
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
   });
+  useEffect(() => {
+    refreshingRef.current = false;
+  }, [demoMode, resourceKey]);
 
   useEffect(() => {
     let active = true;
@@ -218,10 +224,12 @@ function useLiveResource<T>({
           setState({
             resourceKey,
             status: "live",
+            refreshing: false,
             data,
             error: null,
             lastVerifiedAt: verifiedAt,
           });
+          refreshingRef.current = false;
         })
         .catch((error: unknown) => {
           if (
@@ -235,10 +243,12 @@ function useLiveResource<T>({
           setState({
             resourceKey,
             status: verified ? "stale" : "unavailable",
+            refreshing: false,
             data: verified?.data ?? null,
             error: marketError,
             lastVerifiedAt: verified?.verifiedAt ?? null,
           });
+          refreshingRef.current = false;
           const delay = retryDelaysMs[
             Math.min(retryIndex, retryDelaysMs.length - 1)
           ];
@@ -275,23 +285,26 @@ function useLiveResource<T>({
   ]);
 
   const refresh = useCallback(() => {
-    if (!demoMode) {
-      setState((current) =>
-        current.resourceKey === resourceKey
-          ? {
-              ...current,
-              status: "loading",
-              error: null,
-            }
-          : current,
-      );
-      setRefreshVersion((version) => version + 1);
-    }
+    if (demoMode || refreshingRef.current) return;
+    refreshingRef.current = true;
+    setState((current) => {
+      if (current.resourceKey !== resourceKey) return current;
+      const hasVerifiedData =
+        current.data !== null && current.lastVerifiedAt !== null;
+      return {
+        ...current,
+        status: hasVerifiedData ? current.status : "loading",
+        refreshing: true,
+        error: hasVerifiedData ? current.error : null,
+      };
+    });
+    setRefreshVersion((version) => version + 1);
   }, [demoMode, resourceKey]);
 
   if (demoMode) {
     return {
       status: "demo",
+      refreshing: false,
       data: demoData,
       error: null,
       lastVerifiedAt: null,
@@ -302,6 +315,7 @@ function useLiveResource<T>({
     if (cachedData) {
       return {
         status: "stale",
+        refreshing: false,
         data: cachedData.data,
         error: null,
         lastVerifiedAt: cachedData.verifiedAt,
@@ -310,6 +324,7 @@ function useLiveResource<T>({
     }
     return {
       status: "loading",
+      refreshing: false,
       data: null,
       error: null,
       lastVerifiedAt: null,
@@ -319,8 +334,9 @@ function useLiveResource<T>({
   if (state.status === "loading" && cachedData) {
     return {
       status: "stale",
+      refreshing: state.refreshing,
       data: cachedData.data,
-      error: null,
+      error: state.error,
       lastVerifiedAt: cachedData.verifiedAt,
       refresh,
     };

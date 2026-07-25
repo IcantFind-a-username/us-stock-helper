@@ -74,7 +74,14 @@ function SnapshotProbe({ symbol }: { symbol: string }) {
           : "none"}
       </Text>
       <Text testID={`${symbol}-error`}>{result.error?.category ?? "none"}</Text>
-      <Pressable accessibilityRole="button" onPress={result.refresh}>
+      <Text testID={`${symbol}-refreshing`}>
+        {result.refreshing ? "yes" : "no"}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ disabled: result.refreshing }}
+        disabled={result.refreshing}
+        onPress={result.refresh}>
         <Text>refresh-{symbol}</Text>
       </Pressable>
     </View>
@@ -147,6 +154,67 @@ it("keeps the last verified snapshot stale after refresh fails", async () => {
     snapshot.decisionCutoff,
   );
   expect(view.getByTestId("NVDA-error").props.children).toBe("offline");
+});
+
+it("keeps stale truth visible while refreshing and blocks duplicate refreshes", async () => {
+  const original = liveSnapshot();
+  const recovered = liveSnapshot("NVDA", "2026-07-25T15:59:55.000Z");
+  const pendingRefresh = deferred<LiveStockSnapshot>();
+  let attempt = 0;
+  const loadSnapshot = jest.fn<MarketDataSource["loadSnapshot"]>(async () => {
+    attempt += 1;
+    if (attempt === 1) return original;
+    if (attempt === 2) {
+      throw new GatewayRequestError("offline", "OpenD is offline");
+    }
+    return pendingRefresh.promise;
+  });
+  const repository = repositoryWith(loadSnapshot);
+  const view = await render(
+    <MarketDataProvider repository={repository} retryDelaysMs={[]}>
+      <SnapshotProbe symbol="NVDA" />
+    </MarketDataProvider>,
+  );
+
+  await waitFor(() =>
+    expect(view.getByTestId("NVDA-status").props.children).toBe("live"),
+  );
+  fireEvent.press(view.getByText("refresh-NVDA"));
+  await waitFor(() =>
+    expect(view.getByTestId("NVDA-status").props.children).toBe("stale"),
+  );
+
+  fireEvent.press(view.getByText("refresh-NVDA"));
+  await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(3));
+  expect(view.getByTestId("NVDA-status").props.children).toBe("stale");
+  expect(view.getByTestId("NVDA-refreshing").props.children).toBe("yes");
+  expect(view.getByTestId("NVDA-data-symbol").props.children).toBe("NVDA");
+  expect(view.getByTestId("NVDA-verified").props.children).toBe(
+    original.source.asOf,
+  );
+  expect(view.getByTestId("NVDA-cutoff").props.children).toBe(
+    original.decisionCutoff,
+  );
+  expect(view.getByTestId("NVDA-error").props.children).toBe("offline");
+
+  fireEvent.press(view.getByText("refresh-NVDA"));
+  expect(loadSnapshot).toHaveBeenCalledTimes(3);
+
+  await act(async () => {
+    pendingRefresh.resolve(recovered);
+    await pendingRefresh.promise;
+  });
+  await waitFor(() =>
+    expect(view.getByTestId("NVDA-status").props.children).toBe("live"),
+  );
+  expect(view.getByTestId("NVDA-refreshing").props.children).toBe("no");
+  expect(view.getByTestId("NVDA-verified").props.children).toBe(
+    recovered.source.asOf,
+  );
+  expect(view.getByTestId("NVDA-cutoff").props.children).toBe(
+    recovered.decisionCutoff,
+  );
+  expect(view.getByTestId("NVDA-error").props.children).toBe("none");
 });
 
 it("never relabels a cached snapshot live until a new request verifies it", async () => {

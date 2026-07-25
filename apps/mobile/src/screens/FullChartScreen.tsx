@@ -2,6 +2,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { PriceChart } from "@/components/chart/PriceChart";
+import { getChartDataStatus } from "@/components/stock/chartDataStatus";
 import { IndicatorStrip } from "@/components/stock/IndicatorStrip";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { Screen } from "@/components/ui/Screen";
@@ -90,12 +91,7 @@ export function FullChartScreen() {
   const liveStock = stock.demoData
     ? null
     : (stock as LiveStockSnapshot);
-  const dataStatus =
-    market.status === "stale"
-      ? "stale"
-      : stock.demoData
-        ? "demo"
-        : "live";
+  const dataStatus = getChartDataStatus(market.status, stock.demoData);
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>
@@ -130,11 +126,17 @@ export function FullChartScreen() {
             {formatUtc(market.lastVerifiedAt ?? stock.source.asOf)}
           </Text>
           <Pressable
-            accessibilityLabel="刷新行情"
+            accessibilityLabel={
+              market.refreshing ? "正在刷新行情" : "刷新行情"
+            }
             accessibilityRole="button"
+            accessibilityState={{ disabled: market.refreshing }}
+            disabled={market.refreshing}
             onPress={market.refresh}
             style={styles.refreshButton}>
-            <Text style={styles.refreshText}>刷新</Text>
+            <Text style={styles.refreshText}>
+              {market.refreshing ? "刷新中…" : "刷新"}
+            </Text>
           </Pressable>
         </View>
       ) : null}
