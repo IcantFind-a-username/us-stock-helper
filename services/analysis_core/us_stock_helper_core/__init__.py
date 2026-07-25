@@ -10,14 +10,17 @@ from .forecasting import (
 )
 from .indicators import MACDValue, ema_series, macd, moving_average, rsi
 from .models import (
+    CapitalFlowPoint,
     Direction,
     EvidenceKind,
     EvidenceRecord,
     Horizon,
     MarketContext,
     OHLCVBar,
+    ParticipationBar,
     RiskPreference,
 )
+from .participation import build_participation_bars
 from .patterns import (
     MagicNineSignal,
     PatternKind,
@@ -47,6 +50,7 @@ from .temporal import select_bars_as_of, select_evidence_as_of
 __all__ = [
     "AnalyticalAction",
     "CalibrationStatus",
+    "CapitalFlowPoint",
     "Direction",
     "EvidenceKind",
     "EvidencePacket",
@@ -59,6 +63,7 @@ __all__ = [
     "MagicNineSignal",
     "MarketContext",
     "OHLCVBar",
+    "ParticipationBar",
     "PatternKind",
     "PatternSignal",
     "RiskPlan",
@@ -69,6 +74,7 @@ __all__ = [
     "ScoreResult",
     "ShortBorrowSnapshot",
     "build_risk_plan",
+    "build_participation_bars",
     "build_scenario_forecast",
     "detect_double_bottom",
     "detect_head_and_shoulders",

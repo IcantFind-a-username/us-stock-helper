@@ -85,6 +85,96 @@ class OHLCVBar:
 
 
 @dataclass(frozen=True, slots=True)
+class CapitalFlowPoint:
+    """One cumulative capital-flow observation, never an account identity."""
+
+    symbol: str
+    timestamp: datetime
+    available_at: datetime
+    total_net: float
+    super_net: float
+    big_net: float
+    mid_net: float
+    small_net: float
+    session: str
+
+    def __post_init__(self) -> None:
+        for name in ("timestamp", "available_at"):
+            require_utc(getattr(self, name), name)
+        if self.available_at < self.timestamp:
+            raise ValueError("available_at must not precede timestamp")
+        if not self.symbol.strip() or not self.session.strip():
+            raise ValueError("symbol and session are required")
+        values = (
+            self.total_net,
+            self.super_net,
+            self.big_net,
+            self.mid_net,
+            self.small_net,
+        )
+        if not all(isfinite(value) for value in values):
+            raise ValueError("capital flow values must be finite")
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipationBar:
+    """Per-candle order-size activity share, or an explicit unavailable result."""
+
+    symbol: str
+    interval: str
+    closed_at: datetime
+    available_at: datetime
+    main_share: float | None
+    retail_share: float | None
+    main_activity: float | None
+    retail_activity: float | None
+    net_flow: float | None
+    coverage: float
+    quality_status: str
+    missing_reason: str | None
+    method_version: str
+
+    def __post_init__(self) -> None:
+        for name in ("closed_at", "available_at"):
+            require_utc(getattr(self, name), name)
+        if self.available_at < self.closed_at:
+            raise ValueError("available_at must not precede closed_at")
+        if not self.symbol.strip() or not self.interval.strip():
+            raise ValueError("symbol and interval are required")
+        if not isfinite(self.coverage) or not 0.0 <= self.coverage <= 1.0:
+            raise ValueError("coverage must be between 0 and 1")
+        if self.method_version != "order-size-activity-share-v1":
+            raise ValueError("unsupported participation method version")
+
+        values = (self.main_activity, self.retail_activity, self.net_flow)
+        if any(value is not None and not isfinite(value) for value in values):
+            raise ValueError("participation values must be finite")
+
+        if self.quality_status == "unavailable":
+            if self.main_share is not None or self.retail_share is not None:
+                raise ValueError("unavailable participation has no shares")
+            if self.missing_reason is None or not self.missing_reason.strip():
+                raise ValueError("unavailable participation requires a missing reason")
+            return
+
+        if self.quality_status != "live":
+            raise ValueError("quality_status must be live or unavailable")
+        if self.main_share is None or self.retail_share is None:
+            raise ValueError("live participation requires both shares")
+        if self.missing_reason is not None:
+            raise ValueError("live participation cannot have a missing reason")
+        if self.main_activity is None or self.retail_activity is None or self.net_flow is None:
+            raise ValueError("live participation requires activity and net flow")
+        if self.main_activity < 0 or self.retail_activity < 0:
+            raise ValueError("activity must be non-negative")
+        shares = (self.main_share, self.retail_share)
+        if not all(isfinite(value) and 0.0 <= value <= 1.0 for value in shares):
+            raise ValueError("shares must be between 0 and 1")
+        if abs(sum(shares) - 1.0) > 1e-9:
+            raise ValueError("shares must sum to 1")
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceRecord:
     evidence_id: str
     series_id: str
