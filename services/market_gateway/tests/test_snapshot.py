@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from us_stock_helper_market_gateway.models import ProviderBatch, SessionHealth
 from us_stock_helper_market_gateway.service import MarketGatewayService
+from us_stock_helper_market_gateway.snapshot import assemble_stock_snapshot
 
 
 NOW = datetime(2026, 7, 25, 4, 0, tzinfo=timezone.utc)
@@ -175,6 +176,98 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertEqual(
             response["institutionalHoldings"][0]["qualityStatus"], "delayed"
         )
+
+    def test_later_flow_receipt_remains_usable_until_operation_completion(self) -> None:
+        self.provider.quote_result = ProviderBatch(
+            "moomoo", NOW + timedelta(seconds=1), self.provider.quote_result.items
+        )
+        self.provider.candle_result = ProviderBatch(
+            "moomoo", NOW + timedelta(seconds=2), self.provider.candle_result.items
+        )
+        self.provider.flow_result = ProviderBatch(
+            "moomoo",
+            NOW + timedelta(seconds=3),
+            [
+                {**item, "available_at": (NOW + timedelta(seconds=3)).isoformat()}
+                for item in self.provider.flow_result.items
+            ],
+        )
+        self.provider.holding_result = ProviderBatch(
+            "moomoo", NOW + timedelta(seconds=4), self.provider.holding_result.items
+        )
+        moments = iter([NOW, NOW, NOW + timedelta(seconds=5)])
+        service = MarketGatewayService(self.provider, clock=lambda: next(moments))
+
+        response = service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["decisionCutoff"], "2026-07-25T04:00:05Z")
+        self.assertTrue(
+            all(bar["qualityStatus"] == "live" for bar in response["participationBars"])
+        )
+
+    def test_day_and_week_vendor_labels_normalize_without_accepting_intraday(self) -> None:
+        for vendor_label, interval in (("K_DAY", "day"), ("K_WEEK", "week")):
+            with self.subTest(vendor_label=vendor_label):
+                response = assemble_stock_snapshot(
+                    symbol="NVDA",
+                    interval=interval,
+                    decision_cutoff=NOW,
+                    quote_items=[
+                        {
+                            "code": "US.NVDA",
+                            "price": 173.4,
+                            "changePercent": 2.7,
+                            "availableAt": NOW.isoformat(),
+                        }
+                    ],
+                    candle_items=[
+                        {
+                            "code": "US.NVDA",
+                            "timeframe": vendor_label,
+                            "timestamp": NOW.isoformat(),
+                            "availableAt": NOW.isoformat(),
+                            "open": 172.0,
+                            "high": 174.0,
+                            "low": 171.5,
+                            "close": 173.4,
+                            "volume": 1_000.0,
+                        }
+                    ],
+                    flow_items=[],
+                    holding_items=[],
+                )
+                self.assertEqual(response["interval"], interval)
+                self.assertEqual(len(response["completedCandles"]), 1)
+
+        with self.assertRaisesRegex(ValueError, "interval"):
+            assemble_stock_snapshot(
+                symbol="NVDA",
+                interval="day",
+                decision_cutoff=NOW,
+                quote_items=[
+                    {
+                        "code": "US.NVDA",
+                        "price": 173.4,
+                        "changePercent": 2.7,
+                        "availableAt": NOW.isoformat(),
+                    }
+                ],
+                candle_items=[
+                    {
+                        "code": "US.NVDA",
+                        "timeframe": "5m",
+                        "timestamp": NOW.isoformat(),
+                        "availableAt": NOW.isoformat(),
+                        "open": 172.0,
+                        "high": 174.0,
+                        "low": 171.5,
+                        "close": 173.4,
+                        "volume": 1_000.0,
+                    }
+                ],
+                flow_items=[],
+                holding_items=[],
+            )
 
     def test_invalid_flow_makes_every_participation_bar_unavailable(self) -> None:
         cases = {

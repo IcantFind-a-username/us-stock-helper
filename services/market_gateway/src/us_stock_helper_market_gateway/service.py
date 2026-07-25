@@ -216,20 +216,14 @@ class MarketGatewayService:
 
         completed_at = require_utc(self._clock(), "clock")
         try:
-            quote_received = self._validate_batch(quote_batch, completed_at)
-            candle_received = self._validate_batch(candle_batch, completed_at)
-            holding_received = self._validate_batch(holding_batch, completed_at)
+            self._validate_batch(quote_batch, completed_at)
+            self._validate_batch(candle_batch, completed_at)
+            self._validate_batch(holding_batch, completed_at)
             try:
                 flow_received = self._validate_batch(flow_batch, completed_at)
             except GatewayError:
                 flow_received = None
-            decision_cutoff = min(
-                completed_at,
-                quote_received,
-                candle_received,
-                holding_received,
-                *( [flow_received] if flow_received is not None else [] ),
-            )
+            decision_cutoff = completed_at
             quote_items = self._normalize_quotes(quote_batch.items, decision_cutoff)
             candle_items = self._normalize_candles(candle_batch.items, decision_cutoff)
             holding_items = self._normalize_institutional_holdings(

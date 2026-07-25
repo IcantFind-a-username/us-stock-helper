@@ -371,6 +371,11 @@ class MarketGatewayServiceTests(unittest.TestCase):
         self.assertTrue(candle["complete"])
         self.assertLessEqual(candle["availableAt"], response["asOf"])
 
+    def test_snapshot_cutoff_is_the_completed_operation_time(self) -> None:
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["decisionCutoff"], "2026-07-25T04:00:00Z")
+
     def test_provider_quota_failure_is_sanitized(self) -> None:
         def fail(codes: list[str]) -> ProviderBatch:
             raise GatewayError(
