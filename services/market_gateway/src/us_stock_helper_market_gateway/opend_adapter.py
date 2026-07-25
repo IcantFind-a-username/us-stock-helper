@@ -87,17 +87,46 @@ class MoomooOpenDProvider:
 
     def watchlist(self, group: str | None = None) -> ProviderBatch:
         with self._quote_context() as (sdk, context):
-            ret, payload = context.get_user_security(group_name=group or "All")
+            group_name = group
+            if not group_name:
+                method = self._quote_capability(
+                    context,
+                    "get_user_security_group",
+                )
+                ret, payload = self._invoke_optional(method)
+                self._require_ok(sdk, ret, payload)
+                groups = self._records(payload)
+                if not groups or not groups[0].get("group_name"):
+                    raise GatewayError(
+                        ErrorCode.MALFORMED_PROVIDER_DATA,
+                        "OpenD watchlist groups are malformed",
+                    )
+                group_name = str(groups[0]["group_name"])
+            ret, payload = context.get_user_security(group_name=group_name)
             self._require_ok(sdk, ret, payload)
-            securities = self._records(payload)
+            securities = [
+                row
+                for row in self._records(payload)
+                if str(row.get("code", "")).startswith("US.")
+                and str(row.get("stock_type", "")) in {"STOCK", "ETF"}
+            ]
             codes = [str(row.get("code", "")) for row in securities]
             if not codes:
                 received_at = require_utc(self._clock(), "clock")
                 return ProviderBatch("moomoo", received_at, [])
-            ret, snapshot_payload = context.get_market_snapshot(codes)
-            self._require_ok(sdk, ret, snapshot_payload)
+            snapshot_rows, unavailable_codes = self._watchlist_snapshots(
+                sdk,
+                context,
+                codes,
+            )
+            if not snapshot_rows:
+                raise GatewayError(
+                    ErrorCode.PROVIDER_ERROR,
+                    "No watchlist symbols have available quotes",
+                    retriable=True,
+                )
             snapshots = {
-                str(row.get("code")): row for row in self._records(snapshot_payload)
+                str(row.get("code")): row for row in snapshot_rows
             }
 
         items = []
@@ -105,6 +134,8 @@ class MoomooOpenDProvider:
             code = str(security.get("code", ""))
             snapshot = snapshots.get(code)
             if snapshot is None:
+                if code in unavailable_codes:
+                    continue
                 raise GatewayError(
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "Watchlist snapshot is incomplete",
@@ -114,6 +145,37 @@ class MoomooOpenDProvider:
             items.append(quote)
         received_at = require_utc(self._clock(), "clock")
         return ProviderBatch("moomoo", received_at, items)
+
+    def _watchlist_snapshots(
+        self,
+        sdk: Any,
+        context: Any,
+        codes: list[str],
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        ret, payload = context.get_market_snapshot(codes)
+        if ret == sdk.RET_OK:
+            return self._records(payload), set()
+
+        error = self._classify_provider_error(str(payload))
+        if error.code is not ErrorCode.PROVIDER_ERROR:
+            raise error
+        if len(codes) == 1:
+            return [], {codes[0]}
+
+        midpoint = len(codes) // 2
+        left_rows, left_unavailable = self._watchlist_snapshots(
+            sdk,
+            context,
+            codes[:midpoint],
+        )
+        right_rows, right_unavailable = self._watchlist_snapshots(
+            sdk,
+            context,
+            codes[midpoint:],
+        )
+        rows = left_rows + right_rows
+        unavailable = left_unavailable | right_unavailable
+        return rows, unavailable
 
     def quotes(self, codes: list[str]) -> ProviderBatch:
         with self._quote_context() as (sdk, context):
@@ -192,6 +254,7 @@ class MoomooOpenDProvider:
             ret, payload = self._invoke_optional(method, code)
             self._require_ok(sdk, ret, payload)
             rows = self._records(payload)
+        received_at = require_utc(self._clock(), "clock")
         items = []
         for row in rows:
             try:
@@ -199,16 +262,11 @@ class MoomooOpenDProvider:
                     row["capital_flow_item_time"],
                     "capital_flow_item_time",
                 )
-                available_at = parse_exchange_time(
-                    row.get("last_valid_time")
-                    or row["capital_flow_item_time"],
-                    "last_valid_time",
-                )
                 items.append(
                     {
                         "code": code,
                         "timestamp": iso_z(timestamp),
-                        "available_at": iso_z(available_at),
+                        "available_at": iso_z(received_at),
                         "total_net": float(row["in_flow"]),
                         "super_net": float(row.get("super_in_flow", 0.0)),
                         "big_net": float(row.get("big_in_flow", 0.0)),
@@ -222,7 +280,6 @@ class MoomooOpenDProvider:
                     "OpenD capital-flow response is malformed",
                 ) from exc
         items.sort(key=lambda item: str(item["timestamp"]))
-        received_at = require_utc(self._clock(), "clock")
         return ProviderBatch("moomoo", received_at, items)
 
     def capital_distribution(self, code: str) -> ProviderBatch:
@@ -483,17 +540,32 @@ class MoomooOpenDProvider:
     @staticmethod
     def _classify_provider_error(message: str) -> GatewayError:
         lowered = message.lower()
-        if "login" in lowered:
+        if any(word in lowered for word in ("login", "登录", "登錄", "登入")):
             return GatewayError(
                 ErrorCode.LOGIN_REQUIRED,
                 "moomoo OpenD login is required",
             )
-        if any(word in lowered for word in ("permission", "authority", "right")):
+        if any(
+            word in lowered
+            for word in ("permission", "authority", "right", "权限", "權限")
+        ):
             return GatewayError(
                 ErrorCode.PERMISSION_DENIED,
                 "Quote permission is unavailable",
             )
-        if any(word in lowered for word in ("quota", "frequency", "limit")):
+        if any(
+            word in lowered
+            for word in (
+                "quota",
+                "frequency",
+                "limit",
+                "额度",
+                "額度",
+                "频率",
+                "頻率",
+                "上限",
+            )
+        ):
             return GatewayError(
                 ErrorCode.QUOTA_EXCEEDED,
                 "Provider quota exceeded",
@@ -501,7 +573,19 @@ class MoomooOpenDProvider:
             )
         if any(
             word in lowered
-            for word in ("connection", "refused", "timeout", "timed out", "offline")
+            for word in (
+                "connection",
+                "refused",
+                "timeout",
+                "timed out",
+                "offline",
+                "连接",
+                "連接",
+                "超时",
+                "超時",
+                "离线",
+                "離線",
+            )
         ):
             return GatewayError(
                 ErrorCode.OPEND_OFFLINE,

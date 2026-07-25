@@ -150,6 +150,12 @@ class FakeQuoteContext:
     def get_global_state(self) -> tuple[int, object]:
         return self.global_state
 
+    def get_user_security_group(
+        self,
+        group_type: str = "ALL",
+    ) -> tuple[int, object]:
+        return 0, FakeFrame([{"group_name": "All", "group_type": "SYSTEM"}])
+
     def get_user_security(self, group_name: str) -> tuple[int, object]:
         return self.watchlist
 
@@ -211,6 +217,65 @@ class PagedQuoteContext(FakeQuoteContext):
                 b"next",
             )
         return FakeQuoteContext.history
+
+
+class LocalizedGroupQuoteContext(FakeQuoteContext):
+    def get_user_security_group(
+        self,
+        group_type: str = "ALL",
+    ) -> tuple[int, object]:
+        return 0, FakeFrame([{"group_name": "全部", "group_type": "SYSTEM"}])
+
+    def get_user_security(self, group_name: str) -> tuple[int, object]:
+        if group_name != "全部":
+            return -1, "未知自选股分组"
+        return (
+            0,
+            FakeFrame(
+                [
+                    *self.watchlist[1].records,
+                    {
+                        "code": "HK.00700",
+                        "name": "Tencent",
+                        "lot_size": 100,
+                        "stock_type": "STOCK",
+                    },
+                    {
+                        "code": "US.PMRTY",
+                        "name": "Unsupported OTC",
+                        "lot_size": 1,
+                        "stock_type": "STOCK",
+                    },
+                    {
+                        "code": "US.OTC2",
+                        "name": "Second Unsupported OTC",
+                        "lot_size": 1,
+                        "stock_type": "STOCK",
+                    },
+                ]
+            ),
+        )
+
+    def get_market_snapshot(self, codes: list[str]) -> tuple[int, object]:
+        if any(not code.startswith("US.") for code in codes):
+            return -1, "unsupported quote market"
+        if any(code in {"US.PMRTY", "US.OTC2"} for code in codes):
+            return -1, "unsupported US OTC quote"
+        return self.snapshots
+
+
+class FutureValidTimeQuoteContext(FakeQuoteContext):
+    flow = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.flow[1].records[0],
+                    "last_valid_time": "2026-07-25 11:56:10",
+                }
+            ]
+        ),
+    )
 
 
 class PagedInstitutionalContext(FakeQuoteContext):
@@ -309,6 +374,18 @@ def fake_sdk() -> object:
 def paged_sdk() -> object:
     sdk = fake_sdk()
     sdk.OpenQuoteContext = PagedQuoteContext
+    return sdk
+
+
+def localized_group_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = LocalizedGroupQuoteContext
+    return sdk
+
+
+def future_valid_time_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = FutureValidTimeQuoteContext
     return sdk
 
 
@@ -438,6 +515,29 @@ class MoomooOpenDProviderTests(unittest.TestCase):
         )
         self.assertAlmostEqual(quotes.items[0]["change_percent"], 2.7008, places=3)
 
+    def test_watchlist_discovers_the_localized_all_group(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=localized_group_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        watchlist = provider.watchlist()
+
+        self.assertEqual(watchlist.items[0]["code"], "US.NVDA")
+        self.assertEqual(len(watchlist.items), 1)
+
+    def test_capital_flow_uses_receipt_time_not_provider_valid_until(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=future_valid_time_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        flow = provider.capital_flow("US.NVDA")
+
+        self.assertEqual(flow.items[0]["available_at"], "2026-07-25T15:56:00Z")
+
     def test_adapter_marks_only_closed_candles_complete(self) -> None:
         provider = MoomooOpenDProvider(
             sdk_loader=fake_sdk,
@@ -494,9 +594,13 @@ class MoomooOpenDProviderTests(unittest.TestCase):
     def test_provider_error_categories_are_stable_and_sanitized(self) -> None:
         cases = {
             "Please login OpenD first": ErrorCode.LOGIN_REQUIRED,
+            "请先登录 OpenD": ErrorCode.LOGIN_REQUIRED,
             "No quote authority or permission": ErrorCode.PERMISSION_DENIED,
+            "无行情权限": ErrorCode.PERMISSION_DENIED,
             "Request frequency quota exceeded": ErrorCode.QUOTA_EXCEEDED,
+            "请求频率达到上限": ErrorCode.QUOTA_EXCEEDED,
             "Connection refused": ErrorCode.OPEND_OFFLINE,
+            "连接超时": ErrorCode.OPEND_OFFLINE,
             "Unexpected upstream payload": ErrorCode.PROVIDER_ERROR,
         }
 
@@ -571,7 +675,7 @@ class MoomooOpenDProviderTests(unittest.TestCase):
         distribution = provider.capital_distribution("US.NVDA")
 
         self.assertEqual(flow.items[0]["total_net"], 12_000.0)
-        self.assertEqual(flow.items[0]["available_at"], "2026-07-25T15:55:00Z")
+        self.assertEqual(flow.items[0]["available_at"], "2026-07-25T15:56:00Z")
         self.assertNotIn("institution", repr(flow.items[0]).lower())
         self.assertEqual(distribution.items[0]["super_in"], 10_000.0)
         self.assertEqual(
