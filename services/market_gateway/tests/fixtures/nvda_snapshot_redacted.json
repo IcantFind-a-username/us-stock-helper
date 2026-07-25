@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "2",
+  "source": "moomoo",
+  "sourceStatus": "live",
+  "symbol": "NVDA",
+  "interval": "5m",
+  "decisionCutoff": "2026-07-25T04:00:05Z",
+  "quote": {
+    "price": 172.8,
+    "changePercent": 1.2,
+    "source": "moomoo",
+    "asOf": "2026-07-25T04:00:04Z",
+    "availableAt": "2026-07-25T04:00:04Z",
+    "methodVersion": "provider-quote-v1",
+    "qualityStatus": "live"
+  },
+  "completedCandles": [
+    {
+      "timestamp": "2026-07-25T03:55:00Z",
+      "complete": true,
+      "open": 171.0,
+      "high": 172.0,
+      "low": 170.5,
+      "close": 171.7,
+      "volume": 1000.0,
+      "source": "moomoo",
+      "asOf": "2026-07-25T03:55:00Z",
+      "availableAt": "2026-07-25T03:55:01Z",
+      "methodVersion": "provider-completed-candle-v1",
+      "qualityStatus": "live"
+    },
+    {
+      "timestamp": "2026-07-25T04:00:00Z",
+      "complete": true,
+      "open": 171.7,
+      "high": 173.0,
+      "low": 171.5,
+      "close": 172.8,
+      "volume": 1200.0,
+      "source": "moomoo",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:01Z",
+      "methodVersion": "provider-completed-candle-v1",
+      "qualityStatus": "live"
+    }
+  ],
+  "participationBars": [
+    {
+      "closedAt": "2026-07-25T03:55:00Z",
+      "mainShare": null,
+      "retailShare": null,
+      "mainActivity": null,
+      "retailActivity": null,
+      "netFlow": null,
+      "coverage": 0.0,
+      "source": "moomoo",
+      "asOf": "2026-07-25T03:55:00Z",
+      "availableAt": "2026-07-25T03:55:01Z",
+      "methodVersion": "order-size-activity-share-v1",
+      "qualityStatus": "unavailable",
+      "missingReason": "capital flow unavailable"
+    },
+    {
+      "closedAt": "2026-07-25T04:00:00Z",
+      "mainShare": 0.6,
+      "retailShare": 0.4,
+      "mainActivity": 60.0,
+      "retailActivity": 40.0,
+      "netFlow": 5.0,
+      "coverage": 1.0,
+      "source": "moomoo",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:01Z",
+      "methodVersion": "order-size-activity-share-v1",
+      "qualityStatus": "live",
+      "missingReason": null
+    }
+  ],
+  "indicators": {
+    "ma5": {
+      "source": "analysis-core",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:05Z",
+      "qualityStatus": "live",
+      "value": 171.5,
+      "methodVersion": "sma-5-v1"
+    },
+    "rsi": {
+      "source": "analysis-core",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:05Z",
+      "qualityStatus": "live",
+      "value": 55.0,
+      "methodVersion": "wilder-rsi-14-v1"
+    },
+    "macd": {
+      "source": "analysis-core",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:05Z",
+      "qualityStatus": "live",
+      "line": 0.3,
+      "signal": 0.2,
+      "histogram": 0.1,
+      "methodVersion": "macd-12-26-9-v1"
+    },
+    "magicNine": {
+      "source": "analysis-core",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:05Z",
+      "qualityStatus": "live",
+      "direction": "bullish",
+      "count": 2,
+      "completed": false,
+      "confirmedAtIndex": null,
+      "methodVersion": "sequential-close-4-v1"
+    }
+  },
+  "institutionalHoldings": [],
+  "provenance": [
+    {
+      "source": "moomoo",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:01Z",
+      "methodVersion": "provider-completed-candle-v1",
+      "qualityStatus": "live"
+    }
+  ],
+  "warnings": []
+}

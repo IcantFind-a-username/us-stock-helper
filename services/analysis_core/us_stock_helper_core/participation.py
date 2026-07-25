@@ -137,13 +137,14 @@ def _build_bar(
     denominator = main_activity + retail_activity
     if denominator <= noise_floor:
         return _unavailable(bar, "zero activity denominator", coverage, points)
+    main_share = main_activity / denominator
     return ParticipationBar(
         symbol=bar.symbol,
         interval=bar.interval,
         closed_at=bar.closed_at,
         available_at=_available_at(bar, points),
-        main_share=main_activity / denominator,
-        retail_share=retail_activity / denominator,
+        main_share=main_share,
+        retail_share=1.0 - main_share,
         main_activity=main_activity,
         retail_activity=retail_activity,
         net_flow=net_flow,

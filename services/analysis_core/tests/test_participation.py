@@ -140,6 +140,24 @@ class CapitalFlowValidationTests(unittest.TestCase):
                 method_version="order-size-activity-share-v1",
             )
 
+    def test_participation_bar_rejects_even_a_tiny_invalid_share_sum(self) -> None:
+        with self.assertRaisesRegex(ValueError, "sum"):
+            ParticipationBar(
+                symbol="NVDA",
+                interval="5m",
+                closed_at=at(9, 35),
+                available_at=at(9, 35),
+                main_share=0.6000000001,
+                retail_share=0.4,
+                main_activity=6.0,
+                retail_activity=4.0,
+                net_flow=0.0,
+                coverage=1.0,
+                quality_status="live",
+                missing_reason=None,
+                method_version="order-size-activity-share-v1",
+            )
+
 
 class ParticipationAggregationTests(unittest.TestCase):
     def test_aggregates_cumulative_order_size_activity_within_one_session(self) -> None:
@@ -164,6 +182,29 @@ class ParticipationAggregationTests(unittest.TestCase):
         self.assertAlmostEqual(bar.net_flow, 20.0)
         self.assertEqual(bar.coverage, 1.0)
         self.assertEqual(bar.method_version, "order-size-activity-share-v1")
+
+    def test_serialized_live_activity_shares_sum_to_exactly_one(self) -> None:
+        points = (
+            flow(9, 30, super_net=0.0, big_net=0.0, mid_net=0.0, small_net=0.0),
+            flow(
+                9,
+                31,
+                super_net=8_823_147.308000002,
+                big_net=0.0,
+                mid_net=10_974_518.485000001,
+                small_net=0.0,
+            ),
+        )
+
+        result = build_participation_bars(
+            points,
+            (candle(at(9, 30), at(9, 31), interval="1m"),),
+            CUTOFF,
+        )
+
+        bar = result[0]
+        self.assertEqual(bar.quality_status, "live")
+        self.assertEqual((bar.main_share or 0.0) + (bar.retail_share or 0.0), 1.0)
 
     def test_first_cumulative_point_cannot_create_a_bar(self) -> None:
         result = build_participation_bars(

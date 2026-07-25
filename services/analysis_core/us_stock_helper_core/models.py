@@ -170,7 +170,7 @@ class ParticipationBar:
         shares = (self.main_share, self.retail_share)
         if not all(isfinite(value) and 0.0 <= value <= 1.0 for value in shares):
             raise ValueError("shares must be between 0 and 1")
-        if abs(sum(shares) - 1.0) > 1e-9:
+        if sum(shares) != 1.0:
             raise ValueError("shares must sum to 1")
 
 
