@@ -339,6 +339,32 @@ class SmokeRealSnapshotTests(unittest.TestCase):
 
         self.assert_rejected(payload)
 
+    def test_rejects_live_participation_with_overflowing_activity_denominator(
+        self,
+    ) -> None:
+        payload = valid_snapshot()
+        bar = payload["participationBars"][1]
+        bar["mainActivity"] = 1e308
+        bar["retailActivity"] = 1e308
+        bar["mainShare"] = 0.0
+        bar["retailShare"] = 1.0
+
+        self.assert_rejected(payload)
+
+    def test_accepts_live_participation_with_large_finite_activity_denominator(
+        self,
+    ) -> None:
+        payload = valid_snapshot()
+        bar = payload["participationBars"][1]
+        bar["mainActivity"] = 5e307
+        bar["retailActivity"] = 5e307
+        bar["mainShare"] = 0.5
+        bar["retailShare"] = 0.5
+
+        result = self.run_fixture(payload)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_rejects_live_participation_without_positive_coverage(self) -> None:
         payload = valid_snapshot()
         payload["participationBars"][1]["coverage"] = 0.0
