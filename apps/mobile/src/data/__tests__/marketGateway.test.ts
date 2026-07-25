@@ -64,20 +64,36 @@ describe("market gateway point-in-time validation", () => {
   });
 
   it.each([
-    ["stale", "2026-07-25T15:58:00.000Z", "2026-07-25T15:58:01.000Z"],
-    ["future", "2026-07-25T16:00:03.000Z", "2026-07-25T16:00:04.000Z"],
-  ])("rejects %s watchlist snapshots", (_label, asOf, availableAt) => {
+    ["behind", "2026-07-25T15:58:00.000Z"],
+    ["ahead", "2026-07-25T18:00:00.000Z"],
+  ])("accepts a server-consistent watchlist when the device clock is %s", (_label, deviceNow) => {
     expect(() =>
       decodeWatchlistEnvelope(
         {
           schemaVersion: "1",
           source: "moomoo",
           session: "healthy",
-          asOf,
-          availableAt,
+          asOf: "2026-07-25T16:00:03.000Z",
+          availableAt: "2026-07-25T16:00:04.000Z",
           items: [],
         },
-        { maxAgeMs: 30_000, now },
+        { now: new Date(deviceNow) },
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects a watchlist whose top-level server timestamps are incoherent", () => {
+    expect(() =>
+      decodeWatchlistEnvelope(
+        {
+          schemaVersion: "1",
+          source: "moomoo",
+          session: "healthy",
+          asOf: "2026-07-25T16:00:04.001Z",
+          availableAt: "2026-07-25T16:00:04.000Z",
+          items: [],
+        },
+        { now },
       ),
     ).toThrow();
   });
@@ -199,9 +215,17 @@ describe("schema-v2 stock snapshot validation", () => {
   });
 
   it.each([
-    ["future decision cutoff", (value: ReturnType<typeof stockSnapshotFixture>) => {
-      value.decisionCutoff = "2026-07-25T16:00:00.001Z";
-    }],
+    ["behind", "2026-07-25T15:00:00.000Z"],
+    ["ahead", "2026-07-25T18:00:00.000Z"],
+  ])("accepts a cutoff-consistent snapshot when the device clock is %s", (_label, deviceNow) => {
+    expect(() =>
+      decodeStockSnapshotEnvelope(stockSnapshotFixture(), {
+        now: new Date(deviceNow),
+      }),
+    ).not.toThrow();
+  });
+
+  it.each([
     ["future candle", (value: ReturnType<typeof stockSnapshotFixture>) => {
       value.completedCandles[1]!.availableAt = "2026-07-25T16:00:01.000Z";
     }],
@@ -243,9 +267,6 @@ describe("schema-v2 stock snapshot validation", () => {
     }],
     ["fixture provenance", (value: ReturnType<typeof stockSnapshotFixture>) => {
       value.provenance[0]!.source = "fixture";
-    }],
-    ["stale response", (value: ReturnType<typeof stockSnapshotFixture>) => {
-      value.decisionCutoff = "2026-07-25T15:00:00.000Z";
     }],
   ])("rejects a %s snapshot", (_label, mutate) => {
     const value = stockSnapshotFixture();
@@ -293,14 +314,15 @@ describe("market gateway fallback", () => {
     [
       "stale",
       async () =>
-        jsonResponse({
-          schemaVersion: "1",
-          source: "moomoo",
-          session: "healthy",
-          asOf: "2026-07-25T15:58:00.000Z",
-          availableAt: "2026-07-25T15:58:01.000Z",
-          items: [],
-        }),
+        jsonResponse(
+          {
+            schemaVersion: "1",
+            source: "moomoo",
+            sourceStatus: "stale",
+            error: { code: "STALE_DATA" },
+          },
+          503,
+        ),
       { name: "GatewayRequestError", kind: "stale" },
     ],
     [

@@ -114,7 +114,7 @@ function parseTimestamp(value: string, label: string) {
   return parsed;
 }
 
-function decodeEnvelope(value: unknown, options: DecodeOptions = {}): GatewayEnvelope {
+function decodeEnvelope(value: unknown, _options: DecodeOptions = {}): GatewayEnvelope {
   if (!isRecord(value)) throw new GatewayValidationError("response must be an object");
   if (value.schemaVersion !== "1") {
     throw new GatewayValidationError("unsupported schemaVersion");
@@ -129,23 +129,14 @@ function decodeEnvelope(value: unknown, options: DecodeOptions = {}): GatewayEnv
     throw new GatewayValidationError("items must be an array");
   }
 
-  const now = options.now ?? new Date();
-  const maxAgeMs = options.maxAgeMs ?? defaultMaxAgeMs;
   const asOf = parseTimestamp(requireString(value, "asOf"), "asOf");
   const availableAt = parseTimestamp(
     requireString(value, "availableAt"),
     "availableAt",
   );
-  const futureToleranceMs = 1_000;
 
   if (availableAt.getTime() < asOf.getTime()) {
     throw new GatewayValidationError("availableAt cannot precede asOf");
-  }
-  if (availableAt.getTime() > now.getTime() + futureToleranceMs) {
-    throw new GatewayValidationError("response is not yet available at this decision time");
-  }
-  if (now.getTime() - availableAt.getTime() > maxAgeMs) {
-    throw new GatewayRequestError("stale", "response is stale");
   }
 
   return { asOf, availableAt, items: value.items };
@@ -374,7 +365,7 @@ function decodeIndicatorValue(
 /** Decodes only the gateway's versioned live contract; it never adapts fixture data. */
 export function decodeStockSnapshotEnvelope(
   value: unknown,
-  options: DecodeOptions = {},
+  _options: DecodeOptions = {},
 ): LiveStockSnapshot {
   if (!isRecord(value)) throw new GatewayValidationError("response must be an object");
   if (value.schemaVersion !== "2") throw new GatewayValidationError("unsupported snapshot schemaVersion");
@@ -385,15 +376,7 @@ export function decodeStockSnapshotEnvelope(
   const snapshotError = decodeSnapshotError(value);
   if (snapshotError) throw snapshotError;
 
-  const now = options.now ?? new Date();
-  const maxAgeMs = options.maxAgeMs ?? defaultMaxAgeMs;
   const cutoff = parseTimestamp(requireString(value, "decisionCutoff"), "decisionCutoff");
-  if (cutoff.getTime() > now.getTime()) {
-    throw new GatewayValidationError("snapshot decision cutoff is in the future");
-  }
-  if (now.getTime() - cutoff.getTime() > maxAgeMs) {
-    throw new GatewayRequestError("stale", "snapshot response is stale");
-  }
 
   const symbol = normalizeUsSymbol(requireString(value, "symbol"));
   const interval = requireString(value, "interval");

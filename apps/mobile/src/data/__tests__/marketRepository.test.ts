@@ -87,18 +87,16 @@ it.each([
   ],
   [
     "stale response",
-    async () => {
-      const asOf = new Date(Date.now() - 61_000).toISOString();
-      const availableAt = new Date(Date.now() - 60_000).toISOString();
-      return jsonResponse({
-        schemaVersion: "1",
-        source: "moomoo",
-        session: "healthy",
-        asOf,
-        availableAt,
-        items: [],
-      });
-    },
+    async () =>
+      jsonResponse(
+        {
+          schemaVersion: "1",
+          source: "moomoo",
+          sourceStatus: "stale",
+          error: { code: "STALE_DATA" },
+        },
+        503,
+      ),
     "stale",
   ],
   [
