@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from .errors import ErrorCode, GatewayError
 from .models import ProviderBatch, QuoteProvider, SessionHealth
+from .snapshot import assemble_stock_snapshot
 from .symbols import from_moomoo_code, to_moomoo_code
 from .time_utils import iso_z, parse_aware, require_utc, utc_now
 
@@ -153,6 +154,126 @@ class MarketGatewayService:
             }
         )
         return response
+
+    def stock_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+        count: int,
+    ) -> dict[str, Any]:
+        try:
+            code = to_moomoo_code(symbol)
+            if timeframe not in {"1m", "5m", "15m", "30m", "60m", "day", "week"}:
+                raise GatewayError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "Unsupported candle interval",
+                )
+            if not isinstance(count, int) or not 1 <= count <= 1000:
+                raise GatewayError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "Candle count must be between 1 and 1000",
+                )
+        except GatewayError as error:
+            return self._snapshot_error(error, symbol=symbol, interval=timeframe)
+
+        started_at = require_utc(self._clock(), "clock")
+        health = self._safe_health(started_at)
+        observed_at = require_utc(self._clock(), "clock")
+        state = self._health_state(health, observed_at)
+        if state != "healthy":
+            code_for_state = health.error_code or self._code_for_health_state(state)
+            return self._snapshot_error(
+                GatewayError(
+                    code_for_state,
+                    self._message_for_code(code_for_state),
+                    retriable=code_for_state
+                    in {
+                        ErrorCode.OPEND_OFFLINE,
+                        ErrorCode.QUOTA_EXCEEDED,
+                        ErrorCode.STALE_DATA,
+                    },
+                ),
+                symbol=from_moomoo_code(code),
+                interval=timeframe,
+                now=observed_at,
+            )
+
+        try:
+            quote_batch = self._provider.quotes([code])
+            candle_batch = self._provider.candles(code, timeframe, count)
+            flow_batch = self._provider.capital_flow(code)
+            holding_batch = self._provider.institutional_holdings(code)
+        except Exception:
+            return self._snapshot_error(
+                GatewayError(
+                    ErrorCode.PROVIDER_ERROR,
+                    "Market data provider request failed",
+                    retriable=True,
+                ),
+                symbol=from_moomoo_code(code),
+                interval=timeframe,
+            )
+
+        completed_at = require_utc(self._clock(), "clock")
+        try:
+            quote_received = self._validate_batch(quote_batch, completed_at)
+            candle_received = self._validate_batch(candle_batch, completed_at)
+            holding_received = self._validate_batch(holding_batch, completed_at)
+            try:
+                flow_received = self._validate_batch(flow_batch, completed_at)
+            except GatewayError:
+                flow_received = None
+            decision_cutoff = min(
+                completed_at,
+                quote_received,
+                candle_received,
+                holding_received,
+                *( [flow_received] if flow_received is not None else [] ),
+            )
+            quote_items = self._normalize_quotes(quote_batch.items, decision_cutoff)
+            candle_items = self._normalize_candles(candle_batch.items, decision_cutoff)
+            holding_items = self._normalize_institutional_holdings(
+                holding_batch.items,
+                decision_cutoff,
+            )
+            try:
+                flow_items = (
+                    self._normalize_capital_flow(flow_batch.items, decision_cutoff)
+                    if flow_received is not None
+                    else []
+                )
+            except GatewayError:
+                flow_items = []
+            return assemble_stock_snapshot(
+                symbol=from_moomoo_code(code),
+                interval=timeframe,
+                decision_cutoff=decision_cutoff,
+                quote_items=quote_items,
+                candle_items=candle_items,
+                flow_items=flow_items,
+                holding_items=holding_items,
+            )
+        except GatewayError as error:
+            return self._snapshot_error(
+                GatewayError(
+                    error.code,
+                    self._message_for_code(error.code),
+                    retriable=error.retriable,
+                ),
+                symbol=from_moomoo_code(code),
+                interval=timeframe,
+                now=completed_at,
+            )
+        except (TypeError, ValueError):
+            return self._snapshot_error(
+                GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Market data could not be assembled safely",
+                ),
+                symbol=from_moomoo_code(code),
+                interval=timeframe,
+                now=completed_at,
+            )
 
     def _execute(
         self,
@@ -338,6 +459,8 @@ class MarketGatewayService:
                     "timestamp": iso_z(timestamp),
                     "availableAt": iso_z(available_at),
                     "complete": True,
+                    "code": item.get("code"),
+                    "timeframe": item.get("timeframe"),
                     "open": open_price,
                     "high": high,
                     "low": low,
@@ -592,6 +715,32 @@ class MarketGatewayService:
         )
         response["error"] = error.public_dict()
         return response
+
+    def _snapshot_error(
+        self,
+        error: GatewayError,
+        *,
+        symbol: str,
+        interval: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        timestamp = require_utc(now or self._clock(), "clock")
+        return {
+            "schemaVersion": "2",
+            "source": "moomoo",
+            "sourceStatus": "unavailable",
+            "symbol": symbol.strip().upper(),
+            "interval": interval,
+            "decisionCutoff": iso_z(timestamp),
+            "quote": {},
+            "completedCandles": [],
+            "participationBars": [],
+            "indicators": {},
+            "institutionalHoldings": [],
+            "provenance": [],
+            "warnings": [],
+            "error": error.public_dict(),
+        }
 
     @staticmethod
     def _envelope(

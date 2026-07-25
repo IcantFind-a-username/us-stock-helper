@@ -20,6 +20,7 @@ _PATHS = {
     "/watchlist",
     "/quotes",
     "/candles",
+    "/stock-snapshot",
     "/capital-flow",
     "/capital-distribution",
     "/institutional-holdings",
@@ -243,6 +244,8 @@ class GatewayApplication:
                 ErrorCode.INVALID_ARGUMENT,
                 "Unsupported candle interval",
             )
+        if path == "/stock-snapshot":
+            return self._service.stock_snapshot(symbol, interval, count)
         return self._service.candles(symbol, interval, count)
 
     def _one(

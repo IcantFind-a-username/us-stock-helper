@@ -53,6 +53,23 @@ class StubService:
             "items": [],
         }
 
+    def stock_snapshot(self, symbol: str, timeframe: str, count: int) -> dict:
+        return {
+            "schemaVersion": "2",
+            "source": "moomoo",
+            "sourceStatus": "live",
+            "symbol": symbol,
+            "interval": timeframe,
+            "decisionCutoff": "2026-07-25T04:00:00Z",
+            "quote": {},
+            "completedCandles": [],
+            "participationBars": [],
+            "indicators": {},
+            "institutionalHoldings": [],
+            "provenance": [],
+            "warnings": [],
+        }
+
     def capital_flow(self, symbol: str) -> dict:
         return {
             "schemaVersion": "1",
@@ -134,6 +151,7 @@ class GatewayApplicationTests(unittest.TestCase):
             "/watchlist",
             "/quotes",
             "/candles",
+            "/stock-snapshot",
             "/capital-flow",
             "/capital-distribution",
             "/institutional-holdings",
@@ -254,6 +272,20 @@ class GatewayApplicationTests(unittest.TestCase):
                 )
                 self.assertEqual(status, 400)
                 self.assertEqual(body["error"]["code"], expected)
+
+    def test_stock_snapshot_uses_candle_query_constraints(self) -> None:
+        status, _, body = self.app.handle(
+            "GET",
+            "/stock-snapshot",
+            {"symbol": ["NVDA"], "interval": ["5m"], "count": ["200"]},
+            {},
+            "127.0.0.1",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["schemaVersion"], "2")
+        self.assertEqual(body["symbol"], "NVDA")
+        self.assertEqual(body["interval"], "5m")
 
     def test_preflight_uses_zero_length_body(self) -> None:
         self.assertEqual(_encode_response_body("OPTIONS", 204, {}), b"")

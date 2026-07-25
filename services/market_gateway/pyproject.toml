@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "us-stock-helper-market-gateway"
 version = "0.1.0"
 description = "Read-only moomoo OpenD market-data gateway"
-requires-python = ">=3.9"
-dependencies = []
+requires-python = ">=3.11"
+dependencies = ["us-stock-helper-analysis-core==0.1.0"]
 
 [project.optional-dependencies]
 opend = ["moomoo-api"]
