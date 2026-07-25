@@ -1,5 +1,9 @@
 import { expect, it } from "@jest/globals";
-import { render, userEvent } from "@testing-library/react-native";
+import {
+  act,
+  render,
+  userEvent,
+} from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
 import type { ChartSnapshot } from "@/domain/models";
@@ -107,6 +111,35 @@ const snapshot: ChartSnapshot = {
   forecast: null,
 };
 
+function responderEvent(locationX: number) {
+  const target = { measure: () => undefined };
+  return {
+    currentTarget: target,
+    nativeEvent: {
+      changedTouches: [],
+      identifier: 1,
+      locationX,
+      locationY: 0,
+      pageX: locationX,
+      pageY: 0,
+      target: 1,
+      timestamp: 1,
+      touches: [],
+    },
+    stopPropagation: () => undefined,
+    target,
+  };
+}
+
+async function pressAt(
+  element: { props: { onClick?: (event: ReturnType<typeof responderEvent>) => void } },
+  locationX: number,
+) {
+  await act(async () => {
+    element.props.onClick?.(responderEvent(locationX));
+  });
+}
+
 it("renders aligned participation semantics without inventing a live forecast", async () => {
   const view = await render(<PriceChart stock={snapshot} />);
 
@@ -135,21 +168,38 @@ it("renders aligned participation semantics without inventing a live forecast", 
 
 it("selects the nearest candle by tap with exact accessible detail", async () => {
   const view = await render(<PriceChart stock={snapshot} />);
-  const user = userEvent.setup();
   const selector = view.getByRole("button", {
     name: /NVDA 图表摘要.*轻点或长按选择最近的 K 线/,
   });
-
   expect(StyleSheet.flatten(selector.props.style).minHeight).toBeGreaterThanOrEqual(44);
   expect(view.getByText("轻点或长按图表查看精确 K 线数据")).toBeTruthy();
 
-  await user.press(selector);
+  await pressAt(selector, 0);
   expect(view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel).toBe(
     "NVDA 收盘时间 2026-07-25T15:50:00.000Z；开 140.00，高 141.00，低 139.50，收 140.50，成交量 1200；主力代理 60.00%，散户代理 40.00%，覆盖率 100.00%，来源 moomoo；非真实机构身份",
   );
 });
 
+it("uses locationX to select both candles", async () => {
+  const view = await render(<PriceChart stock={snapshot} />);
+  const selector = view.getByRole("button", {
+    name: /NVDA 图表摘要/,
+  });
+
+  await pressAt(selector, 0);
+  expect(view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel).toContain(
+    snapshot.candles[0]!.timestamp,
+  );
+
+  await pressAt(selector, 10_000);
+  expect(view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel).toContain(
+    snapshot.candles[1]!.timestamp,
+  );
+});
+
 it("selects a missing nearest candle by long press without inventing shares", async () => {
+  const longReason =
+    "capital flow unavailable because the provider returned an extended diagnostic reason";
   const unavailableFirst: ChartSnapshot = {
     ...snapshot,
     participationBars: [
@@ -158,6 +208,7 @@ it("selects a missing nearest candle by long press without inventing shares", as
         closedAt: snapshot.candles[0]!.timestamp,
         asOf: snapshot.candles[0]!.timestamp,
         availableAt: snapshot.candles[0]!.availableAt,
+        missingReason: longReason,
       },
       {
         ...snapshot.participationBars[0]!,
@@ -168,15 +219,108 @@ it("selects a missing nearest candle by long press without inventing shares", as
     ],
   };
   const longPressView = await render(<PriceChart stock={unavailableFirst} />);
-  const user = userEvent.setup();
-  const longPressSelector = longPressView.getByRole("button", {
-    name: /NVDA 图表摘要.*轻点或长按选择最近的 K 线/,
+  const longPressTarget = longPressView.getByRole("button", {
+    name: /NVDA 图表摘要/,
   });
+  const user = userEvent.setup();
+  const detailBefore = longPressView.getByTestId("chart-detail-strip");
+  const minHeightBefore = StyleSheet.flatten(detailBefore.props.style).minHeight;
 
-  await user.longPress(longPressSelector, { duration: 600 });
+  await user.longPress(longPressTarget, { duration: 600 });
+
+  const detailAfter = longPressView.getByTestId("chart-detail-strip");
+  expect(detailAfter).toBe(detailBefore);
+  expect(StyleSheet.flatten(detailAfter.props.style).minHeight).toBe(
+    minHeightBefore,
+  );
+  expect(
+    longPressView.getByTestId("participation-detail-text").props,
+  ).toMatchObject({
+    ellipsizeMode: "tail",
+    numberOfLines: 2,
+  });
   expect(
     longPressView.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel,
   ).toBe(
-    "NVDA 收盘时间 2026-07-25T15:50:00.000Z；开 140.00，高 141.00，低 139.50，收 140.50，成交量 1200；活动占比缺失，覆盖率 0.00%，来源 moomoo，原因 capital flow unavailable；非真实机构身份",
+    `NVDA 收盘时间 2026-07-25T15:50:00.000Z；开 140.00，高 141.00，低 139.50，收 140.50，成交量 1200；活动占比缺失，覆盖率 0.00%，来源 moomoo，原因 ${longReason}；非真实机构身份`,
   );
+});
+
+it("excludes future live data from null-forecast geometry and selection", async () => {
+  const futureTimestamp = "2026-07-25T16:00:00.000Z";
+  const futureSnapshot: ChartSnapshot = {
+    ...snapshot,
+    candles: [
+      ...snapshot.candles,
+      {
+        timestamp: futureTimestamp,
+        availableAt: "2026-07-25T16:00:01.000Z",
+        complete: true,
+        open: 500,
+        high: 600,
+        low: 400,
+        close: 550,
+        volume: 99_999,
+      },
+    ],
+    participationBars: [
+      ...snapshot.participationBars,
+      {
+        ...snapshot.participationBars[0]!,
+        closedAt: futureTimestamp,
+        availableAt: "2026-07-25T16:00:01.000Z",
+      },
+    ],
+  };
+  const view = await render(<PriceChart stock={futureSnapshot} />);
+  expect(
+    view.getByRole("button", {
+      name: /NVDA 图表摘要，2 根已完成 K 线/,
+    }),
+  ).toBeTruthy();
+  const selector = view.getByRole("button", {
+    name: /NVDA 图表摘要/,
+  });
+
+  await pressAt(selector, 10_000);
+
+  expect(view.queryByText(new RegExp(futureTimestamp))).toBeNull();
+  expect(view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel).toContain(
+    snapshot.candles[1]!.timestamp,
+  );
+  expect(view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel).not.toContain(
+    futureTimestamp,
+  );
+});
+
+it("never exposes post-cutoff participation metadata in selected detail", async () => {
+  const postCutoffSnapshot: ChartSnapshot = {
+    ...snapshot,
+    participationBars: [
+      {
+        ...snapshot.participationBars[1]!,
+        closedAt: snapshot.candles[0]!.timestamp,
+        availableAt: "2026-07-25T16:00:01.000Z",
+        coverage: 0.37,
+        source: "post-cutoff-secret-source",
+        missingReason: "post-cutoff-secret-reason",
+      },
+      snapshot.participationBars[1]!,
+    ],
+  };
+  const view = await render(<PriceChart stock={postCutoffSnapshot} />);
+  const selector = view.getByRole("button", {
+    name: /NVDA 图表摘要/,
+  });
+
+  await pressAt(selector, 0);
+
+  const label = view.getByLabelText(/NVDA 收盘时间/).props
+    .accessibilityLabel as string;
+  expect(label).toContain(
+    "活动占比缺失，覆盖率不可用，来源不可用，原因 决策截止时不可用",
+  );
+  expect(label).not.toContain("37.00%");
+  expect(label).not.toContain("post-cutoff-secret-source");
+  expect(label).not.toContain("post-cutoff-secret-reason");
 });

@@ -6,7 +6,11 @@ import type {
   ParticipationBar,
 } from "@/domain/models";
 
-import { buildChartGeometry, resolveChartWidth } from "../chart";
+import {
+  buildChartGeometry,
+  findNearestByX,
+  resolveChartWidth,
+} from "../chart";
 
 const candles: Candle[] = [
   {
@@ -57,6 +61,7 @@ const forecast: ForecastSnapshot = {
   modelVersion: "test",
   invalidation: "跌破 99",
 };
+const decisionCutoff = forecast.predictedAt;
 
 const participationBars: ParticipationBar[] = [
   {
@@ -92,7 +97,14 @@ const participationBars: ParticipationBar[] = [
 ];
 
 it("maps candles and probability bands into bounded chart geometry", () => {
-  const geometry = buildChartGeometry(candles, forecast, participationBars, 360, 250);
+  const geometry = buildChartGeometry(
+    candles,
+    forecast,
+    participationBars,
+    decisionCutoff,
+    360,
+    250,
+  );
 
   expect(geometry.candles).toHaveLength(2);
   expect(geometry.candles[0]?.direction).toBe("up");
@@ -123,7 +135,14 @@ it("maps candles and probability bands into bounded chart geometry", () => {
 
 it("returns stable empty geometry instead of throwing without candles or forecasts", () => {
   const emptyForecast = { ...forecast, points: [] };
-  const geometry = buildChartGeometry([], emptyForecast, [], 360, 250);
+  const geometry = buildChartGeometry(
+    [],
+    emptyForecast,
+    [],
+    decisionCutoff,
+    360,
+    250,
+  );
 
   expect(geometry.candles).toEqual([]);
   expect(geometry.forecastPoints).toEqual([]);
@@ -134,7 +153,7 @@ it("returns stable empty geometry instead of throwing without candles or forecas
   expect(geometry.priceMax).toBe(1);
 });
 
-it("rejects incomplete and future-available candles at the forecast decision time", () => {
+it("rejects incomplete and future-available candles at the explicit decision cutoff", () => {
   const leakyCandles: Candle[] = [
     ...candles,
     {
@@ -159,8 +178,22 @@ it("rejects incomplete and future-available candles at the forecast decision tim
     },
   ];
 
-  const geometry = buildChartGeometry(leakyCandles, forecast, participationBars, 360, 250);
-  const safeGeometry = buildChartGeometry(candles, forecast, participationBars, 360, 250);
+  const geometry = buildChartGeometry(
+    leakyCandles,
+    forecast,
+    participationBars,
+    decisionCutoff,
+    360,
+    250,
+  );
+  const safeGeometry = buildChartGeometry(
+    candles,
+    forecast,
+    participationBars,
+    decisionCutoff,
+    360,
+    250,
+  );
 
   expect(geometry.candles).toHaveLength(2);
   expect(geometry.priceMax).toBe(safeGeometry.priceMax);
@@ -178,7 +211,14 @@ it("draws MA5 only from five point-in-time completed closes", () => {
     volume: 1_000 + index * 100,
   }));
 
-  const geometry = buildChartGeometry(fiveCandles, forecast, [], 360, 250);
+  const geometry = buildChartGeometry(
+    fiveCandles,
+    forecast,
+    [],
+    decisionCutoff,
+    360,
+    250,
+  );
 
   expect(geometry.ma5Path).toMatch(/^M /);
 });
@@ -191,8 +231,26 @@ it("uses the available phone width while keeping chart geometry bounded", () => 
   expect(resolveChartWidth(1_600)).toBe(1_180);
 });
 
+it("selects the nearest x coordinate and resolves an exact midpoint to the first", () => {
+  const points = [
+    { id: "first", x: 10 },
+    { id: "second", x: 30 },
+  ];
+
+  expect(findNearestByX(points, 19.9)?.id).toBe("first");
+  expect(findNearestByX(points, 20)?.id).toBe("first");
+  expect(findNearestByX(points, 20.1)?.id).toBe("second");
+});
+
 it("aligns one fixed-height 100% participation bar to every completed candle", () => {
-  const geometry = buildChartGeometry(candles, forecast, participationBars, 360, 250);
+  const geometry = buildChartGeometry(
+    candles,
+    forecast,
+    participationBars,
+    decisionCutoff,
+    360,
+    250,
+  );
 
   expect(geometry.participation).toHaveLength(2);
   expect(geometry.participation.map(({ timestamp }) => timestamp)).toEqual(
@@ -233,6 +291,7 @@ it("keeps a missing participation value as an unavailable empty slot", () => {
     candles,
     forecast,
     [participationBars[0]!, unavailable],
+    decisionCutoff,
     360,
     250,
   );
@@ -246,7 +305,7 @@ it("keeps a missing participation value as an unavailable empty slot", () => {
   });
 });
 
-it("rejects participation that was unavailable at the forecast decision cutoff", () => {
+it("rejects participation that was unavailable at the explicit decision cutoff", () => {
   const futureAvailable: ParticipationBar = {
     ...participationBars[0]!,
     availableAt: "2026-07-24T10:00:01-04:00",
@@ -256,11 +315,17 @@ it("rejects participation that was unavailable at the forecast decision cutoff",
     candles,
     forecast,
     [futureAvailable, participationBars[1]!],
+    decisionCutoff,
     360,
     250,
   );
 
   expect(geometry.participation[0]?.available).toBe(false);
+  expect(geometry.participation[0]).toMatchObject({
+    coverage: null,
+    source: null,
+    missingReason: "决策截止时不可用",
+  });
   expect(geometry.participation[1]?.available).toBe(true);
 });
 
@@ -269,6 +334,7 @@ it("never lets participation input reorder candle geometry", () => {
     candles,
     forecast,
     participationBars,
+    decisionCutoff,
     360,
     250,
   );
@@ -276,6 +342,7 @@ it("never lets participation input reorder candle geometry", () => {
     candles,
     forecast,
     [...participationBars].reverse(),
+    decisionCutoff,
     360,
     250,
   );
@@ -304,9 +371,70 @@ it("keeps only the latest 200 completed candles in the interactive chart", () =>
     predictedAt: "2026-07-24T10:00:00.000Z",
   };
 
-  const geometry = buildChartGeometry(manyCandles, laterForecast, [], 360, 250);
+  const geometry = buildChartGeometry(
+    manyCandles,
+    laterForecast,
+    [],
+    decisionCutoff,
+    360,
+    250,
+  );
 
   expect(geometry.candles).toHaveLength(200);
   expect(geometry.candles[0]?.timestamp).toBe(manyCandles[1]?.timestamp);
   expect(geometry.participation).toHaveLength(200);
+});
+
+it("uses an explicit live decision cutoff when forecast is null", () => {
+  const liveCutoff = "2026-07-24T09:36:00-04:00";
+  const futureCandle: Candle = {
+    timestamp: "2026-07-24T09:40:00-04:00",
+    availableAt: "2026-07-24T09:40:01-04:00",
+    complete: true,
+    open: 500,
+    high: 550,
+    low: 450,
+    close: 525,
+    volume: 50_000,
+  };
+  const futureParticipation: ParticipationBar = {
+    ...participationBars[1]!,
+    closedAt: futureCandle.timestamp,
+    availableAt: futureCandle.availableAt,
+    source: "post-cutoff-secret-source",
+    coverage: 0.37,
+    qualityStatus: "unavailable",
+    mainShare: null,
+    retailShare: null,
+    mainActivity: null,
+    retailActivity: null,
+    netFlow: null,
+    missingReason: "post-cutoff-secret-reason",
+  };
+
+  const safe = buildChartGeometry(
+    candles,
+    null,
+    participationBars,
+    liveCutoff,
+    360,
+    250,
+  );
+  const leaky = buildChartGeometry(
+    [...candles, futureCandle],
+    null,
+    [...participationBars, futureParticipation],
+    liveCutoff,
+    360,
+    250,
+  );
+
+  expect(leaky.candles.map(({ timestamp }) => timestamp)).toEqual(
+    safe.candles.map(({ timestamp }) => timestamp),
+  );
+  expect(leaky.priceMin).toBe(safe.priceMin);
+  expect(leaky.priceMax).toBe(safe.priceMax);
+  expect(leaky.participation.map(({ timestamp }) => timestamp)).toEqual(
+    safe.participation.map(({ timestamp }) => timestamp),
+  );
 });

@@ -79,3 +79,67 @@ inherit a fixture forecast.
 ## Concerns
 
 None.
+
+## Fix Round 1
+
+### Status
+
+Resolved all review findings. Chart geometry now receives the snapshot source
+`decisionCutoff` explicitly and never derives availability from forecast
+presence or `predictedAt`. Live snapshots with `forecast: null` remain
+point-in-time filtered.
+
+Selected participation detail now comes only from the geometry-approved,
+sanitized projection. A post-cutoff row produces a fixed
+`决策截止时不可用` state with no raw coverage, source, or reason metadata.
+
+### TDD evidence
+
+RED:
+
+- The explicit-cutoff geometry run failed three expected cases: the old
+  signature shifted width/height, post-cutoff geometry had no sanitized
+  metadata, and a null-forecast live chart included a future candle.
+- The first component RED showed zero filtered candles because `PriceChart`
+  had not yet passed `source.decisionCutoff`.
+- New component cases then exercised first/second x selection, null-forecast
+  future exclusion, post-cutoff secret metadata, and stable long-reason detail.
+
+GREEN:
+
+- Focused geometry + `PriceChart`: 2 suites, 18 tests passed.
+- Full mobile: 26 suites, 153 tests passed.
+- Node `22.23.1` typecheck and lint both exited 0 with pristine output.
+- `git diff --check` passed.
+
+### Changes
+
+- `buildChartGeometry` accepts `decisionCutoff` separately from
+  `forecastOrNull`; candle and participation `availableAt` must be finite and
+  no later than that cutoff.
+- `ParticipationGeometry` carries only approved shares/coverage/source/reason.
+  Rejected rows receive null metadata and a fixed safe missing reason.
+- `PriceChart` passes `snapshot.source.decisionCutoff`, selects only filtered
+  candle geometry, and renders detail only from sanitized participation
+  geometry.
+- `findNearestByX` has hand-derived boundary tests at 19.9, 20.0, and 20.1.
+  Component taps inject x=0 and x=10000 to select the first and second candles;
+  the native long-press path remains covered.
+- The detail strip is always mounted with the same testable minimum-height
+  container. Long participation reasons are visually capped at two lines with
+  tail ellipsis while the parent accessibility label retains the full text.
+
+### Self-review
+
+- A future candle cannot affect candle count, selection, volume scale, or price
+  range when forecast is null.
+- Raw `snapshot.participationBars` is no longer consulted after selection.
+- Post-cutoff coverage, source, and reason sentinel strings are absent from the
+  selected accessibility label.
+- Existing constant-height stacks, missing outlines, no-direction-axis
+  semantics, legend copy, contrast, and non-identity disclaimer remain intact.
+- Unrelated untracked plan files remain untouched and excluded.
+
+### Concerns
+
+None.

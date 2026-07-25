@@ -20,7 +20,11 @@ import {
   type ChartSnapshot,
   type StockSnapshot,
 } from "@/domain/models";
-import { buildChartGeometry, resolveChartWidth } from "@/domain/chart";
+import {
+  buildChartGeometry,
+  findNearestByX,
+  resolveChartWidth,
+} from "@/domain/chart";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 import { ChartLegend } from "./ChartLegend";
@@ -61,6 +65,7 @@ export const PriceChart = memo(function PriceChart({
         snapshot.candles,
         chartForecast,
         snapshot.participationBars,
+        snapshot.source.decisionCutoff,
         chartWidth,
         height,
       ),
@@ -70,6 +75,7 @@ export const PriceChart = memo(function PriceChart({
       height,
       snapshot.candles,
       snapshot.participationBars,
+      snapshot.source.decisionCutoff,
     ],
   );
   const hasForecast = showForecast && snapshot.forecast !== null;
@@ -77,25 +83,19 @@ export const PriceChart = memo(function PriceChart({
   const selectedCandle = selectedTimestamp
     ? snapshot.candles.find(({ timestamp }) => timestamp === selectedTimestamp)
     : undefined;
-  const selectedParticipationGeometry = selectedTimestamp
+  const selectedParticipation = selectedTimestamp
     ? geometry.participation.find(({ timestamp }) => timestamp === selectedTimestamp)
     : undefined;
-  const rawSelectedParticipation = selectedTimestamp
-    ? snapshot.participationBars.find(({ closedAt }) => closedAt === selectedTimestamp)
-    : undefined;
-  const selectedParticipation =
-    selectedParticipationGeometry?.available ||
-    rawSelectedParticipation?.qualityStatus === "unavailable"
-      ? rawSelectedParticipation
-      : undefined;
   const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线，当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%，${geometry.participation.filter(({ available }) => available).length} 根有订单规模活动占比；轻点或长按选择最近的 K 线`;
   const detailLabel = selectedCandle
     ? `${snapshot.symbol} 收盘时间 ${selectedCandle.timestamp}；开 ${selectedCandle.open.toFixed(2)}，高 ${selectedCandle.high.toFixed(2)}，低 ${selectedCandle.low.toFixed(2)}，收 ${selectedCandle.close.toFixed(2)}，成交量 ${selectedCandle.volume}；${
-        selectedParticipation?.qualityStatus === "live" &&
+        selectedParticipation?.available &&
         selectedParticipation.mainShare !== null &&
-        selectedParticipation.retailShare !== null
+        selectedParticipation.retailShare !== null &&
+        selectedParticipation.coverage !== null &&
+        selectedParticipation.source !== null
           ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}%，散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}%，覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%，来源 ${selectedParticipation.source}`
-          : `活动占比缺失，覆盖率 ${((selectedParticipation?.coverage ?? 0) * 100).toFixed(2)}%，来源 ${selectedParticipation?.source ?? snapshot.source.source}，原因 ${selectedParticipation?.missingReason ?? "决策截止时不可用"}`
+          : `活动占比缺失，${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`}，${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"}，原因 ${selectedParticipation?.missingReason ?? "活动占比不可用"}`
       }；非真实机构身份`
     : null;
 
@@ -103,10 +103,8 @@ export const PriceChart = memo(function PriceChart({
     if (!geometry.candles.length) return;
     const locationX = event.nativeEvent.locationX;
     const targetX = Number.isFinite(locationX) ? locationX : chartWidth;
-    const nearest = geometry.candles.reduce((best, candle) =>
-      Math.abs(candle.x - targetX) < Math.abs(best.x - targetX) ? candle : best,
-    );
-    setSelectedTimestamp(nearest.timestamp);
+    const nearest = findNearestByX(geometry.candles, targetX);
+    if (nearest) setSelectedTimestamp(nearest.timestamp);
   };
 
   return (
@@ -331,7 +329,8 @@ export const PriceChart = memo(function PriceChart({
         accessibilityLabel={detailLabel ?? undefined}
         accessibilityLiveRegion="polite"
         accessible={detailLabel !== null}
-        style={styles.detail}>
+        style={styles.detail}
+        testID="chart-detail-strip">
         {selectedCandle && detailLabel ? (
           <>
             <Text style={styles.detailPrimary}>
@@ -339,12 +338,18 @@ export const PriceChart = memo(function PriceChart({
               {selectedCandle.high.toFixed(2)} · L {selectedCandle.low.toFixed(2)} · C{" "}
               {selectedCandle.close.toFixed(2)} · V {selectedCandle.volume}
             </Text>
-            <Text style={styles.detailSecondary}>
-              {selectedParticipation?.qualityStatus === "live" &&
+            <Text
+              ellipsizeMode="tail"
+              numberOfLines={2}
+              style={styles.detailSecondary}
+              testID="participation-detail-text">
+              {selectedParticipation?.available &&
               selectedParticipation.mainShare !== null &&
-              selectedParticipation.retailShare !== null
+              selectedParticipation.retailShare !== null &&
+              selectedParticipation.coverage !== null &&
+              selectedParticipation.source !== null
                 ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}% · 散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}% · 覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}% · ${selectedParticipation.source}`
-                : `活动占比缺失 · 覆盖率 ${((selectedParticipation?.coverage ?? 0) * 100).toFixed(2)}% · ${selectedParticipation?.source ?? snapshot.source.source} · ${selectedParticipation?.missingReason ?? "决策截止时不可用"}`}
+                : `活动占比缺失 · ${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`} · ${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"} · ${selectedParticipation?.missingReason ?? "活动占比不可用"}`}
             </Text>
             <Text style={styles.identity}>订单规模活动代理 · 非真实机构身份</Text>
           </>

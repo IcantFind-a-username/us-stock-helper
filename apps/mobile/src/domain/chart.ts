@@ -36,6 +36,11 @@ export type ParticipationGeometry = {
   mainHeight: number;
   retailHeight: number;
   available: boolean;
+  mainShare: number | null;
+  retailShare: number | null;
+  coverage: number | null;
+  source: string | null;
+  missingReason: string | null;
 };
 
 export type ChartGeometry = {
@@ -87,16 +92,30 @@ const bandPath = (
 export const resolveChartWidth = (viewportWidth: number) =>
   Math.min(Math.max(viewportWidth - 56, 304), 1_180);
 
+export function findNearestByX<T extends { x: number }>(
+  points: T[],
+  targetX: number,
+): T | undefined {
+  return points.reduce<T | undefined>(
+    (nearest, point) =>
+      nearest === undefined ||
+      Math.abs(point.x - targetX) < Math.abs(nearest.x - targetX)
+        ? point
+        : nearest,
+    undefined,
+  );
+}
+
 export function buildChartGeometry(
   candles: Candle[],
   forecast: ForecastSnapshot | null,
   participationBars: ParticipationBar[],
+  decisionCutoff: string,
   width: number,
   height: number,
 ): ChartGeometry {
-  const decisionTime =
-    forecast === null ? null : Date.parse(forecast.predictedAt);
-  const hasValidCutoff = decisionTime === null || Number.isFinite(decisionTime);
+  const decisionTime = Date.parse(decisionCutoff);
+  const hasValidCutoff = Number.isFinite(decisionTime);
   const pointInTimeCandles = hasValidCutoff
     ? candles
         .filter((candle) => {
@@ -104,7 +123,7 @@ export function buildChartGeometry(
           return (
             candle.complete &&
             Number.isFinite(availableAt) &&
-            (decisionTime === null || availableAt <= decisionTime)
+            availableAt <= decisionTime
           );
         })
         .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
@@ -167,6 +186,8 @@ export function buildChartGeometry(
       const bar = participationByTimestamp.get(candle.timestamp);
       const availableAt = bar ? Date.parse(bar.availableAt) : Number.NaN;
       const hasShares =
+        Number.isFinite(availableAt) &&
+        availableAt <= decisionTime &&
         bar?.qualityStatus === "live" &&
         bar.mainShare !== null &&
         bar.retailShare !== null &&
@@ -175,10 +196,11 @@ export function buildChartGeometry(
         bar.mainShare >= 0 &&
         bar.retailShare >= 0 &&
         Math.abs(bar.mainShare + bar.retailShare - 1) <= 1e-9;
-      const available =
-        hasShares &&
+      const available = hasShares;
+      const approvedMissing =
         Number.isFinite(availableAt) &&
-        (decisionTime === null || availableAt <= decisionTime);
+        availableAt <= decisionTime &&
+        bar?.qualityStatus === "unavailable";
       return {
         timestamp: candle.timestamp,
         x: candle.x,
@@ -188,6 +210,17 @@ export function buildChartGeometry(
         mainHeight: available ? participationHeight * bar.mainShare! : 0,
         retailHeight: available ? participationHeight * bar.retailShare! : 0,
         available,
+        mainShare: available ? bar.mainShare : null,
+        retailShare: available ? bar.retailShare : null,
+        coverage: available || approvedMissing ? bar.coverage : null,
+        source: available || approvedMissing ? bar.source : null,
+        missingReason: available
+          ? null
+          : approvedMissing
+            ? bar.missingReason
+            : bar
+              ? "决策截止时不可用"
+              : "活动占比不可用",
       };
     },
   );
