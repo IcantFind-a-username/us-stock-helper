@@ -90,6 +90,12 @@ export function FullChartScreen() {
   const liveStock = stock.demoData
     ? null
     : (stock as LiveStockSnapshot);
+  const dataStatus =
+    market.status === "stale"
+      ? "stale"
+      : stock.demoData
+        ? "demo"
+        : "live";
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>
@@ -109,9 +115,9 @@ export function FullChartScreen() {
         <View style={styles.titleWrap}>
           <Text style={styles.title}>{symbol} 专业图表</Text>
           <Text style={stock.demoData ? styles.demo : styles.live}>
-            {stock.demoData
+            {dataStatus === "demo"
               ? "演示快照"
-              : `实时只读 · 截止 ${formatUtc(stock.source.asOf)}`}
+              : `${dataStatus === "stale" ? "缓存数据" : "实时只读"} · 截止 ${formatUtc(stock.source.asOf)}`}
           </Text>
         </View>
         <View style={styles.back} />
@@ -133,7 +139,7 @@ export function FullChartScreen() {
         </View>
       ) : null}
 
-      <PriceChart stock={stock} />
+      <PriceChart dataStatus={dataStatus} stock={stock} />
       <View style={styles.maCard}>
         <Text style={styles.maTitle}>
           MA5{" "}

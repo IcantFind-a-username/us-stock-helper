@@ -32,17 +32,21 @@ import { ChartLegend } from "./ChartLegend";
 type PriceChartProps = {
   stock: ChartSnapshot | StockSnapshot;
   compact?: boolean;
+  dataStatus?: "demo" | "live" | "stale";
   showForecast?: boolean;
   showMagicNine?: boolean;
   showMovingAverage?: boolean;
+  showParticipation?: boolean;
 };
 
 export const PriceChart = memo(function PriceChart({
   stock,
   compact = false,
+  dataStatus,
   showForecast = true,
   showMagicNine = true,
   showMovingAverage = true,
+  showParticipation = true,
 }: PriceChartProps) {
   const { width: viewportWidth } = useWindowDimensions();
   const chartWidth = resolveChartWidth(viewportWidth);
@@ -51,6 +55,13 @@ export const PriceChart = memo(function PriceChart({
     () => ("quote" in stock ? stock : toDemoChartSnapshot(stock)),
     [stock],
   );
+  const resolvedStatus =
+    dataStatus ??
+    (snapshot.demoData
+      ? "demo"
+      : snapshot.source.status === "stale"
+        ? "stale"
+        : "live");
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(null);
   const chartForecast = useMemo(
     () =>
@@ -79,24 +90,33 @@ export const PriceChart = memo(function PriceChart({
     ],
   );
   const hasForecast = showForecast && snapshot.forecast !== null;
+  const hasMagicNine =
+    showMagicNine && snapshot.magicNine.qualityStatus !== "unavailable";
   const lastCandle = geometry.candles.at(-1);
   const selectedCandle = selectedTimestamp
     ? snapshot.candles.find(({ timestamp }) => timestamp === selectedTimestamp)
     : undefined;
-  const selectedParticipation = selectedTimestamp
+  const selectedParticipation = showParticipation && selectedTimestamp
     ? geometry.participation.find(({ timestamp }) => timestamp === selectedTimestamp)
     : undefined;
-  const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线，当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%，${geometry.participation.filter(({ available }) => available).length} 根有订单规模活动占比；轻点或长按选择最近的 K 线`;
+  const participationSummary = showParticipation
+    ? `，${geometry.participation.filter(({ available }) => available).length} 根有订单规模活动占比`
+    : "";
+  const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线，当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%${participationSummary}；轻点或长按选择最近的 K 线`;
   const detailLabel = selectedCandle
-    ? `${snapshot.symbol} 收盘时间 ${selectedCandle.timestamp}；开 ${selectedCandle.open.toFixed(2)}，高 ${selectedCandle.high.toFixed(2)}，低 ${selectedCandle.low.toFixed(2)}，收 ${selectedCandle.close.toFixed(2)}，成交量 ${selectedCandle.volume}；${
-        selectedParticipation?.available &&
-        selectedParticipation.mainShare !== null &&
-        selectedParticipation.retailShare !== null &&
-        selectedParticipation.coverage !== null &&
-        selectedParticipation.source !== null
-          ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}%，散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}%，覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%，来源 ${selectedParticipation.source}`
-          : `活动占比缺失，${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`}，${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"}，原因 ${selectedParticipation?.missingReason ?? "活动占比不可用"}`
-      }；非真实机构身份`
+    ? `${snapshot.symbol} 收盘时间 ${selectedCandle.timestamp}；开 ${selectedCandle.open.toFixed(2)}，高 ${selectedCandle.high.toFixed(2)}，低 ${selectedCandle.low.toFixed(2)}，收 ${selectedCandle.close.toFixed(2)}，成交量 ${selectedCandle.volume}${
+        showParticipation
+          ? `；${
+              selectedParticipation?.available &&
+              selectedParticipation.mainShare !== null &&
+              selectedParticipation.retailShare !== null &&
+              selectedParticipation.coverage !== null &&
+              selectedParticipation.source !== null
+                ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}%，散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}%，覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%，来源 ${selectedParticipation.source}`
+                : `活动占比缺失，${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`}，${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"}，原因 ${selectedParticipation?.missingReason ?? "活动占比不可用"}`
+            }；非真实机构身份`
+          : ""
+      }`
     : null;
 
   const selectNearestCandle = (event: GestureResponderEvent) => {
@@ -114,10 +134,7 @@ export const PriceChart = memo(function PriceChart({
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>
-            {snapshot.interval} ·{" "}
-            {snapshot.demoData
-              ? "DEMO"
-              : snapshot.source.status.toUpperCase()}
+            {snapshot.interval} · {resolvedStatus.toUpperCase()}
           </Text>
           <Text style={styles.title}>
             {hasForecast ? "价格 · 成交量 · 概率预测" : "价格 · 成交量"}
@@ -136,6 +153,7 @@ export const PriceChart = memo(function PriceChart({
       <ChartLegend
         showForecast={hasForecast}
         showMovingAverage={showMovingAverage}
+        showParticipation={showParticipation}
       />
 
       <Pressable
@@ -256,44 +274,46 @@ export const PriceChart = memo(function PriceChart({
             );
           })}
 
-          {geometry.participation.map((bar) =>
-            bar.available ? (
-              <G key={bar.timestamp} testID="participation-available">
-                <Rect
-                  fill={colors.blue}
-                  height={bar.mainHeight}
-                  testID="participation-main"
-                  width={bar.width}
-                  x={bar.x - bar.width / 2}
-                  y={bar.top}
-                />
-                <Rect
-                  fill={colors.navyMuted}
-                  height={bar.retailHeight}
-                  testID="participation-retail"
-                  width={bar.width}
-                  x={bar.x - bar.width / 2}
-                  y={bar.top + bar.mainHeight}
-                />
-              </G>
-            ) : (
-              <Rect
-                fill="none"
-                height={bar.height}
-                key={bar.timestamp}
-                stroke={colors.navyMuted}
-                strokeDasharray="2 2"
-                strokeWidth={0.9}
-                testID="participation-missing"
-                width={bar.width}
-                x={bar.x - bar.width / 2}
-                y={bar.top}
-              />
-            ),
-          )}
+          {showParticipation
+            ? geometry.participation.map((bar) =>
+                bar.available ? (
+                  <G key={bar.timestamp} testID="participation-available">
+                    <Rect
+                      fill={colors.blue}
+                      height={bar.mainHeight}
+                      testID="participation-main"
+                      width={bar.width}
+                      x={bar.x - bar.width / 2}
+                      y={bar.top}
+                    />
+                    <Rect
+                      fill={colors.navyMuted}
+                      height={bar.retailHeight}
+                      testID="participation-retail"
+                      width={bar.width}
+                      x={bar.x - bar.width / 2}
+                      y={bar.top + bar.mainHeight}
+                    />
+                  </G>
+                ) : (
+                  <Rect
+                    fill="none"
+                    height={bar.height}
+                    key={bar.timestamp}
+                    stroke={colors.navyMuted}
+                    strokeDasharray="2 2"
+                    strokeWidth={0.9}
+                    testID="participation-missing"
+                    width={bar.width}
+                    x={bar.x - bar.width / 2}
+                    y={bar.top}
+                  />
+                ),
+              )
+            : null}
 
-          {showMagicNine && lastCandle ? (
-            <G>
+          {hasMagicNine && lastCandle ? (
+            <G testID="magic-nine-marker">
               <Rect
                 fill={colors.amber}
                 height={17}
@@ -338,26 +358,36 @@ export const PriceChart = memo(function PriceChart({
               {selectedCandle.high.toFixed(2)} · L {selectedCandle.low.toFixed(2)} · C{" "}
               {selectedCandle.close.toFixed(2)} · V {selectedCandle.volume}
             </Text>
-            <Text
-              ellipsizeMode="tail"
-              numberOfLines={2}
-              style={styles.detailSecondary}
-              testID="participation-detail-text">
-              {selectedParticipation?.available &&
-              selectedParticipation.mainShare !== null &&
-              selectedParticipation.retailShare !== null &&
-              selectedParticipation.coverage !== null &&
-              selectedParticipation.source !== null
-                ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}% · 散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}% · 覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}% · ${selectedParticipation.source}`
-                : `活动占比缺失 · ${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`} · ${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"} · ${selectedParticipation?.missingReason ?? "活动占比不可用"}`}
-            </Text>
-            <Text style={styles.identity}>订单规模活动代理 · 非真实机构身份</Text>
+            {showParticipation ? (
+              <>
+                <Text
+                  ellipsizeMode="tail"
+                  numberOfLines={2}
+                  style={styles.detailSecondary}
+                  testID="participation-detail-text">
+                  {selectedParticipation?.available &&
+                  selectedParticipation.mainShare !== null &&
+                  selectedParticipation.retailShare !== null &&
+                  selectedParticipation.coverage !== null &&
+                  selectedParticipation.source !== null
+                    ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}% · 散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}% · 覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}% · ${selectedParticipation.source}`
+                    : `活动占比缺失 · ${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`} · ${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"} · ${selectedParticipation?.missingReason ?? "活动占比不可用"}`}
+                </Text>
+                <Text style={styles.identity}>订单规模活动代理 · 非真实机构身份</Text>
+              </>
+            ) : null}
           </>
         ) : (
           <>
             <Text style={styles.detailPrimary}>轻点或长按图表查看精确 K 线数据</Text>
-            <Text style={styles.detailSecondary}>将显示 OHLCV、活动占比、覆盖率与来源</Text>
-            <Text style={styles.identity}>订单规模活动代理 · 非真实机构身份</Text>
+            <Text style={styles.detailSecondary}>
+              {showParticipation
+                ? "将显示 OHLCV、活动占比、覆盖率与来源"
+                : "将显示 OHLCV"}
+            </Text>
+            {showParticipation ? (
+              <Text style={styles.identity}>订单规模活动代理 · 非真实机构身份</Text>
+            ) : null}
           </>
         )}
       </View>
@@ -366,9 +396,11 @@ export const PriceChart = memo(function PriceChart({
         <View style={styles.footer}>
           {showMagicNine ? (
             <Text style={styles.nine}>
-              {`九转 ${snapshot.magicNine.count} · ${
-                snapshot.magicNine.completed ? "序列完成" : "尚未完成"
-              }`}
+              {snapshot.magicNine.qualityStatus === "unavailable"
+                ? "九转 暂不可用"
+                : `九转 ${snapshot.magicNine.count} · ${
+                    snapshot.magicNine.completed ? "序列完成" : "尚未完成"
+                  }`}
             </Text>
           ) : (
             <View />

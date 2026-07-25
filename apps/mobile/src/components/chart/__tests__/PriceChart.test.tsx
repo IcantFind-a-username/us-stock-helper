@@ -166,6 +166,74 @@ it("renders aligned participation semantics without inventing a live forecast", 
   expect(view.queryByText("现在 / 预测起点")).toBeNull();
 });
 
+it("hides the participation legend, bars, and selected participation detail together", async () => {
+  const view = await render(
+    <PriceChart showParticipation={false} stock={snapshot} />,
+  );
+
+  expect(
+    view.queryByText(
+      "订单规模活动占比 · 深色主力代理 / 浅色散户代理",
+    ),
+  ).toBeNull();
+  expect(
+    view.queryByTestId("participation-available", {
+      includeHiddenElements: true,
+    }),
+  ).toBeNull();
+  expect(
+    view.queryByTestId("participation-missing", {
+      includeHiddenElements: true,
+    }),
+  ).toBeNull();
+
+  const selector = view.getByRole("button", {
+    name: /NVDA 图表摘要/,
+  });
+  await pressAt(selector, 0);
+  expect(
+    view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel,
+  ).toBe(
+    "NVDA 收盘时间 2026-07-25T15:50:00.000Z；开 140.00，高 141.00，低 139.50，收 140.50，成交量 1200",
+  );
+  expect(view.queryByTestId("participation-detail-text")).toBeNull();
+  expect(view.queryByText("订单规模活动代理 · 非真实机构身份")).toBeNull();
+});
+
+it("does not draw a false magic-nine zero when the indicator is unavailable", async () => {
+  const unavailableMagic: ChartSnapshot = {
+    ...snapshot,
+    magicNine: {
+      ...snapshot.magicNine,
+      direction: null,
+      count: 0,
+      completed: false,
+      confirmedAtIndex: null,
+      qualityStatus: "unavailable",
+    },
+  };
+  const view = await render(<PriceChart stock={unavailableMagic} />);
+
+  expect(view.getByText("九转 暂不可用")).toBeTruthy();
+  expect(
+    view.queryByTestId("magic-nine-marker", {
+      includeHiddenElements: true,
+    }),
+  ).toBeNull();
+  expect(view.queryByText("九转 0 · 尚未完成")).toBeNull();
+});
+
+it("labels a stale chart without also claiming live data", async () => {
+  const staleSnapshot: ChartSnapshot = {
+    ...snapshot,
+    source: { ...snapshot.source, status: "stale" },
+  };
+  const view = await render(<PriceChart stock={staleSnapshot} />);
+
+  expect(view.getByText("5m · STALE")).toBeTruthy();
+  expect(view.queryByText("5m · LIVE")).toBeNull();
+});
+
 it("selects the nearest candle by tap with exact accessible detail", async () => {
   const view = await render(<PriceChart stock={snapshot} />);
   const selector = view.getByRole("button", {

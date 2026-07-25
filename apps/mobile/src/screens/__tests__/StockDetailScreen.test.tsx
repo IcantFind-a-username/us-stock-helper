@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { render, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
 import {
@@ -35,6 +35,26 @@ beforeEach(async () => {
 
 function liveSnapshot() {
   return decodeStockSnapshotEnvelope(stockSnapshotFixture(), {
+    now: new Date("2026-07-25T16:00:00.000Z"),
+  });
+}
+
+function unavailableMagicSnapshot() {
+  const payload = stockSnapshotFixture();
+  Object.assign(payload.indicators.magicNine as {
+    direction: string | null;
+    count: number;
+    completed: boolean;
+    confirmedAtIndex: number | null;
+    qualityStatus: string;
+  }, {
+    direction: null,
+    count: 0,
+    completed: false,
+    confirmedAtIndex: null,
+    qualityStatus: "unavailable",
+  });
+  return decodeStockSnapshotEnvelope(payload, {
     now: new Date("2026-07-25T16:00:00.000Z"),
   });
 }
@@ -128,6 +148,74 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.queryByText("NVIDIA")).toBeNull();
 });
 
+it("hides and restores every participation chart surface with one tool", async () => {
+  const view = await renderDetail();
+  await waitFor(() =>
+    expect(
+      view.getByText(
+        "订单规模活动占比 · 深色主力代理 / 浅色散户代理",
+      ),
+    ).toBeTruthy(),
+  );
+  const user = userEvent.setup();
+
+  await user.press(
+    view.getByRole("button", { name: "参与结构，已显示" }),
+  );
+  expect(
+    view.queryByText(
+      "订单规模活动占比 · 深色主力代理 / 浅色散户代理",
+    ),
+  ).toBeNull();
+  expect(
+    view.queryByTestId("participation-available", {
+      includeHiddenElements: true,
+    }),
+  ).toBeNull();
+  expect(
+    view.queryByTestId("participation-missing", {
+      includeHiddenElements: true,
+    }),
+  ).toBeNull();
+  expect(view.queryByTestId("participation-summary")).toBeNull();
+
+  await user.press(
+    view.getByRole("button", { name: "参与结构，已隐藏" }),
+  );
+  expect(
+    view.getByText(
+      "订单规模活动占比 · 深色主力代理 / 浅色散户代理",
+    ),
+  ).toBeTruthy();
+  expect(
+    view.getAllByTestId("participation-available", {
+      includeHiddenElements: true,
+    }),
+  ).toHaveLength(1);
+  expect(view.getByTestId("participation-summary")).toBeTruthy();
+});
+
+it("shows unavailable Magic Nine honestly without a zero marker or sequence", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      unavailableMagicSnapshot(),
+    ),
+  });
+
+  await waitFor(() =>
+    expect(view.getByText("九转 暂不可用")).toBeTruthy(),
+  );
+  expect(view.getByTestId("stock-summary-meta")).toHaveTextContent(
+    /九转 暂不可用/,
+  );
+  expect(view.queryByText("九转 0 · 尚未完成")).toBeNull();
+  expect(
+    view.queryByTestId("magic-nine-marker", {
+      includeHiddenElements: true,
+    }),
+  ).toBeNull();
+});
+
 it("preserves the original timestamp when cached live data becomes stale", async () => {
   const cached = liveSnapshot();
   const repository: MarketRepository = {
@@ -148,6 +236,12 @@ it("preserves the original timestamp when cached live data becomes stale", async
     ).toBeTruthy(),
   );
   expect(view.getByText("$142.25")).toBeTruthy();
+  expect(view.getByText("缓存数据")).toBeTruthy();
+  expect(view.getByText("5m · STALE")).toBeTruthy();
+  expect(view.getByText("缓存事实摘要")).toBeTruthy();
+  expect(view.queryByText("实时只读")).toBeNull();
+  expect(view.queryByText("实时事实摘要")).toBeNull();
+  expect(view.queryByText("5m · LIVE")).toBeNull();
   expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
   expect(view.getByRole("button", { name: "刷新行情" })).toBeTruthy();
 });
@@ -177,6 +271,34 @@ it("offers actionable loading and unavailable states without rendering fixture d
   expect(unavailableView.queryByText("$142.25")).toBeNull();
   expect(unavailableView.queryByText("演示数据 · 非实时行情")).toBeNull();
   expect(unavailableView.toJSON()).toBeTruthy();
+});
+
+it("retries an unavailable snapshot once, shows loading, and recovers live", async () => {
+  let attempts = 0;
+  let resolveRetry!: (snapshot: LiveStockSnapshot) => void;
+  const retryResult = new Promise<LiveStockSnapshot>((resolve) => {
+    resolveRetry = resolve;
+  });
+  const repository = repositoryWithSnapshot(async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new MarketDataError("configuration", "market URL missing");
+    }
+    return retryResult;
+  });
+  const view = await renderDetail({ repository });
+
+  await waitFor(() =>
+    expect(view.getByText("行情不可用 · configuration")).toBeTruthy(),
+  );
+  fireEvent.press(view.getByRole("button", { name: "重试行情" }));
+  await waitFor(() => expect(attempts).toBe(2));
+  expect(view.getByText("正在连接 moomoo 行情…")).toBeTruthy();
+  expect(view.queryByRole("button", { name: "重试行情" })).toBeNull();
+
+  resolveRetry(liveSnapshot());
+  await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+  expect(view.getByText("实时只读")).toBeTruthy();
 });
 
 it("uses the fixture only when runtime explicitly selects demo mode", async () => {

@@ -118,6 +118,19 @@ export function StockDetailScreen() {
   const liveStock = stock.demoData
     ? null
     : (stock as LiveStockSnapshot);
+  const dataStatus =
+    market.status === "stale"
+      ? "stale"
+      : stock.demoData
+        ? "demo"
+        : "live";
+  const magicNineAvailable =
+    stock.magicNine.qualityStatus !== "unavailable";
+  const magicNineSummary = magicNineAvailable
+    ? `九转 ${stock.magicNine.count} · ${
+        stock.magicNine.completed ? "序列完成" : "尚未完成"
+      }`
+    : "九转 暂不可用";
   const latestCandle = stock.candles.at(-1);
   const histogram = Array.isArray(stock.indicators.macd.histogram)
     ? (stock.indicators.macd.histogram.at(-1) ?? null)
@@ -136,7 +149,11 @@ export function StockDetailScreen() {
           <Text style={styles.demoBannerText}>演示数据 · 非实时行情</Text>
         </View>
       ) : null}
-      <StockHeader onBack={() => router.back()} stock={stock} />
+      <StockHeader
+        dataStatus={dataStatus}
+        onBack={() => router.back()}
+        stock={stock}
+      />
       {stock.demoData ? (
         <HorizonSwitch
           onChange={setHorizon}
@@ -162,7 +179,11 @@ export function StockDetailScreen() {
 
       <View style={styles.summary}>
         <Text style={styles.eyebrow}>
-          {stock.demoData ? "演示事实摘要" : "实时事实摘要"}
+          {dataStatus === "demo"
+            ? "演示事实摘要"
+            : dataStatus === "stale"
+              ? "缓存事实摘要"
+              : "实时事实摘要"}
         </Text>
         <Text style={styles.summaryTitle}>
           {latestCandle
@@ -186,9 +207,8 @@ export function StockDetailScreen() {
             MACD {histogram === null ? "暂不可用" : histogram.toFixed(2)}
           </Text>
         </View>
-        <Text style={styles.summaryMeta}>
-          九转 {stock.magicNine.count} ·{" "}
-          {stock.magicNine.completed ? "序列完成" : "尚未完成"} · 来源{" "}
+        <Text style={styles.summaryMeta} testID="stock-summary-meta">
+          {magicNineSummary} · 来源{" "}
           {stock.source.source} · 截止 {formatUtc(stock.source.asOf)}
         </Text>
       </View>
@@ -224,9 +244,11 @@ export function StockDetailScreen() {
 
       <PriceChart
         compact
+        dataStatus={dataStatus}
         showForecast={visibleTools.forecast}
         showMagicNine={visibleTools.magicNine}
         showMovingAverage={visibleTools.ma5}
+        showParticipation={visibleTools.participation}
         stock={stock}
       />
       {stock.forecast && visibleTools.forecast ? (

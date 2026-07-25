@@ -12,6 +12,7 @@ const backSymbol = {
 
 type StockHeaderProps = {
   stock: ChartSnapshot;
+  dataStatus?: "demo" | "live" | "stale";
   onBack(): void;
 };
 
@@ -19,8 +20,24 @@ function formatUtc(value: string) {
   return value.replace("T", " ").replace(".000Z", " UTC");
 }
 
-export function StockHeader({ stock, onBack }: StockHeaderProps) {
+export function StockHeader({
+  stock,
+  dataStatus,
+  onBack,
+}: StockHeaderProps) {
   const positive = stock.quote.changePercent >= 0;
+  const resolvedStatus =
+    dataStatus ??
+    (stock.demoData
+      ? "demo"
+      : stock.source.status === "stale"
+        ? "stale"
+        : "live");
+  const sourceLabel = {
+    demo: "演示数据",
+    live: "实时只读",
+    stale: "缓存数据",
+  }[resolvedStatus];
 
   return (
     <View style={styles.wrap}>
@@ -38,7 +55,9 @@ export function StockHeader({ stock, onBack }: StockHeaderProps) {
         <Text style={styles.symbol}>{stock.symbol}</Text>
         <View
           accessibilityLabel={
-            stock.demoData ? "演示数据，非实时行情" : "实时只读行情"
+            resolvedStatus === "demo"
+              ? "演示数据，非实时行情"
+              : `${sourceLabel}行情`
           }
           style={[
             styles.sourceBadge,
@@ -49,7 +68,7 @@ export function StockHeader({ stock, onBack }: StockHeaderProps) {
               styles.sourceText,
               stock.demoData && styles.demoSourceText,
             ]}>
-            {stock.demoData ? "演示数据" : "实时只读"}
+            {sourceLabel}
           </Text>
         </View>
       </View>

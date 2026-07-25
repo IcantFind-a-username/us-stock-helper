@@ -275,8 +275,19 @@ function useLiveResource<T>({
   ]);
 
   const refresh = useCallback(() => {
-    if (!demoMode) setRefreshVersion((version) => version + 1);
-  }, [demoMode]);
+    if (!demoMode) {
+      setState((current) =>
+        current.resourceKey === resourceKey
+          ? {
+              ...current,
+              status: "loading",
+              error: null,
+            }
+          : current,
+      );
+      setRefreshVersion((version) => version + 1);
+    }
+  }, [demoMode, resourceKey]);
 
   if (demoMode) {
     return {

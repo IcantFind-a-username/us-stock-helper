@@ -10,9 +10,11 @@ const baseItems = [
 export function ChartLegend({
   showForecast,
   showMovingAverage,
+  showParticipation,
 }: {
   showForecast: boolean;
   showMovingAverage: boolean;
+  showParticipation: boolean;
 }) {
   const items = [
     ...baseItems,
@@ -35,13 +37,15 @@ export function ChartLegend({
           </View>
         ))}
       </View>
-      <View style={styles.participation}>
-        <View style={[styles.bar, styles.mainBar]} />
-        <View style={[styles.bar, styles.retailBar]} />
-        <Text style={styles.participationLabel}>
-          订单规模活动占比 · 深色主力代理 / 浅色散户代理
-        </Text>
-      </View>
+      {showParticipation ? (
+        <View style={styles.participation}>
+          <View style={[styles.bar, styles.mainBar]} />
+          <View style={[styles.bar, styles.retailBar]} />
+          <Text style={styles.participationLabel}>
+            订单规模活动占比 · 深色主力代理 / 浅色散户代理
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
