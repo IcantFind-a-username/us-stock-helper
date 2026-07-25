@@ -382,7 +382,7 @@ export function decodeStockSnapshotEnvelope(
   const now = options.now ?? new Date();
   const maxAgeMs = options.maxAgeMs ?? defaultMaxAgeMs;
   const cutoff = parseTimestamp(requireString(value, "decisionCutoff"), "decisionCutoff");
-  if (cutoff.getTime() > now.getTime() + 1_000) {
+  if (cutoff.getTime() > now.getTime()) {
     throw new GatewayValidationError("snapshot decision cutoff is in the future");
   }
   if (now.getTime() - cutoff.getTime() > maxAgeMs) {
@@ -585,9 +585,17 @@ export function decodeStockSnapshotEnvelope(
   });
 
   if (!Array.isArray(value.provenance)) throw new GatewayValidationError("provenance must be an array");
+  const allowedProvenanceSources = new Set([
+    "moomoo",
+    "analysis-core",
+    "moomoo-delayed-institutional-disclosure",
+  ]);
   const provenance = value.provenance.map((item) => {
     if (!isRecord(item)) throw new GatewayValidationError("provenance entry must be an object");
     const metadata = requireSnapshotMetadata(item, "provenance entry", cutoff);
+    if (!allowedProvenanceSources.has(metadata.source)) {
+      throw new GatewayValidationError("provenance entry has an unsupported source");
+    }
     return {
       ...metadata,
       methodVersion: requireString(item, "methodVersion"),

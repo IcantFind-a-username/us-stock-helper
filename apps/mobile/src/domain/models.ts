@@ -269,45 +269,68 @@ export interface ParticipationBar {
   missingReason: string | null;
 }
 
-export interface LiveQuote {
+export interface ChartQuote {
   price: number;
   changePercent: number;
   source: string;
   asOf: string;
   availableAt: string;
+  methodVersion: string;
+  qualityStatus: DataStatus;
+}
+
+export interface LiveQuote extends ChartQuote {
+  source: "moomoo";
   methodVersion: "provider-quote-v1";
   qualityStatus: "live";
 }
 
-export interface LiveIndicatorValue {
+export interface ChartIndicatorValue {
   value: number | null;
-  source: "analysis-core";
+  source: string;
   asOf: string;
   availableAt: string;
   methodVersion: string;
+  qualityStatus: DataStatus;
+}
+
+export interface LiveIndicatorValue extends ChartIndicatorValue {
+  source: "analysis-core";
   qualityStatus: "live" | "unavailable";
 }
 
-export interface LiveMacdIndicator {
+export interface ChartMacdIndicator {
   line: number | null;
   signal: number | null;
-  histogram: number | null;
-  source: "analysis-core";
+  histogram: number | number[] | null;
+  source: string;
   asOf: string;
   availableAt: string;
+  methodVersion: string;
+  qualityStatus: DataStatus;
+}
+
+export interface LiveMacdIndicator extends ChartMacdIndicator {
+  histogram: number | null;
+  source: "analysis-core";
   methodVersion: "macd-12-26-9-v1";
   qualityStatus: "live" | "unavailable";
 }
 
-export interface MagicNineSnapshot {
+export interface ChartMagicNineSnapshot {
   direction: string | null;
   count: number;
   completed: boolean;
   confirmedAtIndex: number | null;
-  source: "analysis-core";
+  source: string;
   asOf: string;
   availableAt: string;
   methodVersion: string;
+  qualityStatus: DataStatus;
+}
+
+export interface MagicNineSnapshot extends ChartMagicNineSnapshot {
+  source: "analysis-core";
   qualityStatus: "live" | "unavailable";
 }
 
@@ -337,27 +360,89 @@ export interface SnapshotProvenance {
 }
 
 export interface ChartSnapshot {
+  demoData: boolean;
+  source: SnapshotSource;
   symbol: string;
   interval: string;
-  quote: LiveQuote;
+  quote: ChartQuote;
   candles: Candle[];
   participationBars: ParticipationBar[];
+  indicators: {
+    ma5: ChartIndicatorValue;
+    rsi: ChartIndicatorValue;
+    macd: ChartMacdIndicator;
+  };
+  magicNine: ChartMagicNineSnapshot;
+  forecast: ForecastSnapshot | null;
+}
+
+export interface LiveStockSnapshot extends ChartSnapshot {
+  demoData: false;
+  source: SnapshotSource & { source: "moomoo"; status: "live" };
+  decisionCutoff: string;
+  quote: LiveQuote;
   indicators: {
     ma5: LiveIndicatorValue;
     rsi: LiveIndicatorValue;
     macd: LiveMacdIndicator;
   };
   magicNine: MagicNineSnapshot;
-  forecast: ForecastSnapshot | null;
-}
-
-export interface LiveStockSnapshot extends ChartSnapshot {
-  demoData: false;
-  source: SnapshotSource & { source: "moomoo" };
-  decisionCutoff: string;
   institutionalHoldings: DelayedInstitutionalHolding[];
   provenance: SnapshotProvenance[];
   warnings: string[];
+}
+
+export interface DemoChartSnapshot extends ChartSnapshot {
+  demoData: true;
+  source: SnapshotSource & { source: "fixture"; status: "demo" };
+}
+
+/** Converts the existing, explicitly demo-only fixture model for chart consumers. */
+export function toDemoChartSnapshot(stock: StockSnapshot): DemoChartSnapshot {
+  const asOf = stock.indicators.rsi.asOf;
+  const fixtureMetadata = {
+    source: "fixture",
+    asOf,
+    availableAt: asOf,
+    methodVersion: "demo-fixture-v1",
+    qualityStatus: "demo" as const,
+  };
+  return {
+    demoData: true,
+    source: {
+      source: "fixture",
+      status: "demo",
+      asOf,
+      decisionCutoff: asOf,
+    },
+    symbol: stock.symbol,
+    interval: `demo-${stock.horizon}`,
+    quote: {
+      ...fixtureMetadata,
+      price: stock.price,
+      changePercent: stock.changePercent,
+    },
+    candles: stock.candles,
+    participationBars: [],
+    indicators: {
+      ma5: { ...fixtureMetadata, value: null },
+      rsi: { ...fixtureMetadata, value: stock.indicators.rsi.value },
+      macd: {
+        ...fixtureMetadata,
+        line: stock.indicators.macd.dif,
+        signal: stock.indicators.macd.dea,
+        histogram: stock.indicators.macd.histogram,
+      },
+    },
+    magicNine: {
+      ...fixtureMetadata,
+      direction: null,
+      count: stock.magicNine.count,
+      completed: stock.magicNine.complete,
+      confirmedAtIndex: null,
+    },
+    forecast: stock.forecast,
+  };
 }
 
 export interface AdviserOpinion {

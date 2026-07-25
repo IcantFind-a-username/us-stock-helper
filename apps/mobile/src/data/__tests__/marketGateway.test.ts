@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals";
 
-import type { WatchlistQuote } from "@/domain/models";
+import { toDemoChartSnapshot, type WatchlistQuote } from "@/domain/models";
+import { stockFixtures } from "@/fixtures/stocks";
 import {
   createMarketGatewayClient,
   decodeCandleEnvelope,
@@ -198,8 +199,23 @@ describe("schema-v2 stock snapshot validation", () => {
   });
 
   it.each([
+    ["future decision cutoff", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.decisionCutoff = "2026-07-25T16:00:00.001Z";
+    }],
     ["future candle", (value: ReturnType<typeof stockSnapshotFixture>) => {
       value.completedCandles[1]!.availableAt = "2026-07-25T16:00:01.000Z";
+    }],
+    ["future quote", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.decisionCutoff = "2026-07-25T16:00:00.000Z";
+      value.quote.availableAt = "2026-07-25T16:00:00.001Z";
+    }],
+    ["future indicator", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.decisionCutoff = "2026-07-25T16:00:00.000Z";
+      value.indicators.rsi.availableAt = "2026-07-25T16:00:00.001Z";
+    }],
+    ["future provenance", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.decisionCutoff = "2026-07-25T16:00:00.000Z";
+      value.provenance[0]!.availableAt = "2026-07-25T16:00:00.001Z";
     }],
     ["duplicate candle", (value: ReturnType<typeof stockSnapshotFixture>) => {
       value.completedCandles[1]!.timestamp = value.completedCandles[0]!.timestamp;
@@ -225,6 +241,9 @@ describe("schema-v2 stock snapshot validation", () => {
     ["fixture masquerading as live", (value: ReturnType<typeof stockSnapshotFixture>) => {
       value.source = "fixture";
     }],
+    ["fixture provenance", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.provenance[0]!.source = "fixture";
+    }],
     ["stale response", (value: ReturnType<typeof stockSnapshotFixture>) => {
       value.decisionCutoff = "2026-07-25T15:00:00.000Z";
     }],
@@ -233,6 +252,22 @@ describe("schema-v2 stock snapshot validation", () => {
     mutate(value);
 
     expect(() => decodeStockSnapshotEnvelope(value, { maxAgeMs: 30_000, now })).toThrow();
+  });
+
+  it("adapts an explicit demo stock into the shared chart shape", () => {
+    const chart = toDemoChartSnapshot(stockFixtures["NVDA:short"]!);
+
+    expect(chart).toMatchObject({
+      demoData: true,
+      source: { source: "fixture", status: "demo" },
+      symbol: "NVDA",
+      forecast: stockFixtures["NVDA:short"]!.forecast,
+      candles: stockFixtures["NVDA:short"]!.candles,
+      indicators: {
+        rsi: { value: stockFixtures["NVDA:short"]!.indicators.rsi.value },
+        macd: { line: stockFixtures["NVDA:short"]!.indicators.macd.dif },
+      },
+    });
   });
 });
 
