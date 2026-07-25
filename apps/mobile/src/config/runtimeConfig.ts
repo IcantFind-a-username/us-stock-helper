@@ -31,10 +31,18 @@ export function readRuntimeConfig({
 
 export function getMarketRuntimeConfig(): MarketRuntimeConfig {
   const development = typeof __DEV__ !== "undefined" && __DEV__;
+  const primaryToken =
+    process.env.EXPO_PUBLIC_MARKET_API_DEV_TOKEN?.trim() || undefined;
+  const compatibilityToken =
+    process.env.EXPO_PUBLIC_MARKET_GATEWAY_TOKEN?.trim() || undefined;
+
+  if (primaryToken && compatibilityToken) {
+    throw new Error("configure only one market gateway development token");
+  }
 
   return readRuntimeConfig({
     apiUrl: process.env.EXPO_PUBLIC_MARKET_API_URL,
     development,
-    developmentToken: process.env.EXPO_PUBLIC_MARKET_GATEWAY_TOKEN,
+    developmentToken: primaryToken ?? compatibilityToken,
   });
 }

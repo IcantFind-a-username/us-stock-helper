@@ -143,6 +143,7 @@ export function createMarketRepository({
     },
 
     getStockSnapshot(query, options = {}) {
+      if (options.signal?.aborted) return Promise.reject(abortError());
       const key = snapshotKey(query);
       const existing = snapshotRequests.get(key);
       if (existing) return subscribe(existing, options.signal);
@@ -175,6 +176,7 @@ export function createMarketRepository({
     },
 
     getWatchlist(options = {}) {
+      if (options.signal?.aborted) return Promise.reject(abortError());
       if (watchlistRequest) return subscribe(watchlistRequest, options.signal);
       if (watchlistCache && !options.forceRefresh) {
         return Promise.resolve(watchlistCache);

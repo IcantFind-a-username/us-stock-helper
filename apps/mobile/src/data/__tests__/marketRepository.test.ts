@@ -2,6 +2,7 @@ import { expect, it, jest } from "@jest/globals";
 
 import {
   createGatewayMarketRepository,
+  createMarketRepository,
 } from "../marketRepository";
 
 function jsonResponse(value: unknown, status = 200) {
@@ -11,6 +12,53 @@ function jsonResponse(value: unknown, status = 200) {
     json: async () => value,
   } as Response;
 }
+
+it("does not start a snapshot load for an already-aborted consumer", async () => {
+  let loadStarted = false;
+  const repository = createMarketRepository({
+    async loadSnapshot() {
+      loadStarted = true;
+      return new Promise<never>(() => {});
+    },
+    async loadWatchlist() {
+      return new Promise<never>(() => {});
+    },
+  });
+  const caller = new AbortController();
+  caller.abort();
+
+  await expect(
+    repository.getStockSnapshot(
+      { symbol: "NVDA", interval: "5m", count: 200 },
+      { signal: caller.signal },
+    ),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  await Promise.resolve();
+
+  expect(loadStarted).toBe(false);
+});
+
+it("does not start a watchlist load for an already-aborted consumer", async () => {
+  let loadStarted = false;
+  const repository = createMarketRepository({
+    async loadSnapshot() {
+      return new Promise<never>(() => {});
+    },
+    async loadWatchlist() {
+      loadStarted = true;
+      return new Promise<never>(() => {});
+    },
+  });
+  const caller = new AbortController();
+  caller.abort();
+
+  await expect(
+    repository.getWatchlist({ signal: caller.signal }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  await Promise.resolve();
+
+  expect(loadStarted).toBe(false);
+});
 
 async function requestWatchlist(
   reply: () => Promise<Response>,

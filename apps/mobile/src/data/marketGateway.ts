@@ -681,14 +681,22 @@ export function createMarketGatewayClient({
   }
 
   async function fetchJson(path: string, callerSignal?: AbortSignal) {
-    const controller = new AbortController();
-    const abortFromCaller = () => controller.abort();
     if (callerSignal?.aborted) {
-      abortFromCaller();
-    } else {
-      callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+      const error = new Error("gateway request was aborted by caller");
+      error.name = "AbortError";
+      throw error;
     }
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    const controller = new AbortController();
+    let abortCause: "caller" | "timeout" | null = null;
+    const abortOnce = (cause: "caller" | "timeout") => {
+      if (abortCause !== null) return;
+      abortCause = cause;
+      controller.abort();
+    };
+    const abortFromCaller = () => abortOnce("caller");
+    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+    const timeout = setTimeout(() => abortOnce("timeout"), timeoutMs);
     try {
       const response = await fetchImpl(`${normalizedBaseUrl}${path}`, {
         method: "GET",
@@ -708,6 +716,23 @@ export function createMarketGatewayClient({
       }
       if (!response.ok) throw new GatewayHttpError(response.status, payload);
       return payload;
+    } catch (error) {
+      if (abortCause === "timeout") {
+        throw new GatewayRequestError("timeout", "gateway request timed out");
+      }
+      if (abortCause === "caller") {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        const callerError = new Error("gateway request was aborted by caller");
+        callerError.name = "AbortError";
+        throw callerError;
+      }
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new GatewayRequestError(
+          "offline",
+          "gateway request was aborted without a known cause",
+        );
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
       callerSignal?.removeEventListener("abort", abortFromCaller);
@@ -727,7 +752,10 @@ export function createMarketGatewayClient({
       return new GatewayRequestError("malformed", error.message);
     }
     if (error instanceof Error && error.name === "AbortError") {
-      return new GatewayRequestError("timeout", "gateway request timed out");
+      return new GatewayRequestError(
+        "offline",
+        "gateway request was aborted without a known cause",
+      );
     }
     if (error instanceof GatewayValidationError) {
       return new GatewayRequestError("malformed", error.message);
@@ -740,13 +768,7 @@ export function createMarketGatewayClient({
     try {
       payload = await fetchJson("/watchlist", signal);
     } catch (error) {
-      if (
-        signal?.aborted &&
-        error instanceof Error &&
-        error.name === "AbortError"
-      ) {
-        throw error;
-      }
+      if (error instanceof Error && error.name === "AbortError") throw error;
       throw toSnapshotRequestError(error);
     }
     return decodeWatchlistEnvelope(payload, { maxAgeMs, now: now() });
@@ -836,13 +858,7 @@ export function createMarketGatewayClient({
         }
         return snapshot;
       } catch (error) {
-        if (
-          signal?.aborted &&
-          error instanceof Error &&
-          error.name === "AbortError"
-        ) {
-          throw error;
-        }
+        if (error instanceof Error && error.name === "AbortError") throw error;
         throw toSnapshotRequestError(error);
       }
     },

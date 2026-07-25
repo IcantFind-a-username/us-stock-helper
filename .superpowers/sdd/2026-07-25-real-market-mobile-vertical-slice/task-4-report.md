@@ -180,3 +180,89 @@ GREEN:
 ### Concerns
 
 None.
+
+## Fix Round 2
+
+### Status
+
+Complete. Already-aborted consumers now fail before repository work starts,
+gateway cancellation classification is determined by the first internal abort
+cause, and the original development-token environment variable is primary
+again without removing the compatibility alias.
+
+### Changes
+
+- `getStockSnapshot` and `getWatchlist` reject an already-aborted consumer
+  before checking cache, joining or creating an in-flight entry, or scheduling
+  either loader.
+- Gateway requests now record a single first abort cause, `caller` or
+  `timeout`, before aborting the combined fetch signal. Timeout-first always
+  becomes `GatewayRequestError("timeout")`; caller-first remains an
+  `AbortError`; a raw fetch `AbortError` with no known cause becomes `offline`.
+  The timeout and caller listener are still removed in `finally`.
+- `getMarketRuntimeConfig()` reads
+  `EXPO_PUBLIC_MARKET_API_DEV_TOKEN` as the primary development token and
+  recognizes `EXPO_PUBLIC_MARKET_GATEWAY_TOKEN` only as a compatibility alias.
+  Production rejects either name. Development accepts either name alone and
+  rejects both names, including equal values, as an explicit configuration
+  conflict.
+- Existing strict-watchlist behavior and status-aware accessibility labels
+  remain unchanged and are covered in the focused Dashboard/provider run.
+
+### TDD Evidence
+
+RED:
+
+- The first cancellation run failed four regressions:
+  snapshot and watchlist `loadStarted` were both `true` instead of `false`;
+  timeout-first followed by caller abort returned raw `AbortError` instead of
+  `GatewayRequestError("timeout")`; and an uncaused raw fetch `AbortError`
+  reported `timeout` instead of `offline`.
+- The first minimal gateway pass exposed one remaining boundary failure:
+  caller-first was converted to `GatewayRequestError` instead of remaining an
+  `AbortError`. Preserving only the already-classified raw caller abort at the
+  strict method boundary fixed it without reading later caller state.
+- The config RED run failed four cases: production ignored
+  `EXPO_PUBLIC_MARKET_API_DEV_TOKEN`; development omitted its authorization
+  token; and different or equal dual-name configurations did not throw the
+  explicit conflict error.
+
+GREEN:
+
+- Cancellation-focused gateway + repository: 2 suites, 54 tests passed.
+- Config getter: 1 suite, 6 tests passed.
+- Focused config + gateway + repository + provider + Dashboard under Node
+  `22.23.1`: 5 suites, 85 tests passed.
+- Full mobile under Node `22.23.1`: 25 suites, 140 tests passed.
+- `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin npm run typecheck`:
+  exit 0.
+- `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin npm run lint`: exit 0,
+  with pristine output.
+- `git diff --check`: clean.
+
+### Files
+
+- `apps/mobile/src/config/runtimeConfig.ts`
+- `apps/mobile/src/config/__tests__/runtimeConfig.test.ts`
+- `apps/mobile/src/data/marketGateway.ts`
+- `apps/mobile/src/data/__tests__/marketGateway.test.ts`
+- `apps/mobile/src/data/marketRepository.ts`
+- `apps/mobile/src/data/__tests__/marketRepository.test.ts`
+
+### Self-Review
+
+- Both repository resources check caller cancellation before all cache,
+  in-flight, entry, and loader paths.
+- Abort cause is assigned once, synchronously before the combined controller is
+  aborted; later timeout or caller events cannot overwrite it.
+- Strict snapshot, candle, and watchlist callers receive the same deterministic
+  cancellation semantics, while uncaused transport aborts remain retryable as
+  offline.
+- Tests restore `__DEV__` and both token environment variables after every
+  real-getter case.
+- The strict watchlist path, fallback boundary, Dashboard status labels, and
+  unrelated untracked plan documents are untouched.
+
+### Concerns
+
+None.

@@ -491,20 +491,18 @@ describe("market gateway fallback", () => {
     expect(result).toMatchObject({ demoData: false, source: { source: "moomoo" } });
   });
 
-  it("aborts the fetch signal when a strict snapshot caller cancels", async () => {
+  it("aborts the fetch and returns AbortError when the caller cancels first", async () => {
     const caller = new AbortController();
     let fetchSignal: AbortSignal | undefined;
-    let resolveFetch!: (response: Response) => void;
     const fetchImpl = jest.fn(
       async (_url: RequestInfo | URL, init?: RequestInit) =>
-        new Promise<Response>((resolve, reject) => {
-          resolveFetch = resolve;
+        new Promise<Response>((_resolve, reject) => {
           fetchSignal = init?.signal as AbortSignal;
           fetchSignal.addEventListener(
             "abort",
             () =>
               reject(
-                Object.assign(new Error("caller cancelled"), {
+                Object.assign(new Error("request aborted"), {
                   name: "AbortError",
                 }),
               ),
@@ -522,14 +520,54 @@ describe("market gateway fallback", () => {
     await Promise.resolve();
     caller.abort();
 
-    const aborted = fetchSignal?.aborted;
-    if (aborted) {
+    expect(fetchSignal?.aborted).toBe(true);
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("keeps caller-first cancellation distinct after the timeout deadline", async () => {
+    jest.useFakeTimers();
+    try {
+      const caller = new AbortController();
+      let fetchSignal: AbortSignal | undefined;
+      const fetchImpl = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            fetchSignal = init?.signal as AbortSignal;
+            fetchSignal.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  Object.assign(new Error("request aborted"), {
+                    name: "AbortError",
+                  }),
+                ),
+              { once: true },
+            );
+          }),
+      ) as unknown as typeof fetch;
+      const client = createMarketGatewayClient({
+        baseUrl: "http://127.0.0.1:8765",
+        fetchImpl,
+        now: () => now,
+        timeoutMs: 25,
+      });
+
+      const request = client.getStockSnapshot(
+        "NVDA",
+        "5m",
+        200,
+        caller.signal,
+      );
+      await Promise.resolve();
+      caller.abort();
+      jest.advanceTimersByTime(25);
+
+      expect(fetchSignal?.aborted).toBe(true);
       await expect(request).rejects.toMatchObject({ name: "AbortError" });
-    } else {
-      resolveFetch(jsonResponse(stockSnapshotFixture()));
-      await request;
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
     }
-    expect(aborted).toBe(true);
   });
 
   it("still aborts and classifies a strict snapshot timeout", async () => {
@@ -573,6 +611,72 @@ describe("market gateway fallback", () => {
     }
   });
 
+  it("keeps timeout-first classification when the caller aborts later", async () => {
+    jest.useFakeTimers();
+    try {
+      const caller = new AbortController();
+      const fetchImpl = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            const fetchSignal = init?.signal as AbortSignal;
+            fetchSignal.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  Object.assign(new Error("request aborted"), {
+                    name: "AbortError",
+                  }),
+                ),
+              { once: true },
+            );
+          }),
+      ) as unknown as typeof fetch;
+      const client = createMarketGatewayClient({
+        baseUrl: "http://127.0.0.1:8765",
+        fetchImpl,
+        now: () => now,
+        timeoutMs: 25,
+      });
+
+      const request = client.getStockSnapshot(
+        "NVDA",
+        "5m",
+        200,
+        caller.signal,
+      );
+      await Promise.resolve();
+      jest.advanceTimersByTime(25);
+      caller.abort();
+
+      await expect(request).rejects.toMatchObject({
+        name: "GatewayRequestError",
+        kind: "timeout",
+      });
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("classifies a fetch AbortError without a known abort cause as offline", async () => {
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl: jest.fn(async () => {
+        throw Object.assign(new Error("fetch aborted internally"), {
+          name: "AbortError",
+        });
+      }) as unknown as typeof fetch,
+      now: () => now,
+    });
+
+    await expect(
+      client.getStockSnapshot("NVDA", "5m"),
+    ).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind: "offline",
+    });
+  });
+
   it("surfaces an unavailable snapshot as a typed error instead of falling back", async () => {
     const fetchImpl = jest.fn(async () =>
       jsonResponse(
@@ -610,11 +714,6 @@ describe("market gateway fallback", () => {
       "stale",
     ],
     ["malformed", async () => jsonResponse({ schemaVersion: "wrong" }), "malformed"],
-    [
-      "timeout",
-      async () => { throw Object.assign(new Error("timeout"), { name: "AbortError" }); },
-      "timeout",
-    ],
   ])("classifies %s snapshot failures without a fixture fallback", async (_label, reply, kind) => {
     const client = createMarketGatewayClient({
       baseUrl: "http://127.0.0.1:8765",
