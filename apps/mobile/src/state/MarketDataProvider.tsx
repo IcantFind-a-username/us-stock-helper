@@ -202,6 +202,10 @@ function useLiveResource<T>({
     let retryIndex = 0;
     const controllers = new Set<AbortController>();
     const retryTimers = new Set<ReturnType<typeof setTimeout>>();
+    const clearRetryTimers = () => {
+      retryTimers.forEach((timer) => clearTimeout(timer));
+      retryTimers.clear();
+    };
 
     if (demoMode) {
       return () => {
@@ -215,6 +219,7 @@ function useLiveResource<T>({
 
     const request = (showRefreshing: boolean) => {
       if (!active || inFlightRef.current) return false;
+      clearRetryTimers();
       inFlightRef.current = true;
       if (showRefreshing) {
         const verified = verifiedByKeyRef.current.get(resourceKey);
@@ -239,6 +244,7 @@ function useLiveResource<T>({
         .then(({ data, verifiedAt }) => {
           if (!active || controller.signal.aborted) return;
           verifiedByKeyRef.current.set(resourceKey, { data, verifiedAt });
+          clearRetryTimers();
           retryIndex = 0;
           setState({
             resourceKey,
@@ -266,6 +272,7 @@ function useLiveResource<T>({
             error: marketError,
             lastVerifiedAt: verified?.verifiedAt ?? null,
           });
+          clearRetryTimers();
           const delay = retryDelaysMs[
             Math.min(retryIndex, retryDelaysMs.length - 1)
           ];
@@ -299,7 +306,7 @@ function useLiveResource<T>({
       }
       inFlightRef.current = false;
       controllers.forEach((controller) => controller.abort());
-      retryTimers.forEach((timer) => clearTimeout(timer));
+      clearRetryTimers();
     };
   }, [
     cachedData,

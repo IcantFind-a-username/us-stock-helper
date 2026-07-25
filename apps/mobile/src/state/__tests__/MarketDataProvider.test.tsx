@@ -333,6 +333,155 @@ it("runs automatic stale retries through the guarded refreshing state", async ()
   }
 });
 
+it("cancels a queued retry when a manual refresh supersedes it and succeeds", async () => {
+  jest.useFakeTimers();
+  try {
+    const original = liveSnapshot();
+    const recovered = liveSnapshot("NVDA", "2026-07-25T15:59:55.000Z");
+    const initial = deferred<LiveStockSnapshot>();
+    const firstFailure = deferred<LiveStockSnapshot>();
+    const manualSuccess = deferred<LiveStockSnapshot>();
+    const responses = [
+      initial.promise,
+      firstFailure.promise,
+      manualSuccess.promise,
+    ];
+    let attempt = 0;
+    const loadSnapshot = jest.fn<MarketDataSource["loadSnapshot"]>(
+      async () => {
+        const response = responses[attempt];
+        attempt += 1;
+        if (response) return response;
+        throw new GatewayRequestError("offline", "superseded retry fired");
+      },
+    );
+    const repository = repositoryWith(loadSnapshot);
+    const view = await render(
+      <MarketDataProvider repository={repository} retryDelaysMs={[10]}>
+        <SnapshotProbe symbol="NVDA" />
+      </MarketDataProvider>,
+    );
+
+    await act(async () => {
+      initial.resolve(original);
+      await initial.promise;
+    });
+    await act(async () => {
+      fireEvent.press(view.getByText("refresh-NVDA"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      firstFailure.reject(
+        new GatewayRequestError("offline", "OpenD is offline"),
+      );
+      await firstFailure.promise.catch(() => undefined);
+    });
+    expect(view.getByTestId("NVDA-status").props.children).toBe("stale");
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5);
+      fireEvent.press(view.getByText("refresh-NVDA"));
+      await Promise.resolve();
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+    expect(view.getByTestId("NVDA-refreshing").props.children).toBe("yes");
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      manualSuccess.resolve(recovered);
+      await manualSuccess.promise;
+    });
+    expect(view.getByTestId("NVDA-status").props.children).toBe("live");
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+    expect(view.getByTestId("NVDA-status").props.children).toBe("live");
+    expect(view.getByTestId("NVDA-verified").props.children).toBe(
+      recovered.source.asOf,
+    );
+    await view.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it("replaces a queued retry with one backoff chain after a manual failure", async () => {
+  jest.useFakeTimers();
+  try {
+    const original = liveSnapshot();
+    const initial = deferred<LiveStockSnapshot>();
+    const firstFailure = deferred<LiveStockSnapshot>();
+    const manualFailure = deferred<LiveStockSnapshot>();
+    const responses = [
+      initial.promise,
+      firstFailure.promise,
+      manualFailure.promise,
+    ];
+    let attempt = 0;
+    const loadSnapshot = jest.fn<MarketDataSource["loadSnapshot"]>(
+      async () => {
+        const response = responses[attempt];
+        attempt += 1;
+        if (response) return response;
+        throw new GatewayRequestError("offline", "automatic retry failed");
+      },
+    );
+    const repository = repositoryWith(loadSnapshot);
+    const view = await render(
+      <MarketDataProvider repository={repository} retryDelaysMs={[10]}>
+        <SnapshotProbe symbol="NVDA" />
+      </MarketDataProvider>,
+    );
+
+    await act(async () => {
+      initial.resolve(original);
+      await initial.promise;
+    });
+    await act(async () => {
+      fireEvent.press(view.getByText("refresh-NVDA"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      firstFailure.reject(
+        new GatewayRequestError("offline", "OpenD is offline"),
+      );
+      await firstFailure.promise.catch(() => undefined);
+    });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5);
+      fireEvent.press(view.getByText("refresh-NVDA"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      manualFailure.reject(
+        new GatewayRequestError("timeout", "manual refresh timed out"),
+      );
+      await manualFailure.promise.catch(() => undefined);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(4);
+
+    await view.unmount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(100);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(4);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it("never relabels a cached snapshot live until a new request verifies it", async () => {
   const snapshot = liveSnapshot();
   let attempt = 0;
