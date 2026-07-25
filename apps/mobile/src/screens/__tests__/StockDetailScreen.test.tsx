@@ -1,6 +1,12 @@
 import { beforeEach, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
+import {
+  act,
+  fireEvent,
+  render,
+  userEvent,
+  waitFor,
+} from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
 import {
@@ -293,7 +299,10 @@ it("keeps stale labels and timestamp while a refresh is pending", async () => {
   fireEvent.press(refreshing);
   expect(attempts).toBe(2);
 
-  pendingRefresh.resolve(cached);
+  await act(async () => {
+    pendingRefresh.resolve(cached);
+    await pendingRefresh.promise;
+  });
   await waitFor(() => expect(view.getByText("实时只读")).toBeTruthy());
   expect(view.getByText("5m · LIVE")).toBeTruthy();
   expect(view.queryByText(/行情已延迟/)).toBeNull();

@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
+  act,
   fireEvent,
   render,
   userEvent,
@@ -39,6 +40,16 @@ function liveSnapshot() {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
 function unavailableMagicSnapshot() {
   const payload = stockSnapshotFixture();
   Object.assign(payload.indicators.magicNine as {
@@ -75,9 +86,11 @@ function repositoryWithSnapshot(
 async function renderChart({
   repository = repositoryWithSnapshot(async () => liveSnapshot()),
   demoMode = false,
+  retryDelaysMs = [],
 }: {
   repository?: MarketRepository;
   demoMode?: boolean;
+  retryDelaysMs?: readonly number[];
 } = {}) {
   return render(
     <AppStateProvider>
@@ -85,7 +98,7 @@ async function renderChart({
         development
         initialDemoMode={demoMode}
         repository={repository}
-        retryDelaysMs={[]}>
+        retryDelaysMs={retryDelaysMs}>
         <FullChartScreen />
       </MarketDataProvider>
     </AppStateProvider>,
@@ -172,6 +185,73 @@ it("keeps stale data visible and unavailable data actionable without demo fallba
   expect(unavailableView.getByRole("button", { name: "重试行情" })).toBeTruthy();
   expect(unavailableView.queryByText("价格 · 成交量")).toBeNull();
   expect(unavailableView.queryByText("演示数据 · 非实时行情")).toBeNull();
+});
+
+it("keeps the full chart stale while an automatic refresh is pending", async () => {
+  jest.useFakeTimers();
+  try {
+    const cached = liveSnapshot();
+    const initialFailure = deferred<LiveStockSnapshot>();
+    const automaticSuccess = deferred<LiveStockSnapshot>();
+    let attempts = 0;
+    const repository: MarketRepository = {
+      peekStockSnapshot: () => cached,
+      getStockSnapshot: async () => {
+        attempts += 1;
+        return attempts === 1
+          ? initialFailure.promise
+          : automaticSuccess.promise;
+      },
+      peekWatchlist: () => null,
+      getWatchlist: async () => {
+        throw new MarketDataError("offline", "gateway offline");
+      },
+    };
+    const view = await renderChart({
+      repository,
+      retryDelaysMs: [10],
+    });
+
+    await act(async () => {
+      initialFailure.reject(
+        new MarketDataError("offline", "gateway offline"),
+      );
+      await initialFailure.promise.catch(() => undefined);
+    });
+    expect(view.getByText("5m · STALE")).toBeTruthy();
+    expect(view.queryByText("5m · LIVE")).toBeNull();
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10);
+    });
+    expect(attempts).toBe(2);
+    expect(
+      view.getByText("行情已延迟 · 原始时间 2026-07-25 15:59:50 UTC"),
+    ).toBeTruthy();
+    expect(
+      view.getByText("缓存数据 · 截止 2026-07-25 15:59:50 UTC"),
+    ).toBeTruthy();
+    expect(view.getByText("5m · STALE")).toBeTruthy();
+    expect(view.queryByText(/实时只读/)).toBeNull();
+    expect(view.queryByText("5m · LIVE")).toBeNull();
+    const refreshing = view.getByRole("button", {
+      name: "正在刷新行情",
+    });
+    expect(refreshing.props.accessibilityState).toEqual({ disabled: true });
+
+    fireEvent.press(refreshing);
+    expect(attempts).toBe(2);
+
+    await act(async () => {
+      automaticSuccess.resolve(cached);
+      await automaticSuccess.promise;
+    });
+    expect(view.getByText("5m · LIVE")).toBeTruthy();
+    expect(view.queryByText(/行情已延迟/)).toBeNull();
+    await view.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it("wires retry through loading to a recovered full live chart", async () => {

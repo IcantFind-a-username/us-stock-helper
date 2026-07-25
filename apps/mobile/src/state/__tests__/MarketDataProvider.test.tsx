@@ -74,6 +74,9 @@ function SnapshotProbe({ symbol }: { symbol: string }) {
           : "none"}
       </Text>
       <Text testID={`${symbol}-error`}>{result.error?.category ?? "none"}</Text>
+      <Text testID={`${symbol}-error-message`}>
+        {result.error?.message ?? "none"}
+      </Text>
       <Text testID={`${symbol}-refreshing`}>
         {result.refreshing ? "yes" : "no"}
       </Text>
@@ -159,14 +162,13 @@ it("keeps the last verified snapshot stale after refresh fails", async () => {
 it("keeps stale truth visible while refreshing and blocks duplicate refreshes", async () => {
   const original = liveSnapshot();
   const recovered = liveSnapshot("NVDA", "2026-07-25T15:59:55.000Z");
+  const failedRefresh = deferred<LiveStockSnapshot>();
   const pendingRefresh = deferred<LiveStockSnapshot>();
   let attempt = 0;
   const loadSnapshot = jest.fn<MarketDataSource["loadSnapshot"]>(async () => {
     attempt += 1;
     if (attempt === 1) return original;
-    if (attempt === 2) {
-      throw new GatewayRequestError("offline", "OpenD is offline");
-    }
+    if (attempt === 2) return failedRefresh.promise;
     return pendingRefresh.promise;
   });
   const repository = repositoryWith(loadSnapshot);
@@ -179,10 +181,17 @@ it("keeps stale truth visible while refreshing and blocks duplicate refreshes", 
   await waitFor(() =>
     expect(view.getByTestId("NVDA-status").props.children).toBe("live"),
   );
-  fireEvent.press(view.getByText("refresh-NVDA"));
-  await waitFor(() =>
-    expect(view.getByTestId("NVDA-status").props.children).toBe("stale"),
-  );
+  await act(async () => {
+    fireEvent.press(view.getByText("refresh-NVDA"));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    failedRefresh.reject(
+      new GatewayRequestError("offline", "OpenD is offline"),
+    );
+    await failedRefresh.promise.catch(() => undefined);
+  });
+  expect(view.getByTestId("NVDA-status").props.children).toBe("stale");
 
   fireEvent.press(view.getByText("refresh-NVDA"));
   await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(3));
@@ -215,6 +224,113 @@ it("keeps stale truth visible while refreshing and blocks duplicate refreshes", 
     recovered.decisionCutoff,
   );
   expect(view.getByTestId("NVDA-error").props.children).toBe("none");
+});
+
+it("runs automatic stale retries through the guarded refreshing state", async () => {
+  jest.useFakeTimers();
+  try {
+    const original = liveSnapshot();
+    const recovered = liveSnapshot("NVDA", "2026-07-25T15:59:55.000Z");
+    const initial = deferred<LiveStockSnapshot>();
+    const manualFailure = deferred<LiveStockSnapshot>();
+    const automaticFailure = deferred<LiveStockSnapshot>();
+    const automaticSuccess = deferred<LiveStockSnapshot>();
+    const responses = [
+      initial.promise,
+      manualFailure.promise,
+      automaticFailure.promise,
+      automaticSuccess.promise,
+    ];
+    let attempt = 0;
+    const loadSnapshot = jest.fn<MarketDataSource["loadSnapshot"]>(
+      async () => {
+        const response = responses[attempt]!;
+        attempt += 1;
+        return response;
+      },
+    );
+    const repository = repositoryWith(loadSnapshot);
+    const view = await render(
+      <MarketDataProvider repository={repository} retryDelaysMs={[10, 20]}>
+        <SnapshotProbe symbol="NVDA" />
+      </MarketDataProvider>,
+    );
+
+    await act(async () => {
+      initial.resolve(original);
+      await initial.promise;
+    });
+    expect(view.getByTestId("NVDA-status").props.children).toBe("live");
+
+    await act(async () => {
+      fireEvent.press(view.getByText("refresh-NVDA"));
+      await Promise.resolve();
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      manualFailure.reject(
+        new GatewayRequestError("offline", "OpenD is offline"),
+      );
+      await manualFailure.promise.catch(() => undefined);
+    });
+    expect(view.getByTestId("NVDA-status").props.children).toBe("stale");
+    expect(view.getByTestId("NVDA-refreshing").props.children).toBe("no");
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+    expect(view.getByTestId("NVDA-status").props.children).toBe("stale");
+    expect(view.getByTestId("NVDA-refreshing").props.children).toBe("yes");
+    expect(view.getByTestId("NVDA-data-symbol").props.children).toBe("NVDA");
+    expect(view.getByTestId("NVDA-verified").props.children).toBe(
+      original.source.asOf,
+    );
+    expect(view.getByTestId("NVDA-error").props.children).toBe("offline");
+
+    fireEvent.press(view.getByText("refresh-NVDA"));
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      automaticFailure.reject(
+        new GatewayRequestError("offline", "automatic retry timed out"),
+      );
+      await automaticFailure.promise.catch(() => undefined);
+    });
+    expect(view.getByTestId("NVDA-status").props.children).toBe("stale");
+    expect(view.getByTestId("NVDA-refreshing").props.children).toBe("no");
+    expect(view.getByTestId("NVDA-verified").props.children).toBe(
+      original.source.asOf,
+    );
+    expect(view.getByTestId("NVDA-error-message").props.children).toContain(
+      "automatic retry timed out",
+    );
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(19);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(4);
+    expect(view.getByTestId("NVDA-status").props.children).toBe("stale");
+    expect(view.getByTestId("NVDA-refreshing").props.children).toBe("yes");
+
+    await act(async () => {
+      automaticSuccess.resolve(recovered);
+      await automaticSuccess.promise;
+    });
+    expect(view.getByTestId("NVDA-status").props.children).toBe("live");
+    expect(view.getByTestId("NVDA-refreshing").props.children).toBe("no");
+    expect(view.getByTestId("NVDA-verified").props.children).toBe(
+      recovered.source.asOf,
+    );
+    expect(view.getByTestId("NVDA-error").props.children).toBe("none");
+    await view.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it("never relabels a cached snapshot live until a new request verifies it", async () => {
@@ -525,6 +641,10 @@ it("retries an offline watchlist while a consumer remains mounted", async () => 
     });
     expect(loadWatchlist).toHaveBeenCalledTimes(2);
     await view.unmount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(100);
+    });
+    expect(loadWatchlist).toHaveBeenCalledTimes(2);
   } finally {
     jest.useRealTimers();
   }

@@ -171,7 +171,6 @@ function useLiveResource<T>({
   demoData: T | null;
 }): MarketDataState<T> {
   const { demoMode, retryDelaysMs } = useMarketDataContext();
-  const [refreshVersion, setRefreshVersion] = useState(0);
   const [state, setState] = useState<
     Omit<MarketDataState<T>, "refresh"> & { resourceKey: string }
   >({
@@ -186,13 +185,16 @@ function useLiveResource<T>({
     data: T;
     verifiedAt: string;
   }>());
-  const refreshingRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const requestRef = useRef<((showRefreshing: boolean) => boolean) | null>(
+    null,
+  );
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
   });
   useEffect(() => {
-    refreshingRef.current = false;
+    inFlightRef.current = false;
   }, [demoMode, resourceKey]);
 
   useEffect(() => {
@@ -211,12 +213,29 @@ function useLiveResource<T>({
       verifiedByKeyRef.current.set(resourceKey, cachedData);
     }
 
-    const request = (forceRefresh: boolean) => {
-      if (!active) return;
+    const request = (showRefreshing: boolean) => {
+      if (!active || inFlightRef.current) return false;
+      inFlightRef.current = true;
+      if (showRefreshing) {
+        const verified = verifiedByKeyRef.current.get(resourceKey);
+        setState((current) => ({
+          resourceKey,
+          status: verified
+            ? current.resourceKey === resourceKey &&
+              current.status === "live"
+              ? "live"
+              : "stale"
+            : "loading",
+          refreshing: true,
+          data: verified?.data ?? null,
+          error: verified ? current.error : null,
+          lastVerifiedAt: verified?.verifiedAt ?? null,
+        }));
+      }
       const controller = new AbortController();
       controllers.add(controller);
       void loadRef
-        .current(controller.signal, forceRefresh)
+        .current(controller.signal, true)
         .then(({ data, verifiedAt }) => {
           if (!active || controller.signal.aborted) return;
           verifiedByKeyRef.current.set(resourceKey, { data, verifiedAt });
@@ -229,7 +248,6 @@ function useLiveResource<T>({
             error: null,
             lastVerifiedAt: verifiedAt,
           });
-          refreshingRef.current = false;
         })
         .catch((error: unknown) => {
           if (
@@ -248,7 +266,6 @@ function useLiveResource<T>({
             error: marketError,
             lastVerifiedAt: verified?.verifiedAt ?? null,
           });
-          refreshingRef.current = false;
           const delay = retryDelaysMs[
             Math.min(retryIndex, retryDelaysMs.length - 1)
           ];
@@ -266,12 +283,21 @@ function useLiveResource<T>({
         })
         .finally(() => {
           controllers.delete(controller);
+          if (active) {
+            inFlightRef.current = false;
+          }
         });
+      return true;
     };
 
-    request(true);
+    requestRef.current = request;
+    request(false);
     return () => {
       active = false;
+      if (requestRef.current === request) {
+        requestRef.current = null;
+      }
+      inFlightRef.current = false;
       controllers.forEach((controller) => controller.abort());
       retryTimers.forEach((timer) => clearTimeout(timer));
     };
@@ -279,27 +305,14 @@ function useLiveResource<T>({
     cachedData,
     demoData,
     demoMode,
-    refreshVersion,
     resourceKey,
     retryDelaysMs,
   ]);
 
   const refresh = useCallback(() => {
-    if (demoMode || refreshingRef.current) return;
-    refreshingRef.current = true;
-    setState((current) => {
-      if (current.resourceKey !== resourceKey) return current;
-      const hasVerifiedData =
-        current.data !== null && current.lastVerifiedAt !== null;
-      return {
-        ...current,
-        status: hasVerifiedData ? current.status : "loading",
-        refreshing: true,
-        error: hasVerifiedData ? current.error : null,
-      };
-    });
-    setRefreshVersion((version) => version + 1);
-  }, [demoMode, resourceKey]);
+    if (demoMode) return;
+    requestRef.current?.(true);
+  }, [demoMode]);
 
   if (demoMode) {
     return {
