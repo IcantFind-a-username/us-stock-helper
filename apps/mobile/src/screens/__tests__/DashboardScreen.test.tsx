@@ -4,7 +4,15 @@ import { StyleSheet } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { DashboardScreen } from "../DashboardScreen";
+import {
+  createMarketRepository,
+  MarketDataError,
+  type MarketDataSource,
+  type MarketRepository,
+} from "@/data/marketRepository";
+import { fixtureRepository } from "@/fixtures/repository";
 import { AppStateProvider } from "@/state/AppStateProvider";
+import { MarketDataProvider } from "@/state/MarketDataProvider";
 
 const mockPush = jest.fn();
 
@@ -17,10 +25,36 @@ beforeEach(async () => {
   mockPush.mockClear();
 });
 
-async function renderDashboard() {
+function repositoryWithWatchlist(
+  loadWatchlist: MarketDataSource["loadWatchlist"],
+) {
+  return createMarketRepository({
+    loadSnapshot: async () => {
+      throw new MarketDataError("configuration", "snapshot not configured");
+    },
+    loadWatchlist,
+  });
+}
+
+async function renderDashboard({
+  repository,
+  demoMode = true,
+  development = true,
+}: {
+  repository?: MarketRepository;
+  demoMode?: boolean;
+  development?: boolean;
+} = {}) {
+  const demoWatchlist = fixtureRepository.getDashboard("short").watchlist;
   return render(
     <AppStateProvider>
-      <DashboardScreen />
+      <MarketDataProvider
+        demoWatchlist={demoWatchlist}
+        development={development}
+        initialDemoMode={demoMode}
+        {...(repository ? { repository } : {})}>
+        <DashboardScreen />
+      </MarketDataProvider>
     </AppStateProvider>,
   );
 }
@@ -194,6 +228,107 @@ it("turns Search and the moomoo source affordance into complete interactions", a
 
   await fireEvent.press(view.getByRole("button", { name: "来自 moomoo ›" }));
   expect(view.getByText("moomoo 数据来源")).toBeTruthy();
-  expect(view.getByText(/只读同步尚未连接/)).toBeTruthy();
+  expect(view.getByText(/开发者已显式开启/)).toBeTruthy();
   expect(view.getByText(/演示回退/)).toBeTruthy();
+});
+
+it("renders verified moomoo watchlist rows without fixture fallback", async () => {
+  const repository = repositoryWithWatchlist(async () => ({
+    source: "moomoo",
+    asOf: "2026-07-25T15:59:50.000Z",
+    quotes: [
+      {
+        symbol: "AAPL",
+        price: 245.12,
+        changePercent: 1.25,
+        direction: "bullish",
+        summary: "实时只读",
+      },
+      {
+        symbol: "MSFT",
+        price: 512.34,
+        changePercent: -0.4,
+        direction: "bearish",
+        summary: "实时只读",
+      },
+    ],
+  }));
+  const view = await renderDashboard({ repository, demoMode: false });
+
+  await waitFor(() => expect(view.getByText("实时行情")).toBeTruthy());
+  expect(view.getAllByTestId("watchlist-quote")).toHaveLength(2);
+  expect(view.getByText("AAPL")).toBeTruthy();
+  expect(view.getByText("MSFT")).toBeTruthy();
+  expect(
+    view.queryByRole("button", { name: /NVDA 行情详情.*143\.80/ }),
+  ).toBeNull();
+  expect(view.queryByText("演示数据 · 非实时")).toBeNull();
+});
+
+it("keeps verified rows and their original time when a refresh becomes stale", async () => {
+  let requestCount = 0;
+  const repository = repositoryWithWatchlist(async () => {
+    requestCount += 1;
+    if (requestCount > 1) {
+      throw new MarketDataError("offline", "OpenD offline");
+    }
+    return {
+      source: "moomoo",
+      asOf: "2026-07-25T15:59:50.000Z",
+      quotes: [
+        {
+          symbol: "AAPL",
+          price: 245.12,
+          changePercent: 1.25,
+          direction: "bullish",
+          summary: "实时只读",
+        },
+      ],
+    };
+  });
+  const view = await renderDashboard({ repository, demoMode: false });
+
+  await waitFor(() => expect(view.getByText("实时行情")).toBeTruthy());
+  await fireEvent.press(view.getByRole("button", { name: "刷新行情" }));
+  await waitFor(() => expect(view.getByText(/^行情已延迟/)).toBeTruthy());
+  expect(view.getByText("AAPL")).toBeTruthy();
+  expect(view.getByText(/2026-07-25T15:59:50.000Z/)).toBeTruthy();
+});
+
+it("shows one actionable unavailable state with the error category", async () => {
+  const repository = repositoryWithWatchlist(async () => {
+    throw new MarketDataError("permission", "quote permission denied");
+  });
+  const view = await renderDashboard({ repository, demoMode: false });
+
+  await waitFor(() =>
+    expect(view.getByText("行情不可用 · permission")).toBeTruthy(),
+  );
+  expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
+  expect(view.queryByTestId("watchlist-grid")).toBeNull();
+  expect(view.queryByTestId("watchlist-quote")).toBeNull();
+});
+
+it("shows the explicit demo switch only to developers", async () => {
+  const repository = repositoryWithWatchlist(async () => {
+    throw new MarketDataError("offline", "OpenD offline");
+  });
+  const developerView = await renderDashboard({
+    repository,
+    demoMode: true,
+    development: true,
+  });
+  expect(developerView.getByText("演示模式")).toBeTruthy();
+  expect(developerView.getByText("演示数据 · 非实时")).toBeTruthy();
+  await developerView.unmount();
+
+  const productionView = await renderDashboard({
+    repository,
+    demoMode: false,
+    development: false,
+  });
+  expect(productionView.queryByText("演示模式")).toBeNull();
+  await waitFor(() =>
+    expect(productionView.getByText("行情不可用 · offline")).toBeTruthy(),
+  );
 });

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useRouter } from "expo-router";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, Switch, Text, View } from "react-native";
 
 import { CandidateList } from "@/components/dashboard/CandidateList";
 import {
@@ -21,7 +21,11 @@ import { Screen } from "@/components/ui/Screen";
 import type { Candidate, Citation } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useAppState } from "@/state/AppStateProvider";
-import { spacing } from "@/theme/tokens";
+import {
+  useMarketDataMode,
+  useMarketWatchlist,
+} from "@/state/MarketDataProvider";
+import { colors, radius, spacing } from "@/theme/tokens";
 
 type DetailState = {
   title: string;
@@ -32,6 +36,8 @@ type DetailState = {
 export function DashboardScreen() {
   const router = useRouter();
   const { horizon, setHorizon } = useAppState();
+  const { demoAvailable, demoMode, setDemoMode } = useMarketDataMode();
+  const marketWatchlist = useMarketWatchlist();
   const snapshot = fixtureRepository.getDashboard(horizon);
   const [detail, setDetail] = useState<DetailState>(null);
   const [searchVisible, setSearchVisible] = useState(false);
@@ -68,12 +74,21 @@ export function DashboardScreen() {
   const openStock = (symbol: string) =>
     router.push({ pathname: "/stocks/[symbol]", params: { symbol } });
 
-  const searchOptions: StockSearchOption[] = snapshot.watchlist.map((quote) => ({
-    company: fixtureRepository.getStock(quote.symbol, horizon).company,
-    symbol: quote.symbol,
-    price: quote.price,
-    changePercent: quote.changePercent,
-  }));
+  const watchlistQuotes = marketWatchlist.data?.quotes ?? [];
+  const searchOptions: StockSearchOption[] = watchlistQuotes.map((quote) => {
+    let company = quote.symbol;
+    try {
+      company = fixtureRepository.getStock(quote.symbol, horizon).company;
+    } catch {
+      // Live watchlists are not limited to the developer fixture catalog.
+    }
+    return {
+      company,
+      symbol: quote.symbol,
+      price: quote.price,
+      changePercent: quote.changePercent,
+    };
+  });
 
   const openCandidateEvidence = (candidate: Candidate) =>
     openDetail(
@@ -90,6 +105,80 @@ export function DashboardScreen() {
       candidate.citationIds,
     );
 
+  const openWatchlistSource = () => {
+    const connectionBody =
+      marketWatchlist.status === "demo"
+        ? "开发者已显式开启演示回退；当前数据是确定性 fixture，不是实时行情。"
+        : marketWatchlist.status === "live"
+          ? `只读 moomoo 行情已验证；原始时间 ${marketWatchlist.lastVerifiedAt ?? "未知"}。`
+          : marketWatchlist.status === "stale"
+            ? `连接已中断；继续显示上次验证数据，原始时间 ${marketWatchlist.lastVerifiedAt ?? "未知"}。`
+            : "只读 moomoo 行情当前不可用；未使用演示数据自动回退。";
+    openDetail(
+      "moomoo 数据来源",
+      [
+        { label: "当前连接", body: connectionBody },
+        {
+          label: "接入边界",
+          body: "通过本机 OpenD 读取自选、报价与 K 线；App 不保存账号凭据，也不会调用交易接口。",
+        },
+      ],
+      [],
+    );
+  };
+
+  const watchlistSurface =
+    marketWatchlist.status === "unavailable" ? (
+      <View style={styles.watchlistState}>
+        <Text style={styles.watchlistTitle}>我的关注</Text>
+        <Pressable
+          accessibilityLabel="重试行情"
+          accessibilityRole="button"
+          onPress={marketWatchlist.refresh}
+          style={styles.unavailableAction}>
+          <Text style={styles.unavailableText}>
+            行情不可用 · {marketWatchlist.error?.category ?? "offline"}
+          </Text>
+          <Text style={styles.retryText}>重试</Text>
+        </Pressable>
+      </View>
+    ) : marketWatchlist.status === "loading" ? (
+      <View style={styles.watchlistState}>
+        <Text style={styles.watchlistTitle}>我的关注</Text>
+        <Text style={styles.watchlistMeta}>正在连接 moomoo 行情…</Text>
+      </View>
+    ) : (
+      <View style={styles.watchlistState}>
+        <View style={styles.watchlistStatusRow}>
+          <Text
+            style={[
+              styles.watchlistMeta,
+              marketWatchlist.status === "stale" && styles.staleText,
+            ]}>
+            {marketWatchlist.status === "demo"
+              ? "演示数据 · 非实时"
+              : marketWatchlist.status === "stale"
+                ? `行情已延迟 · 原始时间 ${marketWatchlist.lastVerifiedAt ?? "未知"}`
+                : "实时行情"}
+          </Text>
+          {marketWatchlist.status !== "demo" ? (
+            <Pressable
+              accessibilityLabel="刷新行情"
+              accessibilityRole="button"
+              onPress={marketWatchlist.refresh}
+              style={styles.refreshAction}>
+              <Text style={styles.retryText}>刷新</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        <WatchlistStrip
+          onOpenSource={openWatchlistSource}
+          onPress={openStock}
+          quotes={watchlistQuotes}
+        />
+      </View>
+    );
+
   return (
     <Screen hideGlobalHeader style={styles.dashboard}>
       <DashboardHeader
@@ -100,6 +189,19 @@ export function DashboardScreen() {
         updatedAt={snapshot.updatedAt}
       />
       <HorizonSwitch value={horizon} onChange={changeHorizon} />
+      {demoAvailable ? (
+        <View style={styles.demoModeRow}>
+          <View>
+            <Text style={styles.demoModeLabel}>演示模式</Text>
+            <Text style={styles.demoModeHint}>仅开发构建 · 不会自动开启</Text>
+          </View>
+          <Switch
+            accessibilityLabel="演示模式"
+            onValueChange={setDemoMode}
+            value={demoMode}
+          />
+        </View>
+      ) : null}
       <MarketRegimeHero
         advice={snapshot.marketAdvice}
         conclusion={snapshot.marketConclusion}
@@ -140,26 +242,7 @@ export function DashboardScreen() {
           onPress={() => openStock(snapshot.priorityAlert.symbol)}
         />
       </View>
-      <WatchlistStrip
-        onOpenSource={() =>
-          openDetail(
-            "moomoo 数据来源",
-            [
-              {
-                label: "当前连接",
-                body: "只读同步尚未连接；当前使用确定性演示回退，不会伪装成实时行情。",
-              },
-              {
-                label: "计划接入",
-                body: "通过本机 OpenD 读取自选、报价与 K 线；App 不保存账号凭据，也不会调用交易接口。",
-              },
-            ],
-            [],
-          )
-        }
-        onPress={openStock}
-        quotes={snapshot.watchlist}
-      />
+      {watchlistSurface}
       <CandidateList
         candidates={snapshot.candidates}
         onOpenDiscover={() => router.push("/discover")}
@@ -193,4 +276,43 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xs,
   },
   section: { gap: 7 },
+  demoModeRow: {
+    alignItems: "center",
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  demoModeLabel: { color: colors.ink, fontSize: 11, fontWeight: "800" },
+  demoModeHint: { color: colors.muted, fontSize: 9, marginTop: 2 },
+  watchlistState: { gap: spacing.xs },
+  watchlistTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  watchlistStatusRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 24,
+  },
+  watchlistMeta: { color: colors.green, fontSize: 10, fontWeight: "700" },
+  staleText: { color: colors.amber },
+  refreshAction: {
+    alignItems: "flex-end",
+    justifyContent: "center",
+    minHeight: 44,
+    minWidth: 44,
+  },
+  unavailableAction: {
+    alignItems: "center",
+    backgroundColor: colors.amberSoft,
+    borderRadius: radius.md,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+  },
+  unavailableText: { color: colors.ink, fontSize: 11, fontWeight: "700" },
+  retryText: { color: colors.blue, fontSize: 10, fontWeight: "800" },
 });

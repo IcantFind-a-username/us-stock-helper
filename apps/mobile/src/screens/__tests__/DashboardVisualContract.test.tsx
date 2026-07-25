@@ -2,7 +2,13 @@ import { beforeEach, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 
+import {
+  createMarketRepository,
+  MarketDataError,
+} from "@/data/marketRepository";
+import { fixtureRepository } from "@/fixtures/repository";
 import { AppStateProvider } from "@/state/AppStateProvider";
+import { MarketDataProvider } from "@/state/MarketDataProvider";
 
 import { DashboardScreen } from "../DashboardScreen";
 
@@ -12,6 +18,15 @@ jest.mock("expo-router", () => ({
   useRouter: () => ({ push: mockPush }),
 }));
 
+const demoRepository = createMarketRepository({
+  loadSnapshot: async () => {
+    throw new MarketDataError("configuration", "dashboard visual test");
+  },
+  loadWatchlist: async () => {
+    throw new MarketDataError("configuration", "dashboard visual test");
+  },
+});
+
 beforeEach(async () => {
   await AsyncStorage.clear();
   mockPush.mockClear();
@@ -20,7 +35,13 @@ beforeEach(async () => {
 it("renders the approved compact hierarchy and hides research detail by default", async () => {
   const view = await render(
     <AppStateProvider>
-      <DashboardScreen />
+      <MarketDataProvider
+        demoWatchlist={fixtureRepository.getDashboard("short").watchlist}
+        development
+        initialDemoMode
+        repository={demoRepository}>
+        <DashboardScreen />
+      </MarketDataProvider>
     </AppStateProvider>,
   );
 
@@ -48,7 +69,13 @@ it("renders the approved compact hierarchy and hides research detail by default"
 it("keeps alert, watchlist, and candidates actionable without expanding memos", async () => {
   const view = await render(
     <AppStateProvider>
-      <DashboardScreen />
+      <MarketDataProvider
+        demoWatchlist={fixtureRepository.getDashboard("short").watchlist}
+        development
+        initialDemoMode
+        repository={demoRepository}>
+        <DashboardScreen />
+      </MarketDataProvider>
     </AppStateProvider>,
   );
 
