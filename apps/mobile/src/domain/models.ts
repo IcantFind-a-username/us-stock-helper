@@ -244,6 +244,122 @@ export interface StockSnapshot {
   citations: Citation[];
 }
 
+export type DataStatus = "live" | "delayed" | "stale" | "unavailable" | "demo";
+
+export type SnapshotSource = {
+  source: "moomoo" | "fixture";
+  status: DataStatus;
+  asOf: string;
+  decisionCutoff: string;
+};
+
+export interface ParticipationBar {
+  closedAt: string;
+  mainShare: number | null;
+  retailShare: number | null;
+  mainActivity: number | null;
+  retailActivity: number | null;
+  netFlow: number | null;
+  coverage: number;
+  source: string;
+  asOf: string;
+  availableAt: string;
+  methodVersion: "order-size-activity-share-v1";
+  qualityStatus: "live" | "unavailable";
+  missingReason: string | null;
+}
+
+export interface LiveQuote {
+  price: number;
+  changePercent: number;
+  source: string;
+  asOf: string;
+  availableAt: string;
+  methodVersion: "provider-quote-v1";
+  qualityStatus: "live";
+}
+
+export interface LiveIndicatorValue {
+  value: number | null;
+  source: "analysis-core";
+  asOf: string;
+  availableAt: string;
+  methodVersion: string;
+  qualityStatus: "live" | "unavailable";
+}
+
+export interface LiveMacdIndicator {
+  line: number | null;
+  signal: number | null;
+  histogram: number | null;
+  source: "analysis-core";
+  asOf: string;
+  availableAt: string;
+  methodVersion: "macd-12-26-9-v1";
+  qualityStatus: "live" | "unavailable";
+}
+
+export interface MagicNineSnapshot {
+  direction: string | null;
+  count: number;
+  completed: boolean;
+  confirmedAtIndex: number | null;
+  source: "analysis-core";
+  asOf: string;
+  availableAt: string;
+  methodVersion: string;
+  qualityStatus: "live" | "unavailable";
+}
+
+export interface DelayedInstitutionalHolding {
+  period: string;
+  reportedAt: string;
+  reportedAtBasis: "reporting-period-end";
+  availableAt: string;
+  source: "moomoo-delayed-institutional-disclosure";
+  institutionCount: number;
+  institutionCountChange: number;
+  sharesHeld: number;
+  sharesHeldChange: number;
+  holdingPercent: number;
+  holdingPercentChange: number;
+  asOf: string;
+  methodVersion: "reported-holdings-v1";
+  qualityStatus: "delayed";
+}
+
+export interface SnapshotProvenance {
+  source: string;
+  asOf: string;
+  availableAt: string;
+  methodVersion: string;
+  qualityStatus: DataStatus;
+}
+
+export interface ChartSnapshot {
+  symbol: string;
+  interval: string;
+  quote: LiveQuote;
+  candles: Candle[];
+  participationBars: ParticipationBar[];
+  indicators: {
+    ma5: LiveIndicatorValue;
+    rsi: LiveIndicatorValue;
+    macd: LiveMacdIndicator;
+  };
+  magicNine: MagicNineSnapshot;
+  forecast: ForecastSnapshot | null;
+}
+
+export interface LiveStockSnapshot extends ChartSnapshot {
+  demoData: false;
+  source: SnapshotSource & { source: "moomoo" };
+  decisionCutoff: string;
+  institutionalHoldings: DelayedInstitutionalHolding[];
+  provenance: SnapshotProvenance[];
+  warnings: string[];
+}
+
 export interface AdviserOpinion {
   id: string;
   displayName: string;

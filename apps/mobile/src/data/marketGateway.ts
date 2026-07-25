@@ -1,4 +1,16 @@
-import type { Candle, Direction, WatchlistQuote } from "@/domain/models";
+import type {
+  Candle,
+  DelayedInstitutionalHolding,
+  Direction,
+  LiveIndicatorValue,
+  LiveMacdIndicator,
+  LiveQuote,
+  LiveStockSnapshot,
+  MagicNineSnapshot,
+  ParticipationBar,
+  SnapshotProvenance,
+  WatchlistQuote,
+} from "@/domain/models";
 
 const defaultMaxAgeMs = 30_000;
 const allowedSessions = new Set(["healthy"]);
@@ -37,6 +49,34 @@ export class GatewayValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "GatewayValidationError";
+  }
+}
+
+export type GatewayRequestErrorKind =
+  | "offline"
+  | "login-required"
+  | "permission"
+  | "stale"
+  | "malformed"
+  | "timeout";
+
+export class GatewayRequestError extends GatewayValidationError {
+  constructor(
+    public readonly kind: GatewayRequestErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GatewayRequestError";
+  }
+}
+
+class GatewayHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly payload: unknown,
+  ) {
+    super(`gateway returned HTTP ${status}`);
+    this.name = "GatewayHttpError";
   }
 }
 
@@ -219,6 +259,368 @@ export function decodeCandleEnvelope(
   };
 }
 
+const snapshotStatuses = new Set(["live", "delayed", "stale", "unavailable", "demo"]);
+
+function requireNullableFiniteNumber(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) {
+    throw new GatewayValidationError(`${key} must be a finite number or null`);
+  }
+  return value;
+}
+
+function requireStatus(record: Record<string, unknown>, key: string) {
+  const status = requireString(record, key);
+  if (!snapshotStatuses.has(status)) {
+    throw new GatewayValidationError(`${key} has an unsupported data status`);
+  }
+  return status as "live" | "delayed" | "stale" | "unavailable" | "demo";
+}
+
+function requireSnapshotMetadata(
+  record: Record<string, unknown>,
+  label: string,
+  cutoff: Date,
+) {
+  const source = requireString(record, "source");
+  const asOf = parseTimestamp(requireString(record, "asOf"), `${label}.asOf`);
+  const availableAt = parseTimestamp(
+    requireString(record, "availableAt"),
+    `${label}.availableAt`,
+  );
+  if (asOf.getTime() > cutoff.getTime() || availableAt.getTime() > cutoff.getTime()) {
+    throw new GatewayValidationError(`${label} is after snapshot decision cutoff`);
+  }
+  return {
+    source,
+    asOf: asOf.toISOString(),
+    availableAt: availableAt.toISOString(),
+  };
+}
+
+function rejectInstitutionalIdentity(record: Record<string, unknown>, label: string) {
+  if (record.institutionalIdentity === true) {
+    throw new GatewayValidationError(`${label} must not claim institutional identity`);
+  }
+}
+
+function requireExpectedMethod<T extends string>(
+  record: Record<string, unknown>,
+  expected: T,
+  label: string,
+): T {
+  if (requireString(record, "methodVersion") !== expected) {
+    throw new GatewayValidationError(`${label} uses an unsupported method version`);
+  }
+  return expected;
+}
+
+function decodeSnapshotError(value: Record<string, unknown>): GatewayRequestError | null {
+  if (value.sourceStatus === "live") return null;
+  const error = isRecord(value.error) ? value.error : undefined;
+  const code = error && typeof error.code === "string" ? error.code : "MALFORMED_PROVIDER_DATA";
+  const kindByCode: Record<string, GatewayRequestErrorKind> = {
+    OPEND_OFFLINE: "offline",
+    SDK_UNAVAILABLE: "offline",
+    QUOTA_EXCEEDED: "offline",
+    LOGIN_REQUIRED: "login-required",
+    AUTH_REQUIRED: "login-required",
+    PERMISSION_DENIED: "permission",
+    STALE_DATA: "stale",
+    MALFORMED_PROVIDER_DATA: "malformed",
+    PROVIDER_ERROR: "malformed",
+  };
+  return new GatewayRequestError(
+    kindByCode[code] ?? "malformed",
+    `gateway snapshot is unavailable: ${code}`,
+  );
+}
+
+function decodeIndicatorValue(
+  value: unknown,
+  key: "ma5" | "rsi",
+  methodVersion: string,
+  cutoff: Date,
+): LiveIndicatorValue {
+  if (!isRecord(value)) throw new GatewayValidationError(`indicators.${key} must be an object`);
+  const metadata = requireSnapshotMetadata(value, `indicators.${key}`, cutoff);
+  if (metadata.source !== "analysis-core") {
+    throw new GatewayValidationError(`indicators.${key} must identify analysis-core`);
+  }
+  requireExpectedMethod(value, methodVersion, `indicators.${key}`);
+  const qualityStatus = requireStatus(value, "qualityStatus");
+  if (qualityStatus !== "live" && qualityStatus !== "unavailable") {
+    throw new GatewayValidationError(`indicators.${key} has an unsupported quality status`);
+  }
+  const numericValue = requireNullableFiniteNumber(value, "value");
+  if ((qualityStatus === "live") !== (numericValue !== null)) {
+    throw new GatewayValidationError(`indicators.${key} quality status does not match its value`);
+  }
+  return {
+    ...metadata,
+    source: "analysis-core",
+    value: numericValue,
+    methodVersion,
+    qualityStatus,
+  };
+}
+
+/** Decodes only the gateway's versioned live contract; it never adapts fixture data. */
+export function decodeStockSnapshotEnvelope(
+  value: unknown,
+  options: DecodeOptions = {},
+): LiveStockSnapshot {
+  if (!isRecord(value)) throw new GatewayValidationError("response must be an object");
+  if (value.schemaVersion !== "2") throw new GatewayValidationError("unsupported snapshot schemaVersion");
+  if (value.source !== "moomoo") {
+    throw new GatewayValidationError("live snapshot responses must identify source as moomoo");
+  }
+  rejectInstitutionalIdentity(value, "snapshot");
+  const snapshotError = decodeSnapshotError(value);
+  if (snapshotError) throw snapshotError;
+
+  const now = options.now ?? new Date();
+  const maxAgeMs = options.maxAgeMs ?? defaultMaxAgeMs;
+  const cutoff = parseTimestamp(requireString(value, "decisionCutoff"), "decisionCutoff");
+  if (cutoff.getTime() > now.getTime() + 1_000) {
+    throw new GatewayValidationError("snapshot decision cutoff is in the future");
+  }
+  if (now.getTime() - cutoff.getTime() > maxAgeMs) {
+    throw new GatewayRequestError("stale", "snapshot response is stale");
+  }
+
+  const symbol = normalizeUsSymbol(requireString(value, "symbol"));
+  const interval = requireString(value, "interval");
+  const quoteRecord = value.quote;
+  if (!isRecord(quoteRecord)) throw new GatewayValidationError("quote must be an object");
+  rejectInstitutionalIdentity(quoteRecord, "quote");
+  const quoteMetadata = requireSnapshotMetadata(quoteRecord, "quote", cutoff);
+  if (quoteMetadata.source !== "moomoo") throw new GatewayValidationError("quote source must be moomoo");
+  const price = requireFiniteNumber(quoteRecord, "price");
+  if (price <= 0) throw new GatewayValidationError("quote price must be positive");
+  const quote: LiveQuote = {
+    ...quoteMetadata,
+    source: "moomoo",
+    price,
+    changePercent: requireFiniteNumber(quoteRecord, "changePercent"),
+    methodVersion: requireExpectedMethod(quoteRecord, "provider-quote-v1", "quote"),
+    qualityStatus: "live",
+  };
+  if (requireStatus(quoteRecord, "qualityStatus") !== "live") {
+    throw new GatewayValidationError("quote quality status must be live");
+  }
+
+  if (!Array.isArray(value.completedCandles)) {
+    throw new GatewayValidationError("completedCandles must be an array");
+  }
+  let previousTimestamp = Number.NEGATIVE_INFINITY;
+  const candles = value.completedCandles.map((item) => {
+    if (!isRecord(item)) throw new GatewayValidationError("completed candle must be an object");
+    rejectInstitutionalIdentity(item, "completed candle");
+    if (item.complete !== true) throw new GatewayValidationError("only completed candles may enter a snapshot");
+    const timestamp = parseTimestamp(requireString(item, "timestamp"), "completed candle.timestamp");
+    const metadata = requireSnapshotMetadata(item, "completed candle", cutoff);
+    if (metadata.source !== "moomoo") throw new GatewayValidationError("completed candle source must be moomoo");
+    if (timestamp.getTime() > cutoff.getTime() || timestamp.getTime() > new Date(metadata.availableAt).getTime()) {
+      throw new GatewayValidationError("completed candle violates point-in-time ordering");
+    }
+    if (timestamp.getTime() <= previousTimestamp) {
+      throw new GatewayValidationError("completed candles must be strictly ordered");
+    }
+    previousTimestamp = timestamp.getTime();
+    const open = requireFiniteNumber(item, "open");
+    const high = requireFiniteNumber(item, "high");
+    const low = requireFiniteNumber(item, "low");
+    const close = requireFiniteNumber(item, "close");
+    const volume = requireFiniteNumber(item, "volume");
+    if (Math.min(open, high, low, close) <= 0 || volume < 0 || high < Math.max(open, close) || low > Math.min(open, close)) {
+      throw new GatewayValidationError("completed candle has invalid OHLCV values");
+    }
+    if (requireStatus(item, "qualityStatus") !== "live") {
+      throw new GatewayValidationError("completed candle quality status must be live");
+    }
+    requireExpectedMethod(item, "provider-completed-candle-v1", "completed candle");
+    return {
+      timestamp: timestamp.toISOString(),
+      availableAt: metadata.availableAt,
+      complete: true,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    } satisfies Candle;
+  });
+
+  if (!Array.isArray(value.participationBars) || value.participationBars.length !== candles.length) {
+    throw new GatewayValidationError("participation bars must align one-to-one with completed candles");
+  }
+  const participationBars = value.participationBars.map((item, index) => {
+    if (!isRecord(item)) throw new GatewayValidationError("participation bar must be an object");
+    rejectInstitutionalIdentity(item, "participation bar");
+    const metadata = requireSnapshotMetadata(item, "participation bar", cutoff);
+    if (metadata.source !== "moomoo") throw new GatewayValidationError("participation bar source must be moomoo");
+    const closedAt = parseTimestamp(requireString(item, "closedAt"), "participation bar.closedAt");
+    if (closedAt.toISOString() !== candles[index]!.timestamp) {
+      throw new GatewayValidationError("participation bar timestamp must align to its candle close");
+    }
+    const qualityStatus = requireStatus(item, "qualityStatus");
+    if (qualityStatus !== "live" && qualityStatus !== "unavailable") {
+      throw new GatewayValidationError("participation bar has an unsupported quality status");
+    }
+    const mainShare = requireNullableFiniteNumber(item, "mainShare");
+    const retailShare = requireNullableFiniteNumber(item, "retailShare");
+    const mainActivity = requireNullableFiniteNumber(item, "mainActivity");
+    const retailActivity = requireNullableFiniteNumber(item, "retailActivity");
+    const netFlow = requireNullableFiniteNumber(item, "netFlow");
+    const coverage = requireFiniteNumber(item, "coverage");
+    if (coverage < 0 || coverage > 1) throw new GatewayValidationError("participation coverage must be in [0, 1]");
+    const rawMissingReason = item.missingReason;
+    if (rawMissingReason !== null && (typeof rawMissingReason !== "string" || rawMissingReason.trim() === "")) {
+      throw new GatewayValidationError("participation missingReason must be a non-empty string or null");
+    }
+    const missingReason: string | null = rawMissingReason;
+    if (qualityStatus === "live") {
+      if (mainShare === null || retailShare === null || mainActivity === null || retailActivity === null || netFlow === null || Math.abs(mainShare + retailShare - 1) > 1e-9 || mainShare < 0 || mainShare > 1 || retailShare < 0 || retailShare > 1 || missingReason !== null) {
+        throw new GatewayValidationError("live participation bars require complete shares that sum to one");
+      }
+    } else if (mainShare !== null || retailShare !== null || mainActivity !== null || retailActivity !== null || netFlow !== null || typeof missingReason !== "string" || missingReason.trim() === "") {
+      throw new GatewayValidationError("unavailable participation bars require null metrics and a missing reason");
+    }
+    return {
+      ...metadata,
+      source: "moomoo",
+      closedAt: closedAt.toISOString(),
+      mainShare,
+      retailShare,
+      mainActivity,
+      retailActivity,
+      netFlow,
+      coverage,
+      methodVersion: requireExpectedMethod(item, "order-size-activity-share-v1", "participation bar"),
+      qualityStatus,
+      missingReason,
+    } satisfies ParticipationBar;
+  });
+
+  if (!isRecord(value.indicators)) throw new GatewayValidationError("indicators must be an object");
+  const ma5 = decodeIndicatorValue(value.indicators.ma5, "ma5", "sma-5-v1", cutoff);
+  const rsi = decodeIndicatorValue(value.indicators.rsi, "rsi", "wilder-rsi-14-v1", cutoff);
+  const macdRecord = value.indicators.macd;
+  if (!isRecord(macdRecord)) throw new GatewayValidationError("indicators.macd must be an object");
+  const macdMetadata = requireSnapshotMetadata(macdRecord, "indicators.macd", cutoff);
+  if (macdMetadata.source !== "analysis-core") throw new GatewayValidationError("indicators.macd must identify analysis-core");
+  const macdStatus = requireStatus(macdRecord, "qualityStatus");
+  if (macdStatus !== "live" && macdStatus !== "unavailable") throw new GatewayValidationError("indicators.macd has an unsupported quality status");
+  const macdValues = ["line", "signal", "histogram"].map((key) => requireNullableFiniteNumber(macdRecord, key));
+  if ((macdStatus === "live") !== macdValues.every((item) => item !== null)) {
+    throw new GatewayValidationError("indicators.macd quality status does not match its values");
+  }
+  const macd: LiveMacdIndicator = {
+    ...macdMetadata,
+    source: "analysis-core",
+    line: macdValues[0]!,
+    signal: macdValues[1]!,
+    histogram: macdValues[2]!,
+    methodVersion: requireExpectedMethod(macdRecord, "macd-12-26-9-v1", "indicators.macd"),
+    qualityStatus: macdStatus,
+  };
+  const magicRecord = value.indicators.magicNine;
+  if (!isRecord(magicRecord)) throw new GatewayValidationError("indicators.magicNine must be an object");
+  const magicMetadata = requireSnapshotMetadata(magicRecord, "indicators.magicNine", cutoff);
+  if (magicMetadata.source !== "analysis-core") throw new GatewayValidationError("indicators.magicNine must identify analysis-core");
+  const magicStatus = requireStatus(magicRecord, "qualityStatus");
+  if (magicStatus !== "live" && magicStatus !== "unavailable") throw new GatewayValidationError("indicators.magicNine has an unsupported quality status");
+  const direction = magicRecord.direction;
+  if (direction !== null && typeof direction !== "string") throw new GatewayValidationError("magic nine direction must be a string or null");
+  const count = requireFiniteNumber(magicRecord, "count");
+  const rawConfirmedAtIndex = magicRecord.confirmedAtIndex;
+  if (rawConfirmedAtIndex !== null && (typeof rawConfirmedAtIndex !== "number" || !Number.isInteger(rawConfirmedAtIndex) || rawConfirmedAtIndex < 0 || rawConfirmedAtIndex >= candles.length)) {
+    throw new GatewayValidationError("magic nine confirmedAtIndex is invalid");
+  }
+  const confirmedAtIndex: number | null = rawConfirmedAtIndex;
+  if (typeof magicRecord.completed !== "boolean") throw new GatewayValidationError("magic nine completed must be boolean");
+  const magicNine: MagicNineSnapshot = {
+    ...magicMetadata,
+    source: "analysis-core",
+    direction,
+    count,
+    completed: magicRecord.completed,
+    confirmedAtIndex,
+    methodVersion: requireExpectedMethod(magicRecord, "sequential-close-4-v1", "indicators.magicNine"),
+    qualityStatus: magicStatus,
+  };
+
+  if (!Array.isArray(value.institutionalHoldings)) throw new GatewayValidationError("institutionalHoldings must be an array");
+  const institutionalHoldings = value.institutionalHoldings.map((item) => {
+    if (!isRecord(item)) throw new GatewayValidationError("institutional holding must be an object");
+    rejectInstitutionalIdentity(item, "institutional holding");
+    const metadata = requireSnapshotMetadata(item, "institutional holding", cutoff);
+    if (metadata.source !== "moomoo-delayed-institutional-disclosure") throw new GatewayValidationError("institutional holding source must be delayed disclosure");
+    const reportedAt = parseTimestamp(requireString(item, "reportedAt"), "institutional holding.reportedAt");
+    if (reportedAt.getTime() > new Date(metadata.availableAt).getTime()) throw new GatewayValidationError("institutional holding report date follows availability");
+    if (item.reportedAtBasis !== "reporting-period-end") throw new GatewayValidationError("institutional holding report date basis is unsupported");
+    if (requireStatus(item, "qualityStatus") !== "delayed") throw new GatewayValidationError("institutional holding must be delayed");
+    const institutionCount = requireFiniteNumber(item, "institutionCount");
+    const sharesHeld = requireFiniteNumber(item, "sharesHeld");
+    const holdingPercent = requireFiniteNumber(item, "holdingPercent");
+    if (!Number.isInteger(institutionCount) || institutionCount < 0 || sharesHeld < 0 || holdingPercent < 0 || holdingPercent > 100) {
+      throw new GatewayValidationError("institutional holding values are invalid");
+    }
+    return {
+      ...metadata,
+      source: "moomoo-delayed-institutional-disclosure",
+      period: requireString(item, "period"),
+      reportedAt: reportedAt.toISOString(),
+      reportedAtBasis: "reporting-period-end",
+      institutionCount,
+      institutionCountChange: requireFiniteNumber(item, "institutionCountChange"),
+      sharesHeld,
+      sharesHeldChange: requireFiniteNumber(item, "sharesHeldChange"),
+      holdingPercent,
+      holdingPercentChange: requireFiniteNumber(item, "holdingPercentChange"),
+      methodVersion: requireExpectedMethod(item, "reported-holdings-v1", "institutional holding"),
+      qualityStatus: "delayed",
+    } satisfies DelayedInstitutionalHolding;
+  });
+
+  if (!Array.isArray(value.provenance)) throw new GatewayValidationError("provenance must be an array");
+  const provenance = value.provenance.map((item) => {
+    if (!isRecord(item)) throw new GatewayValidationError("provenance entry must be an object");
+    const metadata = requireSnapshotMetadata(item, "provenance entry", cutoff);
+    return {
+      ...metadata,
+      methodVersion: requireString(item, "methodVersion"),
+      qualityStatus: requireStatus(item, "qualityStatus"),
+    } satisfies SnapshotProvenance;
+  });
+  if (!Array.isArray(value.warnings) || !value.warnings.every((warning) => typeof warning === "string")) {
+    throw new GatewayValidationError("warnings must be an array of strings");
+  }
+
+  return {
+    demoData: false,
+    source: {
+      source: "moomoo",
+      status: "live",
+      asOf: cutoff.toISOString(),
+      decisionCutoff: cutoff.toISOString(),
+    },
+    symbol,
+    interval,
+    decisionCutoff: cutoff.toISOString(),
+    quote,
+    candles,
+    participationBars,
+    indicators: { ma5, rsi, macd },
+    magicNine,
+    forecast: null,
+    institutionalHoldings,
+    provenance,
+    warnings: value.warnings,
+  };
+}
+
 type MarketGatewayClientOptions = {
   baseUrl: string;
   authorizationToken?: string;
@@ -278,11 +680,38 @@ export function createMarketGatewayClient({
         },
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`gateway returned HTTP ${response.status}`);
-      return (await response.json()) as unknown;
+      let payload: unknown;
+      try {
+        payload = (await response.json()) as unknown;
+      } catch {
+        throw new GatewayHttpError(response.status, null);
+      }
+      if (!response.ok) throw new GatewayHttpError(response.status, payload);
+      return payload;
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  function toSnapshotRequestError(error: unknown): GatewayRequestError {
+    if (error instanceof GatewayRequestError) return error;
+    if (error instanceof GatewayHttpError) {
+      if (isRecord(error.payload)) {
+        const snapshotError = decodeSnapshotError(error.payload);
+        if (snapshotError) return snapshotError;
+      }
+      if (error.status === 401) return new GatewayRequestError("login-required", error.message);
+      if (error.status === 403) return new GatewayRequestError("permission", error.message);
+      if (error.status === 408 || error.status === 504) return new GatewayRequestError("timeout", error.message);
+      return new GatewayRequestError("malformed", error.message);
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+      return new GatewayRequestError("timeout", "gateway request timed out");
+    }
+    if (error instanceof GatewayValidationError) {
+      return new GatewayRequestError("malformed", error.message);
+    }
+    return new GatewayRequestError("offline", "gateway request is unavailable");
   }
 
   return {
@@ -334,6 +763,36 @@ export function createMarketGatewayClient({
         );
       }
       return result;
+    },
+    async getStockSnapshot(
+      symbol: string,
+      interval: CandleInterval,
+      count = 200,
+    ): Promise<LiveStockSnapshot> {
+      const normalizedSymbol = normalizeUsSymbol(symbol);
+      if (!Number.isInteger(count) || count < 1 || count > 1_000) {
+        throw new GatewayValidationError(
+          "snapshot count must be an integer between 1 and 1000",
+        );
+      }
+      const query = new URLSearchParams({
+        symbol: normalizedSymbol,
+        interval,
+        count: String(count),
+      });
+      try {
+        const payload = await fetchJson(`/stock-snapshot?${query.toString()}`);
+        const snapshot = decodeStockSnapshotEnvelope(payload, {
+          maxAgeMs,
+          now: now(),
+        });
+        if (snapshot.symbol !== normalizedSymbol || snapshot.interval !== interval) {
+          throw new GatewayValidationError("snapshot response does not match the requested series");
+        }
+        return snapshot;
+      } catch (error) {
+        throw toSnapshotRequestError(error);
+      }
     },
   };
 }

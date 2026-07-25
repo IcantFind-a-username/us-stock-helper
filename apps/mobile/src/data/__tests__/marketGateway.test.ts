@@ -4,8 +4,11 @@ import type { WatchlistQuote } from "@/domain/models";
 import {
   createMarketGatewayClient,
   decodeCandleEnvelope,
+  decodeStockSnapshotEnvelope,
   decodeWatchlistEnvelope,
+  GatewayRequestError,
 } from "../marketGateway";
+import { stockSnapshotFixture } from "./stockSnapshot.fixture";
 
 const now = new Date("2026-07-25T16:00:00.000Z");
 const fallback: WatchlistQuote[] = [
@@ -159,6 +162,80 @@ describe("market gateway point-in-time validation", () => {
   });
 });
 
+describe("schema-v2 stock snapshot validation", () => {
+  it("decodes a cutoff-consistent live snapshot without demo fields", () => {
+    const result = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
+
+    expect(result).toMatchObject({
+      demoData: false,
+      symbol: "NVDA",
+      interval: "5m",
+      forecast: null,
+      source: {
+        source: "moomoo",
+        status: "live",
+        decisionCutoff: "2026-07-25T15:59:50.000Z",
+      },
+      quote: { price: 142.25, changePercent: 2.4 },
+      participationBars: [
+        { closedAt: "2026-07-25T15:50:00.000Z", mainShare: 0.6, retailShare: 0.4 },
+        {
+          closedAt: "2026-07-25T15:55:00.000Z",
+          mainShare: null,
+          retailShare: null,
+          missingReason: "capital flow unavailable",
+        },
+      ],
+      institutionalHoldings: [
+        { qualityStatus: "delayed", reportedAt: "2026-03-31T00:00:00.000Z" },
+      ],
+      warnings: ["Capital-flow participation is partially unavailable."],
+    });
+    expect(result.candles.map((candle) => candle.timestamp)).toEqual([
+      "2026-07-25T15:50:00.000Z",
+      "2026-07-25T15:55:00.000Z",
+    ]);
+  });
+
+  it.each([
+    ["future candle", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.completedCandles[1]!.availableAt = "2026-07-25T16:00:01.000Z";
+    }],
+    ["duplicate candle", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.completedCandles[1]!.timestamp = value.completedCandles[0]!.timestamp;
+    }],
+    ["out-of-order candle", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.completedCandles[1]!.timestamp = "2026-07-25T15:45:00.000Z";
+    }],
+    ["unsupported candle method", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.completedCandles[0]!.methodVersion = "guessed-v1";
+    }],
+    ["misaligned participation", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[1]!.closedAt = "2026-07-25T15:54:00.000Z";
+    }],
+    ["institution identity claim", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      (value.participationBars[0] as Record<string, unknown>).institutionalIdentity = true;
+    }],
+    ["invalid participation shares", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.retailShare = 0.5;
+    }],
+    ["unsupported participation method", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.methodVersion = "guessed-v1";
+    }],
+    ["fixture masquerading as live", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.source = "fixture";
+    }],
+    ["stale response", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.decisionCutoff = "2026-07-25T15:00:00.000Z";
+    }],
+  ])("rejects a %s snapshot", (_label, mutate) => {
+    const value = stockSnapshotFixture();
+    mutate(value);
+
+    expect(() => decodeStockSnapshotEnvelope(value, { maxAgeMs: 30_000, now })).toThrow();
+  });
+});
+
 describe("market gateway fallback", () => {
   it("fails closed to one explicit fixture snapshot when the gateway is unavailable", async () => {
     const fetchImpl = jest.fn(async () => {
@@ -308,6 +385,80 @@ describe("market gateway fallback", () => {
       symbol: "NVDA",
       interval: "5m",
       candles: [{ complete: true, close: 141.5 }],
+    });
+  });
+
+  it("fetches a live stock snapshot and never substitutes a fixture", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse(stockSnapshotFixture()),
+    ) as unknown as typeof fetch;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await client.getStockSnapshot("nvda", "5m", 200);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/stock-snapshot?symbol=NVDA&interval=5m&count=200",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(result).toMatchObject({ demoData: false, source: { source: "moomoo" } });
+  });
+
+  it("surfaces an unavailable snapshot as a typed error instead of falling back", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse(
+        {
+          schemaVersion: "2",
+          source: "moomoo",
+          sourceStatus: "unavailable",
+          error: { code: "LOGIN_REQUIRED" },
+        },
+        503,
+      ),
+    ) as unknown as typeof fetch;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(client.getStockSnapshot("NVDA", "5m")).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind: "login-required",
+    } satisfies Partial<GatewayRequestError>);
+  });
+
+  it.each([
+    ["offline", async () => { throw new Error("offline"); }, "offline"],
+    [
+      "permission denied",
+      async () => jsonResponse({ error: { code: "PERMISSION_DENIED" } }, 403),
+      "permission",
+    ],
+    [
+      "stale",
+      async () => jsonResponse({ sourceStatus: "stale", error: { code: "STALE_DATA" } }, 503),
+      "stale",
+    ],
+    ["malformed", async () => jsonResponse({ schemaVersion: "wrong" }), "malformed"],
+    [
+      "timeout",
+      async () => { throw Object.assign(new Error("timeout"), { name: "AbortError" }); },
+      "timeout",
+    ],
+  ])("classifies %s snapshot failures without a fixture fallback", async (_label, reply, kind) => {
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl: jest.fn(reply) as unknown as typeof fetch,
+      now: () => now,
+    });
+
+    await expect(client.getStockSnapshot("NVDA", "5m")).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind,
     });
   });
 });
