@@ -1,2 +1,6 @@
 .superpowers/
 .worktrees/
+.agents/
+skills-lock.json
+__pycache__/
+*.pyc
