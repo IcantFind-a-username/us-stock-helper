@@ -113,6 +113,10 @@ class FeedPollMetadata:
 class FeedPollResult:
     events: tuple[EvidenceEvent, ...]
     metadata: FeedPollMetadata
+    # True when the coordinator declined to ask, so an empty result is not
+    # mistaken for a quiet feed.
+    throttled: bool = False
+    retry_after_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

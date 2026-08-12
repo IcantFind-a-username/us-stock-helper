@@ -340,7 +340,10 @@ class SecAndCoordinatorTests(unittest.TestCase):
             response(b"", status=304, headers=(("ETag", '"v1"'),)),
         )
         adapter = GenericFeedAdapter(config(), transport)
-        coordinator = PollingCoordinator()
+        # A clock that steps past the poll interval: these tests are about
+        # cache validators and revisions, not about throttling.
+        ticks = iter([NOW + timedelta(minutes=5 * step) for step in range(10)])
+        coordinator = PollingCoordinator(clock=lambda: next(ticks))
 
         first = coordinator.poll(
             adapter,
@@ -365,7 +368,10 @@ class SecAndCoordinatorTests(unittest.TestCase):
         )
         transport = FakeTransport(response(), response(changed), response(changed))
         adapter = GenericFeedAdapter(config(), transport)
-        coordinator = PollingCoordinator()
+        # A clock that steps past the poll interval: these tests are about
+        # cache validators and revisions, not about throttling.
+        ticks = iter([NOW + timedelta(minutes=5 * step) for step in range(10)])
+        coordinator = PollingCoordinator(clock=lambda: next(ticks))
 
         first = coordinator.poll(
             adapter,
