@@ -335,11 +335,15 @@ def _indicators(
             "direction": magic.direction.value if magic else None,
             "count": magic.count if magic else 0,
             "completed": magic.completed if magic else False,
-            "perfected": magic.perfected if magic else False,
+            "perfected": magic.perfected if magic else None,
             "confirmedAtIndex": magic.confirmed_at_index if magic else None,
             "lastCompleted": _last_completed_setup(setup),
             "methodVersion": TD_SETUP_VERSION,
-            "qualityStatus": "live" if magic else "unavailable",
+            # Availability describes whether the count could be computed at
+            # all. A neutral bar ends the run, and "no run in progress" is a
+            # computed answer of zero — reporting it as unavailable hid any
+            # completed setup the series still carried.
+            "qualityStatus": "live" if setup is not None else "unavailable",
         },
     }
 

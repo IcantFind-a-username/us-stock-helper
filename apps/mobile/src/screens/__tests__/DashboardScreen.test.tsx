@@ -273,6 +273,11 @@ it("renders verified moomoo watchlist rows without fixture fallback", async () =
   expect(view.queryByText("谨慎偏多")).toBeNull();
   expect(view.queryByTestId("priority-alert-card")).toBeNull();
   expect(view.queryByTestId("candidate-list")).toBeNull();
+  // The header consumed the same fixture: it announced a fixture data-health
+  // verdict and a fixture timestamp while labelling real quotes as demo data.
+  expect(view.queryByText(/数据新鲜|数据冲突|数据不足/)).toBeNull();
+  expect(view.queryByText(/更新 10:30/)).toBeNull();
+  expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
 });
 
 it("keeps verified rows and their original time when a refresh becomes stale", async () => {

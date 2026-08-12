@@ -190,6 +190,7 @@ export function DashboardScreen() {
   return (
     <Screen hideGlobalHeader style={styles.dashboard}>
       <DashboardHeader
+        demoMode={demoMode}
         health={snapshot.dataHealth}
         marketSession={snapshot.marketSession}
         onAlerts={() => router.push("/alerts")}

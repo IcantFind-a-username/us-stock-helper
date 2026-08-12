@@ -90,7 +90,13 @@ def dragon_trend(
     medium_line = warmup_ema_series(closes, medium_period)
     slow_line = warmup_ema_series(closes, slow_period)
     atr_line = wilder_atr(rows, atr_period)
-    volume_line = warmup_ema_series(volumes, volume_period)
+    # Simple average of the bars *before* each one: the published methodology
+    # says SMA, and a baseline that already contains the bar being measured
+    # divides a spike by a mean the spike itself inflated.
+    volume_line: list[float | None] = [None] * len(rows)
+    for index in range(volume_period, len(rows)):
+        window = volumes[index - volume_period : index]
+        volume_line[index] = sum(window) / volume_period
 
     states: list[TrendState] = []
     strength: list[float | None] = []

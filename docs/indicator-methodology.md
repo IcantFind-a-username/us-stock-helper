@@ -48,7 +48,9 @@ repository is an independent, fully disclosed trend system:
 
 - EMA 8 / 21 / 55 alignment for trend state.
 - Wilder ATR 14 around the slow line for a dynamic risk channel.
-- Relative volume against SMA 20 for transition confidence.
+- Relative volume for transition confidence: the bar's volume over the simple
+  average of the twenty bars *before* it. The bar is excluded from its own
+  baseline, so a spike is not divided by a mean it inflated.
 - Signals only on a state transition and only use current or earlier candles.
 
 Its parameters will be optimized only through walk-forward validation. It is

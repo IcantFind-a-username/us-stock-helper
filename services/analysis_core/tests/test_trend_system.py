@@ -208,6 +208,34 @@ class DragonTrendTests(unittest.TestCase):
         assert loud_turn[-1].relative_volume is not None
         self.assertGreater(loud_turn[-1].relative_volume, 1.2)
 
+    def test_relative_volume_compares_against_prior_bars_only(self) -> None:
+        # The bar's own volume must not sit in its own baseline: an exponential
+        # average that has already absorbed a fifty-fold spike reports it as
+        # roughly nine-fold, understating exactly the event being measured.
+        closes = [200.0 - index for index in range(90)] + [
+            111.0 + index * 4.0 for index in range(60)
+        ]
+
+        def build(turn_volume: float, turn_index: int) -> tuple[OHLCVBar, ...]:
+            return tuple(
+                bar(index, close, volume=turn_volume if index == turn_index else 1_000.0)
+                for index, close in enumerate(closes)
+            )
+
+        turn_index = next(
+            signal.confirmed_at_index
+            for signal in dragon_trend(build(1_000.0, -1)).signals
+            if signal.direction is Direction.BULLISH
+        )
+        signal = next(
+            item
+            for item in dragon_trend(build(50_000.0, turn_index)).signals
+            if item.confirmed_at_index == turn_index
+        )
+
+        assert signal.relative_volume is not None
+        self.assertAlmostEqual(signal.relative_volume, 50.0, places=6)
+
     def test_the_first_measurable_bar_is_not_reported_as_a_transition(self) -> None:
         # A transition means the regime changed. At the first bar where a
         # regime can be computed at all there is no earlier regime to change
@@ -375,3 +403,17 @@ class TdSetupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MethodologyDocumentationTests(unittest.TestCase):
+    def test_the_published_volume_baseline_matches_the_code(self) -> None:
+        from pathlib import Path
+
+        doc = (
+            Path(__file__).resolve().parents[3] / "docs/indicator-methodology.md"
+        ).read_text(encoding="utf-8")
+
+        # The document is the project's public algorithm spec; a claim it makes
+        # about the baseline has to be the baseline the code actually uses.
+        self.assertIn("simple\n  average of the twenty bars *before* it", doc)
+        self.assertNotIn("Relative volume against SMA 20", doc)

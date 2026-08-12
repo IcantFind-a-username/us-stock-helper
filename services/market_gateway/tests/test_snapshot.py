@@ -327,6 +327,50 @@ class StockSnapshotTests(unittest.TestCase):
             response["error"]["code"], ErrorCode.MALFORMED_PROVIDER_DATA.value
         )
 
+    def test_no_run_in_progress_is_an_answer_not_an_absence(self) -> None:
+        # A neutral last bar (close equal to the close four bars back) ends the
+        # count. The calculation succeeded and found zero — that is a result,
+        # not a failure to compute, and calling it unavailable hid a real
+        # completed nine from the screen.
+        rows = list(self.provider.candle_result.items)
+        completed = [row for row in rows if row["complete"]]
+        last = dict(completed[-1])
+        target = float(completed[-5]["close"])
+        last.update(
+            {
+                "close": target,
+                "open": target - 0.25,
+                "high": target + 0.5,
+                "low": target - 0.5,
+            }
+        )
+        rows[len(completed) - 1] = last
+        self.provider.candle_result = ProviderBatch(
+            "moomoo", self.provider.candle_result.received_at, rows
+        )
+
+        magic_nine = self.service.stock_snapshot("NVDA", "5m", 200)["indicators"][
+            "magicNine"
+        ]
+
+        self.assertEqual(magic_nine["qualityStatus"], "live")
+        self.assertEqual(magic_nine["count"], 0)
+        self.assertIsNone(magic_nine["direction"])
+        self.assertFalse(magic_nine["completed"])
+        self.assertIsNotNone(magic_nine["lastCompleted"])
+
+    def test_magic_nine_is_unavailable_only_when_it_cannot_be_computed(self) -> None:
+        self.provider.candle_result = ProviderBatch(
+            "moomoo", self.provider.candle_result.received_at, []
+        )
+
+        magic_nine = self.service.stock_snapshot("NVDA", "5m", 200)["indicators"][
+            "magicNine"
+        ]
+
+        self.assertEqual(magic_nine["qualityStatus"], "unavailable")
+        self.assertIsNone(magic_nine["lastCompleted"])
+
     def test_magic_nine_reports_no_completed_setup_when_none_has_closed(self) -> None:
         self.provider.candle_result = ProviderBatch(
             "moomoo",

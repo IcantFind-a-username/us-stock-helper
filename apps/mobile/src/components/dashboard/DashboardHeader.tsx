@@ -19,6 +19,7 @@ const actionSymbols = {
 type DashboardHeaderProps = {
   marketSession: string;
   health: DataHealth;
+  demoMode: boolean;
   updatedAt: string;
   onSearch(): void;
   onAlerts(): void;
@@ -28,17 +29,26 @@ export function DashboardHeader({
   marketSession,
   health,
   updatedAt,
+  demoMode,
   onSearch,
   onAlerts,
 }: DashboardHeaderProps) {
   return (
     <View testID="dashboard-header" style={styles.header}>
       <View style={styles.copy}>
-        <Text style={styles.session}>
-          {marketSession} · {healthLabels[health]} · 更新 {updatedAt.slice(11, 16)}
-        </Text>
+        {/* The session line and the demo label both come from the fixture, so
+            outside demo mode they would announce an invented data-health
+            verdict and timestamp over real quotes. */}
+        {demoMode ? (
+          <Text style={styles.session}>
+            {marketSession} · {healthLabels[health]} · 更新{" "}
+            {updatedAt.slice(11, 16)}
+          </Text>
+        ) : null}
         <Text style={styles.greeting}>早上好，Franz</Text>
-        <Text style={styles.demoStatus}>演示数据 · 非实时行情</Text>
+        {demoMode ? (
+          <Text style={styles.demoStatus}>演示数据 · 非实时行情</Text>
+        ) : null}
       </View>
       <View style={styles.actions}>
         <Pressable
