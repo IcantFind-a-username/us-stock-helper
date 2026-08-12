@@ -20,6 +20,7 @@ from information_layer import (
 from us_stock_helper_core import (
     ADVISER_SCORE_CAP,
     CalibrationStatus,
+    estimate_annualized_volatility,
     EvidenceKind,
     EvidenceRecord,
     HardGate,
@@ -48,12 +49,17 @@ class DecisionInputs:
     evidence: tuple[EvidenceEvent, ...]
     current_price: float
     current_price_available_at: datetime
-    annualized_volatility: float
-    volatility_available_at: datetime
-    macro: float
-    geopolitics: float
-    institutional_flow: float
-    fundamentals: float
+    # None means measure it from the bars. A caller on the live path has
+    # candles but no volatility service, and requiring a number means
+    # inventing one.
+    annualized_volatility: float | None
+    volatility_available_at: datetime | None
+    # None means no source supplies the factor. Passing zero would state a
+    # neutral judgement nobody made.
+    macro: float | None
+    geopolitics: float | None
+    institutional_flow: float | None
+    fundamentals: float | None
     risk_preference: RiskPreference
     invalidation_conditions: tuple[str, ...]
     hard_gates: tuple[HardGate, ...] = ()
@@ -66,16 +72,23 @@ class DecisionInputs:
             self.current_price_available_at,
             "current_price_available_at",
         )
-        require_utc(
-            self.volatility_available_at,
-            "volatility_available_at",
-        )
-        if (
-            self.current_price_available_at > self.as_of
-            or self.volatility_available_at > self.as_of
+        if self.volatility_available_at is not None:
+            require_utc(
+                self.volatility_available_at,
+                "volatility_available_at",
+            )
+        if self.current_price_available_at > self.as_of or (
+            self.volatility_available_at is not None
+            and self.volatility_available_at > self.as_of
         ):
             raise ValueError(
                 "price and volatility availability cannot be after as_of"
+            )
+        if (self.annualized_volatility is None) != (
+            self.volatility_available_at is None
+        ):
+            raise ValueError(
+                "a supplied volatility needs its availability time, and vice versa"
             )
         if not self.symbol.strip():
             raise ValueError("symbol is required")
@@ -85,7 +98,9 @@ class DecisionInputs:
             "institutional_flow",
             "fundamentals",
         ):
-            require_unit_range(getattr(self, name), name)
+            value = getattr(self, name)
+            if value is not None:
+                require_unit_range(value, name)
         if not self.invalidation_conditions:
             raise ValueError("invalidation_conditions are required")
 
@@ -96,8 +111,10 @@ class DecisionOutput:
     baseline_score: ScoreResult
     adjusted_score: ScoreResult
     adviser_adjustment: float
-    forecast: ScenarioForecast
-    risk_plan: RiskPlan
+    # None when volatility could not be measured: a scenario range with an
+    # invented width would look exactly as trustworthy as a real one.
+    forecast: ScenarioForecast | None
+    risk_plan: RiskPlan | None
 
 
 class DecisionEngine:
@@ -162,10 +179,26 @@ class DecisionEngine:
             packet,
             inputs.evidence,
         )
+        volatility = inputs.annualized_volatility
+        if volatility is None:
+            # Measure it from the same bars the score used, so the forecast
+            # width comes from what this market has actually done.
+            measured = estimate_annualized_volatility(inputs.bars, inputs.as_of)
+            volatility = measured.value
+        if volatility is None:
+            # No width can be stated honestly, so no scenario range is offered.
+            return DecisionOutput(
+                evidence_packet=packet,
+                baseline_score=baseline,
+                adjusted_score=adjusted,
+                adviser_adjustment=adjustment,
+                forecast=None,
+                risk_plan=None,
+            )
         forecast = build_scenario_forecast(
             adjusted,
             current_price=inputs.current_price,
-            annualized_volatility=inputs.annualized_volatility,
+            annualized_volatility=volatility,
             calibration_status=CalibrationStatus.UNCALIBRATED,
             invalidation_conditions=inputs.invalidation_conditions,
             citation_ids=tuple(

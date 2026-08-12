@@ -296,3 +296,102 @@ class UnmeasuredSentimentBridgeTests(unittest.TestCase):
         # Without this the flag stops at the information layer and unreadable
         # articles rejoin the score as neutral opinions.
         self.assertIn("sentiment_measured=item.sentiment_measured", source)
+
+
+class LiveInputAvailabilityTests(unittest.TestCase):
+    def test_the_engine_measures_volatility_when_none_is_supplied(self) -> None:
+        # Callers on the live path have bars but no volatility service; making
+        # them pass a number means making one up.
+        import inspect
+
+        from decision_engine import engine as engine_module
+
+        source = inspect.getsource(engine_module)
+        self.assertIn("estimate_annualized_volatility", source)
+
+    def test_absent_factors_reach_scoring_as_unavailable(self) -> None:
+        import inspect
+
+        from decision_engine import engine as engine_module
+
+        source = inspect.getsource(engine_module)
+        # Passing zeros for macro, geopolitics and institutional flow would
+        # state neutral judgements no source made.
+        self.assertIn("float | None", source)
+
+
+class LivePathEndToEndTests(unittest.TestCase):
+    def test_the_engine_runs_on_market_data_and_news_alone(self) -> None:
+        """The shape a live caller actually has today.
+
+        Price and news reach the live path; macro, geopolitics, institutional
+        flow and fundamentals have no feed, and nothing serves volatility.
+        Before this the only way to call the engine was to invent all five.
+        """
+
+        from us_stock_helper_core import Horizon, RiskPreference
+
+        rows = bars()
+        inputs = DecisionInputs(
+            symbol="NVDA",
+            horizon=Horizon.SHORT,
+            as_of=AS_OF,
+            bars=rows,
+            evidence=(event("a", status=ClaimStatus.VERIFIED),),
+            current_price=rows[-1].close,
+            current_price_available_at=AS_OF,
+            annualized_volatility=None,
+            volatility_available_at=None,
+            macro=None,
+            geopolitics=None,
+            institutional_flow=None,
+            fundamentals=None,
+            risk_preference=RiskPreference.BALANCED,
+            invalidation_conditions=("Guidance is withdrawn.",),
+        )
+
+        output = DecisionEngine().evaluate(inputs)
+
+        self.assertIsNotNone(output.forecast)
+        self.assertIsNotNone(output.risk_plan)
+        self.assertEqual(
+            output.adjusted_score.unavailable_factors,
+            ("fundamentals", "geopolitics", "institutional_flow", "macro"),
+        )
+        self.assertLess(output.adjusted_score.factor_coverage, 1.0)
+        self.assertGreater(output.adjusted_score.factor_coverage, 0.0)
+
+    def test_a_flat_market_yields_no_forecast_rather_than_a_zero_width_one(
+        self,
+    ) -> None:
+        from us_stock_helper_core import Horizon, RiskPreference
+
+        flat = tuple(
+            replace(row, open=100.0, high=100.0, low=100.0, close=100.0)
+            for row in bars()
+        )
+        inputs = DecisionInputs(
+            symbol="NVDA",
+            horizon=Horizon.SHORT,
+            as_of=AS_OF,
+            bars=flat,
+            evidence=(event("a", status=ClaimStatus.VERIFIED),),
+            current_price=flat[-1].close,
+            current_price_available_at=AS_OF,
+            annualized_volatility=None,
+            volatility_available_at=None,
+            macro=None,
+            geopolitics=None,
+            institutional_flow=None,
+            fundamentals=None,
+            risk_preference=RiskPreference.BALANCED,
+            invalidation_conditions=("Guidance is withdrawn.",),
+        )
+
+        output = DecisionEngine().evaluate(inputs)
+
+        # A band of no width presented with the same confidence as a measured
+        # one is worse than saying nothing.
+        self.assertIsNone(output.forecast)
+        self.assertIsNone(output.risk_plan)
+        self.assertIsNotNone(output.adjusted_score)
