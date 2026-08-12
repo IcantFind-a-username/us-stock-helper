@@ -153,6 +153,8 @@ class ParticipationBar:
         if self.quality_status == "unavailable":
             if self.main_share is not None or self.retail_share is not None:
                 raise ValueError("unavailable participation has no shares")
+            if any(value is not None for value in values):
+                raise ValueError("unavailable participation requires null metrics")
             if self.missing_reason is None or not self.missing_reason.strip():
                 raise ValueError("unavailable participation requires a missing reason")
             return
@@ -172,6 +174,15 @@ class ParticipationBar:
             raise ValueError("shares must be between 0 and 1")
         if sum(shares) != 1.0:
             raise ValueError("shares must sum to 1")
+        if self.coverage != 1.0:
+            raise ValueError("live participation requires complete coverage")
+        activity_total = self.main_activity + self.retail_activity
+        if not isfinite(activity_total):
+            raise ValueError("total activity must be finite")
+        if activity_total <= 0.0:
+            raise ValueError("live participation requires positive activity")
+        if self.main_share != self.main_activity / activity_total:
+            raise ValueError("shares must equal the activity-derived ratio")
 
 
 @dataclass(frozen=True, slots=True)

@@ -371,6 +371,12 @@ class SmokeRealSnapshotTests(unittest.TestCase):
 
         self.assert_rejected(payload)
 
+    def test_rejects_live_participation_without_exact_complete_coverage(self) -> None:
+        payload = valid_snapshot()
+        payload["participationBars"][1]["coverage"] = 0.9999999999999999
+
+        self.assert_rejected(payload)
+
     def test_rejects_live_shares_not_derived_from_activity(self) -> None:
         payload = valid_snapshot()
         bar = payload["participationBars"][1]

@@ -210,53 +210,68 @@ export function DashboardScreen() {
           />
         </View>
       ) : null}
-      <MarketRegimeHero
-        advice={snapshot.marketAdvice}
-        conclusion={snapshot.marketConclusion}
-        drivers={snapshot.marketDrivers}
-        onOpenDetail={() =>
-          openDetail(
-            "市场完整依据",
-            marketSections,
-            [
-              ...snapshot.dataHealthCitationIds,
-              ...snapshot.marketDrivers.flatMap((driver) => driver.citationIds),
-            ],
-          )
-        }
-        rationale={snapshot.marketRationale}
-        score={snapshot.marketScore}
-        updatedAt={snapshot.updatedAt}
-      />
-      <View style={styles.section}>
-        <DashboardSectionHeader
-          actionLabel="全部提醒 ›"
-          onAction={() => router.push("/alerts")}
-          title="需要关注"
-        />
-        <PriorityAlertCard
-          alert={snapshot.priorityAlert}
+      {demoMode ? (
+        <MarketRegimeHero
+          advice={snapshot.marketAdvice}
+          conclusion={snapshot.marketConclusion}
+          drivers={snapshot.marketDrivers}
           onOpenDetail={() =>
             openDetail(
-              `${snapshot.priorityAlert.symbol} 提醒依据`,
+              "市场完整依据",
+              marketSections,
               [
-                { label: "当前状态", body: snapshot.priorityAlert.currentState },
-                { label: "来源覆盖", body: snapshot.priorityAlert.sourceCoverage },
-                { label: "失效条件", body: snapshot.priorityAlert.invalidation },
+                ...snapshot.dataHealthCitationIds,
+                ...snapshot.marketDrivers.flatMap((driver) => driver.citationIds),
               ],
-              snapshot.priorityAlert.citations.map((citation) => citation.id),
             )
           }
-          onPress={() => openStock(snapshot.priorityAlert.symbol)}
+          rationale={snapshot.marketRationale}
+          score={snapshot.marketScore}
+          updatedAt={snapshot.updatedAt}
         />
-      </View>
+      ) : (
+        <View style={styles.analysisPlaceholder}>
+          <Text style={styles.analysisPlaceholderTitle}>
+            市场分析尚未接入真实数据
+          </Text>
+          <Text style={styles.analysisPlaceholderHint}>
+            市场结论、优先提醒与候选列表只在演示模式展示确定性演示内容；真实分析上线前不显示任何推断结论。
+          </Text>
+        </View>
+      )}
+      {demoMode ? (
+        <View style={styles.section}>
+          <DashboardSectionHeader
+            actionLabel="全部提醒 ›"
+            onAction={() => router.push("/alerts")}
+            title="需要关注"
+          />
+          <PriorityAlertCard
+            alert={snapshot.priorityAlert}
+            onOpenDetail={() =>
+              openDetail(
+                `${snapshot.priorityAlert.symbol} 提醒依据`,
+                [
+                  { label: "当前状态", body: snapshot.priorityAlert.currentState },
+                  { label: "来源覆盖", body: snapshot.priorityAlert.sourceCoverage },
+                  { label: "失效条件", body: snapshot.priorityAlert.invalidation },
+                ],
+                snapshot.priorityAlert.citations.map((citation) => citation.id),
+              )
+            }
+            onPress={() => openStock(snapshot.priorityAlert.symbol)}
+          />
+        </View>
+      ) : null}
       {watchlistSurface}
-      <CandidateList
-        candidates={snapshot.candidates}
-        onOpenDiscover={() => router.push("/discover")}
-        onOpenEvidence={openCandidateEvidence}
-        onPress={openStock}
-      />
+      {demoMode ? (
+        <CandidateList
+          candidates={snapshot.candidates}
+          onOpenDiscover={() => router.push("/discover")}
+          onOpenEvidence={openCandidateEvidence}
+          onPress={openStock}
+        />
+      ) : null}
       <DashboardDetailSheet
         citations={detail?.citations ?? []}
         onClose={() => setDetail(null)}
@@ -296,6 +311,14 @@ const styles = StyleSheet.create({
   },
   demoModeLabel: { color: colors.ink, fontSize: 11, fontWeight: "800" },
   demoModeHint: { color: colors.muted, fontSize: 9, marginTop: 2 },
+  analysisPlaceholder: {
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  analysisPlaceholderTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  analysisPlaceholderHint: { color: colors.muted, fontSize: 10, lineHeight: 15 },
   watchlistState: { gap: spacing.xs },
   watchlistTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
   watchlistStatusRow: {

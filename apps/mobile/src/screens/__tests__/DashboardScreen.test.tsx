@@ -269,6 +269,10 @@ it("renders verified moomoo watchlist rows without fixture fallback", async () =
     view.queryByRole("button", { name: /NVDA 行情详情.*143\.80/ }),
   ).toBeNull();
   expect(view.queryByText("演示数据 · 非实时")).toBeNull();
+  expect(view.getByText("市场分析尚未接入真实数据")).toBeTruthy();
+  expect(view.queryByText("谨慎偏多")).toBeNull();
+  expect(view.queryByTestId("priority-alert-card")).toBeNull();
+  expect(view.queryByTestId("candidate-list")).toBeNull();
 });
 
 it("keeps verified rows and their original time when a refresh becomes stale", async () => {
@@ -318,6 +322,8 @@ it("shows one actionable unavailable state with the error category", async () =>
   expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
   expect(view.queryByTestId("watchlist-grid")).toBeNull();
   expect(view.queryByTestId("watchlist-quote")).toBeNull();
+  expect(view.getByText("市场分析尚未接入真实数据")).toBeTruthy();
+  expect(view.queryByText("谨慎偏多")).toBeNull();
 });
 
 it("shows login-required without rendering fallback rows", async () => {

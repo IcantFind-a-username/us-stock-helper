@@ -178,10 +178,17 @@ def _flow_points(
             big_net=float(item["largeOrderNetFlow"]),
             mid_net=float(item["mediumOrderNetFlow"]),
             small_net=float(item["smallOrderNetFlow"]),
-            session=parse_aware(item["timestamp"], "flow timestamp").date().isoformat(),
+            session=_flow_session(item),
         )
         for item in items
     ]
+
+
+def _flow_session(item: dict[str, Any]) -> str:
+    session = item["session"]
+    if not isinstance(session, str) or not session.strip():
+        raise ValueError("flow session metadata is malformed")
+    return session
 
 
 def _unavailable_participation(bars: tuple[OHLCVBar, ...]) -> list[dict[str, Any]]:

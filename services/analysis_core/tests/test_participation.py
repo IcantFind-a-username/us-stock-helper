@@ -158,6 +158,68 @@ class CapitalFlowValidationTests(unittest.TestCase):
                 method_version="order-size-activity-share-v1",
             )
 
+    def test_participation_bar_requires_exact_complete_activity_semantics(self) -> None:
+        valid = {
+            "symbol": "NVDA",
+            "interval": "5m",
+            "closed_at": at(9, 35),
+            "available_at": at(9, 35),
+            "main_share": 0.6,
+            "retail_share": 0.4,
+            "main_activity": 6.0,
+            "retail_activity": 4.0,
+            "net_flow": 0.0,
+            "coverage": 1.0,
+            "quality_status": "live",
+            "missing_reason": None,
+            "method_version": "order-size-activity-share-v1",
+        }
+
+        with self.assertRaisesRegex(ValueError, "complete coverage"):
+            ParticipationBar(**{**valid, "coverage": 0.9999999999999999})
+        with self.assertRaisesRegex(ValueError, "activity-derived"):
+            ParticipationBar(
+                **{**valid, "main_share": 0.5, "retail_share": 0.5}
+            )
+        with self.assertRaisesRegex(ValueError, "positive"):
+            ParticipationBar(
+                **{
+                    **valid,
+                    "main_share": 0.5,
+                    "retail_share": 0.5,
+                    "main_activity": 0.0,
+                    "retail_activity": 0.0,
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "finite"):
+            ParticipationBar(
+                **{
+                    **valid,
+                    "main_share": 0.0,
+                    "retail_share": 1.0,
+                    "main_activity": 1e308,
+                    "retail_activity": 1e308,
+                }
+            )
+
+    def test_unavailable_participation_rejects_zero_activity_repair(self) -> None:
+        with self.assertRaisesRegex(ValueError, "null metrics"):
+            ParticipationBar(
+                symbol="NVDA",
+                interval="5m",
+                closed_at=at(9, 35),
+                available_at=at(9, 35),
+                main_share=None,
+                retail_share=None,
+                main_activity=0.0,
+                retail_activity=0.0,
+                net_flow=0.0,
+                coverage=1.0,
+                quality_status="unavailable",
+                missing_reason="zero activity denominator",
+                method_version="order-size-activity-share-v1",
+            )
+
 
 class ParticipationAggregationTests(unittest.TestCase):
     def test_aggregates_cumulative_order_size_activity_within_one_session(self) -> None:

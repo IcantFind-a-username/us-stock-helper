@@ -8,6 +8,9 @@ from us_stock_helper_market_gateway.http_gateway import (
     GatewayServerConfig,
     _encode_response_body,
 )
+from us_stock_helper_market_gateway.errors import ErrorCode, GatewayError
+from us_stock_helper_market_gateway.models import SessionHealth
+from us_stock_helper_market_gateway.service import MarketGatewayService
 
 
 class StubService:
@@ -127,13 +130,31 @@ class GatewayServerConfigTests(unittest.TestCase):
 
         complete = {
             **incomplete,
-            "MOOMOO_GATEWAY_TOKEN": "long-random-runtime-secret",
+            "MOOMOO_GATEWAY_TOKEN": "0123456789abcdef0123456789abcdef",
             "MOOMOO_GATEWAY_ALLOWED_CLIENTS": "192.168.50.0/24",
             "MOOMOO_GATEWAY_ALLOWED_ORIGINS": "http://192.168.50.20:8081",
         }
         config = GatewayServerConfig.from_environment(complete)
         self.assertTrue(config.allow_lan)
         self.assertEqual(config.allowed_client_networks, ("192.168.50.0/24",))
+
+    def test_lan_configuration_rejects_weak_tokens_and_world_cidrs(self) -> None:
+        base = {
+            "MOOMOO_GATEWAY_ALLOW_LAN": "1",
+            "MOOMOO_GATEWAY_HOST": "0.0.0.0",
+            "MOOMOO_GATEWAY_TOKEN": "0123456789abcdef0123456789abcdef",
+            "MOOMOO_GATEWAY_ALLOWED_CLIENTS": "192.168.50.0/24",
+        }
+        with self.assertRaisesRegex(ValueError, "32"):
+            GatewayServerConfig.from_environment(
+                {**base, "MOOMOO_GATEWAY_TOKEN": "x" * 31}
+            )
+        for cidr in ("0.0.0.0/0", "::/0"):
+            with self.subTest(cidr=cidr):
+                with self.assertRaisesRegex(ValueError, "broad"):
+                    GatewayServerConfig.from_environment(
+                        {**base, "MOOMOO_GATEWAY_ALLOWED_CLIENTS": cidr}
+                    )
 
 
 class GatewayApplicationTests(unittest.TestCase):
@@ -206,7 +227,7 @@ class GatewayApplicationTests(unittest.TestCase):
         self.assertEqual(body["error"]["code"], "ORIGIN_NOT_ALLOWED")
 
     def test_lan_mode_requires_bearer_token_without_echoing_it(self) -> None:
-        token = "long-random-runtime-secret"
+        token = "0123456789abcdef0123456789abcdef"
         config = GatewayServerConfig.from_environment(
             {
                 "MOOMOO_GATEWAY_ALLOW_LAN": "1",
@@ -239,7 +260,7 @@ class GatewayApplicationTests(unittest.TestCase):
             {
                 "MOOMOO_GATEWAY_ALLOW_LAN": "1",
                 "MOOMOO_GATEWAY_HOST": "0.0.0.0",
-                "MOOMOO_GATEWAY_TOKEN": "long-random-runtime-secret",
+                "MOOMOO_GATEWAY_TOKEN": "0123456789abcdef0123456789abcdef",
                 "MOOMOO_GATEWAY_ALLOWED_CLIENTS": "192.168.50.0/24",
                 "MOOMOO_GATEWAY_ALLOWED_ORIGINS": origin,
             }
@@ -286,6 +307,40 @@ class GatewayApplicationTests(unittest.TestCase):
         self.assertEqual(body["schemaVersion"], "2")
         self.assertEqual(body["symbol"], "NVDA")
         self.assertEqual(body["interval"], "5m")
+
+    def test_mid_operation_opend_offline_maps_to_retryable_http_503(self) -> None:
+        class OfflineDuringCandlesProvider:
+            def health(self) -> SessionHealth:
+                return SessionHealth(
+                    "healthy",
+                    datetime(2026, 7, 25, 4, 0, tzinfo=timezone.utc),
+                    "moomoo",
+                )
+
+            def quotes(self, codes: list[str]) -> object:
+                raise GatewayError(
+                    ErrorCode.OPEND_OFFLINE,
+                    "moomoo OpenD is offline",
+                    retriable=True,
+                )
+
+        service = MarketGatewayService(
+            OfflineDuringCandlesProvider(),  # type: ignore[arg-type]
+            clock=lambda: datetime(2026, 7, 25, 4, 0, tzinfo=timezone.utc),
+        )
+        app = GatewayApplication(service, self.config)
+
+        status, _, body = app.handle(
+            "GET",
+            "/stock-snapshot",
+            {"symbol": ["NVDA"], "interval": ["5m"], "count": ["200"]},
+            {},
+            "127.0.0.1",
+        )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"]["code"], "OPEND_OFFLINE")
+        self.assertTrue(body["error"]["retriable"])
 
     def test_preflight_uses_zero_length_body(self) -> None:
         self.assertEqual(_encode_response_body("OPTIONS", 204, {}), b"")

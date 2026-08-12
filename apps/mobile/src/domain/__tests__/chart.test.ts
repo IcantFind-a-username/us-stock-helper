@@ -86,7 +86,7 @@ const participationBars: ParticipationBar[] = [
     mainActivity: 50,
     retailActivity: 150,
     netFlow: 30,
-    coverage: 0.8,
+    coverage: 1,
     source: "moomoo",
     asOf: candles[1]!.timestamp,
     availableAt: candles[1]!.availableAt,
@@ -199,7 +199,7 @@ it("rejects incomplete and future-available candles at the explicit decision cut
   expect(geometry.priceMax).toBe(safeGeometry.priceMax);
 });
 
-it("draws MA5 only from five point-in-time completed closes", () => {
+it("does not derive an MA5 chart path from client candle closes", () => {
   const fiveCandles: Candle[] = Array.from({ length: 5 }, (_, index) => ({
     timestamp: `2026-07-24T09:${String(30 + index * 5).padStart(2, "0")}:00-04:00`,
     availableAt: `2026-07-24T09:${String(30 + index * 5).padStart(2, "0")}:01-04:00`,
@@ -220,7 +220,7 @@ it("draws MA5 only from five point-in-time completed closes", () => {
     250,
   );
 
-  expect(geometry.ma5Path).toMatch(/^M /);
+  expect(geometry.ma5Path).toBe("");
 });
 
 it("uses the available phone width while keeping chart geometry bounded", () => {
@@ -302,6 +302,45 @@ it("keeps a missing participation value as an unavailable empty slot", () => {
     height: 16,
     mainHeight: 0,
     retailHeight: 0,
+  });
+});
+
+it("renders only exact complete activity-derived participation as usable", () => {
+  const invalidBars: ParticipationBar[] = [
+    { ...participationBars[0]!, coverage: 0.9999999999999999 },
+    { ...participationBars[0]!, mainActivity: -1 },
+    {
+      ...participationBars[0]!,
+      mainShare: 0.5,
+      retailShare: 0.5,
+      mainActivity: 0,
+      retailActivity: 0,
+    },
+    {
+      ...participationBars[0]!,
+      mainShare: 0.5,
+      retailShare: 0.5,
+      mainActivity: 60,
+      retailActivity: 40,
+    },
+    { ...participationBars[0]!, mainShare: 0.6000000001 },
+  ];
+
+  invalidBars.forEach((invalid) => {
+    const geometry = buildChartGeometry(
+      candles,
+      forecast,
+      [invalid, participationBars[1]!],
+      decisionCutoff,
+      360,
+      250,
+    );
+
+    expect(geometry.participation[0]).toMatchObject({
+      available: false,
+      mainHeight: 0,
+      retailHeight: 0,
+    });
   });
 });
 

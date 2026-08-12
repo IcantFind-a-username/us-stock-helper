@@ -277,6 +277,33 @@ class FutureValidTimeQuoteContext(FakeQuoteContext):
         ),
     )
 
+class CrossUtcSessionQuoteContext(FakeQuoteContext):
+    flow = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.flow[1].records[0],
+                    "capital_flow_item_time": "2026-07-24 23:54:00",
+                }
+            ]
+        ),
+    )
+
+
+class MismatchedFlowCodeQuoteContext(FakeQuoteContext):
+    flow = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.flow[1].records[0],
+                    "code": "US.TSLA",
+                }
+            ]
+        ),
+    )
+
 
 class PagedInstitutionalContext(FakeQuoteContext):
     def get_shareholders_institutional(
@@ -386,6 +413,17 @@ def localized_group_sdk() -> object:
 def future_valid_time_sdk() -> object:
     sdk = fake_sdk()
     sdk.OpenQuoteContext = FutureValidTimeQuoteContext
+    return sdk
+
+def cross_utc_session_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = CrossUtcSessionQuoteContext
+    return sdk
+
+
+def mismatched_flow_code_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = MismatchedFlowCodeQuoteContext
     return sdk
 
 
@@ -537,6 +575,33 @@ class MoomooOpenDProviderTests(unittest.TestCase):
         flow = provider.capital_flow("US.NVDA")
 
         self.assertEqual(flow.items[0]["available_at"], "2026-07-25T15:56:00Z")
+
+    def test_capital_flow_preserves_exchange_session_across_utc_midnight(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=cross_utc_session_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        flow = provider.capital_flow("US.NVDA")
+
+        self.assertEqual(flow.items[0]["timestamp"], "2026-07-25T03:54:00Z")
+        self.assertEqual(flow.items[0]["session"], "2026-07-24")
+
+    def test_capital_flow_rejects_provider_row_code_mismatch(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=mismatched_flow_code_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.capital_flow("US.NVDA")
+
+        self.assertEqual(
+            raised.exception.code,
+            ErrorCode.MALFORMED_PROVIDER_DATA,
+        )
 
     def test_adapter_marks_only_closed_candles_complete(self) -> None:
         provider = MoomooOpenDProvider(

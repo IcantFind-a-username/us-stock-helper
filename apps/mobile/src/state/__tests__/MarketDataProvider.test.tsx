@@ -15,6 +15,7 @@ import {
   type MarketDataSource,
 } from "@/data/marketRepository";
 import {
+  createMarketGatewayClient,
   decodeStockSnapshotEnvelope,
   GatewayRequestError,
 } from "@/data/marketGateway";
@@ -326,6 +327,71 @@ it("runs automatic stale retries through the guarded refreshing state", async ()
     expect(view.getByTestId("NVDA-verified").props.children).toBe(
       recovered.source.asOf,
     );
+    expect(view.getByTestId("NVDA-error").props.children).toBe("none");
+    await view.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it("recovers automatically after a typed mid-operation OpenD offline response", async () => {
+  jest.useFakeTimers();
+  try {
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({
+          schemaVersion: "2",
+          source: "moomoo",
+          sourceStatus: "unavailable",
+          symbol: "NVDA",
+          interval: "5m",
+          decisionCutoff: "2026-07-25T15:59:50.000Z",
+          error: {
+            code: "OPEND_OFFLINE",
+            message: "moomoo OpenD is offline",
+            retriable: true,
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => stockSnapshotFixture(),
+      } as Response);
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => now,
+    });
+    const repository = repositoryWith((query, signal) =>
+      client.getStockSnapshot(
+        query.symbol,
+        query.interval,
+        query.count,
+        signal,
+      ),
+    );
+    const view = await render(
+      <MarketDataProvider repository={repository} retryDelaysMs={[10]}>
+        <SnapshotProbe symbol="NVDA" />
+      </MarketDataProvider>,
+    );
+
+    await waitFor(() =>
+      expect(view.getByTestId("NVDA-error").props.children).toBe("offline"),
+    );
+    expect(view.getByTestId("NVDA-status").props.children).toBe("unavailable");
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10);
+    });
+    await waitFor(() =>
+      expect(view.getByTestId("NVDA-status").props.children).toBe("live"),
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(view.getByTestId("NVDA-error").props.children).toBe("none");
     await view.unmount();
   } finally {

@@ -470,8 +470,22 @@ export function decodeStockSnapshotEnvelope(
     }
     const missingReason: string | null = rawMissingReason;
     if (qualityStatus === "live") {
-      if (mainShare === null || retailShare === null || mainActivity === null || retailActivity === null || netFlow === null || Math.abs(mainShare + retailShare - 1) > 1e-9 || mainShare < 0 || mainShare > 1 || retailShare < 0 || retailShare > 1 || missingReason !== null) {
+      if (mainShare === null || retailShare === null || mainActivity === null || retailActivity === null || netFlow === null || mainShare + retailShare !== 1 || mainShare < 0 || mainShare > 1 || retailShare < 0 || retailShare > 1 || missingReason !== null) {
         throw new GatewayValidationError("live participation bars require complete shares that sum to one");
+      }
+      if (coverage !== 1) {
+        throw new GatewayValidationError("live participation bars require exact complete coverage");
+      }
+      const activityTotal = mainActivity + retailActivity;
+      if (
+        mainActivity < 0 ||
+        retailActivity < 0 ||
+        !Number.isFinite(activityTotal) ||
+        activityTotal <= 0 ||
+        mainShare !== mainActivity / activityTotal ||
+        retailShare !== 1 - mainShare
+      ) {
+        throw new GatewayValidationError("live participation shares must equal the activity-derived ratio");
       }
     } else if (mainShare !== null || retailShare !== null || mainActivity !== null || retailActivity !== null || netFlow !== null || typeof missingReason !== "string" || missingReason.trim() === "") {
       throw new GatewayValidationError("unavailable participation bars require null metrics and a missing reason");
@@ -657,9 +671,9 @@ export function createMarketGatewayClient({
   const isLoopback = new Set(["127.0.0.1", "localhost", "::1"]).has(
     parsedBaseUrl.hostname,
   );
-  if (!isLoopback && (!authorizationToken || authorizationToken.length < 16)) {
+  if (!isLoopback && (!authorizationToken || authorizationToken.length < 32)) {
     throw new GatewayValidationError(
-      "a 16-character or longer ephemeral token is required for a LAN gateway",
+      "a 32-character or longer ephemeral token is required for a LAN gateway",
     );
   }
 

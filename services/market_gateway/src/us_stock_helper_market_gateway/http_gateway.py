@@ -86,12 +86,16 @@ class GatewayServerConfig:
         loopback_host = _is_loopback_host(host)
 
         if allow_lan:
-            if not token or len(token) < 16 or not clients:
+            if not token or len(token) < 32 or not clients:
                 raise ValueError(
-                    "LAN mode requires a 16+ character token and explicit client CIDRs"
+                    "LAN mode requires a 32+ character token and explicit client CIDRs"
                 )
             for network in clients:
-                ipaddress.ip_network(network, strict=False)
+                parsed_network = ipaddress.ip_network(network, strict=False)
+                if parsed_network.prefixlen == 0:
+                    raise ValueError(
+                        "Client CIDR allowlist is too broad; use specific networks"
+                    )
         else:
             if not loopback_host:
                 raise ValueError(

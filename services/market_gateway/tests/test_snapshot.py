@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from us_stock_helper_market_gateway.errors import ErrorCode, GatewayError
 from us_stock_helper_market_gateway.models import ProviderBatch, SessionHealth
 from us_stock_helper_market_gateway.service import MarketGatewayService
 from us_stock_helper_market_gateway.snapshot import assemble_stock_snapshot
@@ -120,6 +121,7 @@ class SnapshotProvider:
                     "code": "US.NVDA",
                     "timestamp": timestamp.isoformat(),
                     "available_at": timestamp.isoformat(),
+                    "session": "provider-session-1",
                     "total_net": float(index * 10),
                     "super_net": float(index * 4),
                     "big_net": float(index * 3),
@@ -305,6 +307,47 @@ class StockSnapshotTests(unittest.TestCase):
                     )
                 )
                 self.assertNotIn(name, repr(response).lower())
+
+    def test_mismatched_flow_symbol_rejects_the_entire_flow_batch(self) -> None:
+        self.provider.flow_result.items[10]["code"] = "US.TSLA"
+
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["sourceStatus"], "live")
+        self.assertTrue(response["warnings"])
+        self.assertTrue(
+            all(
+                bar["qualityStatus"] == "unavailable"
+                and bar["mainShare"] is None
+                and bar["retailShare"] is None
+                for bar in response["participationBars"]
+            )
+        )
+
+    def test_provider_session_metadata_prevents_cross_session_differencing(self) -> None:
+        self.provider.flow_result.items[10]["session"] = "provider-session-2"
+
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        affected = response["participationBars"][1]
+        self.assertEqual(affected["qualityStatus"], "unavailable")
+        self.assertIn("session", affected["missingReason"])
+
+    def test_mid_operation_opend_offline_error_is_preserved(self) -> None:
+        def fail(code: str, timeframe: str, count: int) -> ProviderBatch:
+            raise GatewayError(
+                ErrorCode.OPEND_OFFLINE,
+                "moomoo OpenD is offline",
+                retriable=True,
+            )
+
+        self.provider.candles = fail  # type: ignore[method-assign]
+
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["sourceStatus"], "unavailable")
+        self.assertEqual(response["error"]["code"], "OPEND_OFFLINE")
+        self.assertTrue(response["error"]["retriable"])
 
     def test_provider_failure_is_sanitized(self) -> None:
         def fail(code: str) -> ProviderBatch:

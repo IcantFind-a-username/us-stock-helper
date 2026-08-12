@@ -257,6 +257,11 @@ class MoomooOpenDProvider:
         received_at = require_utc(self._clock(), "clock")
         items = []
         for row in rows:
+            if str(row.get("code", code)) != code:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "OpenD capital-flow row does not match the requested code",
+                )
             try:
                 timestamp = parse_exchange_time(
                     row["capital_flow_item_time"],
@@ -267,6 +272,7 @@ class MoomooOpenDProvider:
                         "code": code,
                         "timestamp": iso_z(timestamp),
                         "available_at": iso_z(received_at),
+                        "session": timestamp.astimezone(US_EASTERN).date().isoformat(),
                         "total_net": float(row["in_flow"]),
                         "super_net": float(row.get("super_in_flow", 0.0)),
                         "big_net": float(row.get("big_in_flow", 0.0)),

@@ -275,6 +275,39 @@ describe("schema-v2 stock snapshot validation", () => {
     expect(() => decodeStockSnapshotEnvelope(value, { maxAgeMs: 30_000, now })).toThrow();
   });
 
+  it.each([
+    ["partial coverage", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.coverage = 0.9999999999999999;
+    }],
+    ["negative activity", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.mainActivity = -1;
+    }],
+    ["zero activity", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.mainActivity = 0;
+      value.participationBars[0]!.retailActivity = 0;
+      value.participationBars[0]!.mainShare = 0.5;
+      value.participationBars[0]!.retailShare = 0.5;
+    }],
+    ["overflowing activity", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.mainActivity = 1e308;
+      value.participationBars[0]!.retailActivity = 1e308;
+      value.participationBars[0]!.mainShare = 0;
+      value.participationBars[0]!.retailShare = 1;
+    }],
+    ["shares unrelated to activity", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.mainActivity = 70;
+      value.participationBars[0]!.retailActivity = 30;
+    }],
+    ["tiny non-complement share", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.participationBars[0]!.mainShare = 0.6000000001;
+    }],
+  ])("rejects live participation with %s", (_label, mutate) => {
+    const value = stockSnapshotFixture();
+    mutate(value);
+
+    expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
+  });
+
   it("adapts an explicit demo stock into the shared chart shape", () => {
     const chart = toDemoChartSnapshot(stockFixtures["NVDA:short"]!);
 
@@ -437,6 +470,16 @@ describe("market gateway fallback", () => {
     ).toThrow(/token/i);
   });
 
+  it("rejects a LAN token shorter than the 32-character runtime policy", () => {
+    expect(() =>
+      createMarketGatewayClient({
+        baseUrl: "http://192.168.1.10:8765",
+        authorizationToken: "x".repeat(31),
+        fetchImpl: jest.fn() as unknown as typeof fetch,
+      }),
+    ).toThrow(/32/);
+  });
+
   it.each([
     "ftp://127.0.0.1:8765",
     "http://user:secret@127.0.0.1:8765",
@@ -511,6 +554,39 @@ describe("market gateway fallback", () => {
       expect.objectContaining({ method: "GET" }),
     );
     expect(result).toMatchObject({ demoData: false, source: { source: "moomoo" } });
+  });
+
+  it("maps a mid-operation OPEND_OFFLINE snapshot response to retryable offline", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse(
+        {
+          schemaVersion: "2",
+          source: "moomoo",
+          sourceStatus: "unavailable",
+          symbol: "NVDA",
+          interval: "5m",
+          decisionCutoff: "2026-07-25T15:59:50.000Z",
+          error: {
+            code: "OPEND_OFFLINE",
+            message: "moomoo OpenD is offline",
+            retriable: true,
+          },
+        },
+        503,
+      ),
+    ) as unknown as typeof fetch;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(
+      client.getStockSnapshot("NVDA", "5m", 200),
+    ).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind: "offline",
+    });
   });
 
   it("aborts the fetch and returns AbortError when the caller cancels first", async () => {

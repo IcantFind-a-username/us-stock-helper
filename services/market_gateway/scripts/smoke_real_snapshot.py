@@ -306,8 +306,8 @@ def _validate_participation(
                 )
             if main_activity < 0 or retail_activity < 0:
                 raise SmokeFailure(f"{label} activity must be non-negative")
-            if coverage <= 0:
-                raise SmokeFailure(f"{label} live coverage must be positive")
+            if coverage != 1.0:
+                raise SmokeFailure(f"{label} live coverage must equal 1.0 exactly")
             if not math.isfinite(activity_denominator) or activity_denominator <= 0:
                 raise SmokeFailure(
                     f"{label} live activity denominator must be finite and positive"

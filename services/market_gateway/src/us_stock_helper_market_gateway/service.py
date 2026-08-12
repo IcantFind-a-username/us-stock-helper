@@ -109,7 +109,9 @@ class MarketGatewayService:
             return self._error_envelope(error)
         response = self._execute(
             lambda: self._provider.capital_flow(code),
-            self._normalize_capital_flow,
+            lambda items, now: self._normalize_capital_flow(
+                items, now, expected_code=code
+            ),
         )
         response.update(
             {
@@ -203,6 +205,16 @@ class MarketGatewayService:
             candle_batch = self._provider.candles(code, timeframe, count)
             flow_batch = self._provider.capital_flow(code)
             holding_batch = self._provider.institutional_holdings(code)
+        except GatewayError as error:
+            return self._snapshot_error(
+                GatewayError(
+                    error.code,
+                    self._message_for_code(error.code),
+                    retriable=error.retriable,
+                ),
+                symbol=from_moomoo_code(code),
+                interval=timeframe,
+            )
         except Exception:
             return self._snapshot_error(
                 GatewayError(
@@ -232,7 +244,11 @@ class MarketGatewayService:
             )
             try:
                 flow_items = (
-                    self._normalize_capital_flow(flow_batch.items, decision_cutoff)
+                    self._normalize_capital_flow(
+                        flow_batch.items,
+                        decision_cutoff,
+                        expected_code=code,
+                    )
                     if flow_received is not None
                     else []
                 )
@@ -346,7 +362,7 @@ class MarketGatewayService:
                 "Live response did not identify moomoo as its source",
             )
         received_at = require_utc(batch.received_at, "provider received_at")
-        if received_at > now + timedelta(seconds=1):
+        if received_at > now:
             raise GatewayError(
                 ErrorCode.MALFORMED_PROVIDER_DATA,
                 "Provider response is timestamped in the future",
@@ -432,8 +448,13 @@ class MarketGatewayService:
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "Provider candle completion state is malformed",
                 )
-            if not complete or available_at > now:
+            if not complete:
                 continue
+            if available_at > now:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider candle failed point-in-time validation",
+                )
             if (
                 timestamp > available_at
                 or (previous is not None and timestamp <= previous)
@@ -468,6 +489,8 @@ class MarketGatewayService:
         self,
         items: list[dict[str, Any]],
         now: datetime,
+        *,
+        expected_code: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized = []
         previous: datetime | None = None
@@ -475,6 +498,7 @@ class MarketGatewayService:
             try:
                 timestamp = parse_aware(item["timestamp"], "timestamp")
                 available_at = parse_aware(item["available_at"], "available_at")
+                session = item["session"]
                 total = self._number(item["total_net"], "total_net")
                 super_net = self._number(item["super_net"], "super_net")
                 big_net = self._number(item["big_net"], "big_net")
@@ -487,6 +511,16 @@ class MarketGatewayService:
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "Provider capital-flow row is missing required fields",
                 ) from exc
+            if not isinstance(session, str) or not session.strip():
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider capital-flow row is missing session metadata",
+                )
+            if expected_code is not None and item.get("code") != expected_code:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider capital-flow row does not match the requested symbol",
+                )
             if (
                 timestamp > available_at
                 or available_at > now
@@ -501,6 +535,7 @@ class MarketGatewayService:
                 {
                     "timestamp": iso_z(timestamp),
                     "availableAt": iso_z(available_at),
+                    "session": session,
                     "totalNetFlow": total,
                     "extraLargeOrderNetFlow": super_net,
                     "largeOrderNetFlow": big_net,
@@ -677,7 +712,7 @@ class MarketGatewayService:
         state = health.state.replace("_", "-")
         if health.source != "moomoo":
             return "malformed"
-        if health.checked_at > now + timedelta(seconds=1):
+        if health.checked_at > now:
             return "malformed"
         if now - health.checked_at > self._session_max_age:
             return "stale"

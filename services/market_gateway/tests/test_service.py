@@ -82,6 +82,7 @@ class FakeProvider:
                     "code": "US.NVDA",
                     "timestamp": "2026-07-25T03:58:00+00:00",
                     "available_at": "2026-07-25T03:59:00+00:00",
+                    "session": "2026-07-24",
                     "total_net": 12_000.0,
                     "super_net": 5_000.0,
                     "big_net": 4_000.0,
@@ -187,20 +188,20 @@ class MarketGatewayServiceTests(unittest.TestCase):
         self.assertEqual(response["items"][0]["status"], "offline")
         self.assertEqual(response["source"], "moomoo")
 
-    def test_health_availability_never_precedes_provider_check(self) -> None:
+    def test_health_rejects_any_future_provider_check(self) -> None:
         self.provider.health_result = SessionHealth(
             state="healthy",
-            checked_at=NOW + timedelta(milliseconds=500),
+            checked_at=NOW + timedelta(milliseconds=1),
             source="moomoo",
         )
 
         response = self.service.health()
 
-        available = datetime.fromisoformat(
-            response["availableAt"].replace("Z", "+00:00")
+        self.assertEqual(response["session"], "malformed")
+        self.assertEqual(
+            response["error"]["code"],
+            ErrorCode.MALFORMED_PROVIDER_DATA.value,
         )
-        cutoff = datetime.fromisoformat(response["asOf"].replace("Z", "+00:00"))
-        self.assertGreaterEqual(available, cutoff)
 
     def test_healthy_fresh_watchlist_is_normalized_and_live(self) -> None:
         response = self.service.watchlist("Technology")
@@ -348,6 +349,42 @@ class MarketGatewayServiceTests(unittest.TestCase):
             ErrorCode.MALFORMED_PROVIDER_DATA.value,
         )
 
+    def test_rejects_future_provider_receipt_without_tolerance(self) -> None:
+        self.provider.quotes_result = ProviderBatch(
+            source="moomoo",
+            received_at=NOW + timedelta(milliseconds=1),
+            items=self.provider.quotes_result.items,
+        )
+
+        response = self.service.quotes(["NVDA"])
+
+        self.assertEqual(response["session"], "malformed")
+        self.assertEqual(
+            response["error"]["code"],
+            ErrorCode.MALFORMED_PROVIDER_DATA.value,
+        )
+
+    def test_future_completed_candle_rejects_the_entire_batch(self) -> None:
+        self.provider.candles_result.items.append(
+            {
+                "code": "US.NVDA",
+                "timeframe": "5m",
+                "timestamp": (NOW + timedelta(minutes=5)).isoformat(),
+                "available_at": (NOW + timedelta(milliseconds=1)).isoformat(),
+                "complete": True,
+                "open": 174.0,
+                "high": 175.0,
+                "low": 173.5,
+                "close": 174.5,
+                "volume": 100,
+            }
+        )
+
+        response = self.service.candles("NVDA", "5m", 200)
+
+        self.assertEqual(response["session"], "malformed")
+        self.assertEqual(response["items"], [])
+
     def test_malformed_quote_is_structured_error(self) -> None:
         self.provider.quotes_result.items[0]["available_at"] = "not-a-time"
 
@@ -408,6 +445,15 @@ class MarketGatewayServiceTests(unittest.TestCase):
         self.assertFalse(response["institutionalIdentity"])
         self.assertEqual(response["items"][0]["largeOrderProxyNetFlow"], 9000.0)
         self.assertFalse(response["items"][0]["institutionalIdentity"])
+        self.assertEqual(response["items"][0]["session"], "2026-07-24")
+
+    def test_capital_flow_rejects_a_provider_symbol_mismatch_atomically(self) -> None:
+        self.provider.capital_flow_result.items[0]["code"] = "US.TSLA"
+
+        response = self.service.capital_flow("NVDA")
+
+        self.assertEqual(response["session"], "malformed")
+        self.assertEqual(response["items"], [])
 
     def test_capital_distribution_keeps_order_size_buckets_explicit(self) -> None:
         response = self.service.capital_distribution("NVDA")

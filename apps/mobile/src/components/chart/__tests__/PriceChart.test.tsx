@@ -164,6 +164,10 @@ it("renders aligned participation semantics without inventing a live forecast", 
   expect(view.queryByText("价格 · 成交量 · 概率预测")).toBeNull();
   expect(view.queryByText("上涨概率")).toBeNull();
   expect(view.queryByText("现在 / 预测起点")).toBeNull();
+  expect(view.queryByText("MA5")).toBeNull();
+  expect(
+    view.getByText("MA5 图线暂不可用 · 服务端未提供版本化序列"),
+  ).toBeTruthy();
 });
 
 it("hides the participation legend, bars, and selected participation detail together", async () => {

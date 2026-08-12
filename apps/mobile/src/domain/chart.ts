@@ -185,6 +185,10 @@ export function buildChartGeometry(
     (candle): ParticipationGeometry => {
       const bar = participationByTimestamp.get(candle.timestamp);
       const availableAt = bar ? Date.parse(bar.availableAt) : Number.NaN;
+      const activityTotal =
+        bar?.mainActivity != null && bar.retailActivity != null
+          ? bar.mainActivity + bar.retailActivity
+          : Number.NaN;
       const hasShares =
         Number.isFinite(availableAt) &&
         availableAt <= decisionTime &&
@@ -195,7 +199,16 @@ export function buildChartGeometry(
         Number.isFinite(bar.retailShare) &&
         bar.mainShare >= 0 &&
         bar.retailShare >= 0 &&
-        Math.abs(bar.mainShare + bar.retailShare - 1) <= 1e-9;
+        bar.mainShare + bar.retailShare === 1 &&
+        bar.coverage === 1 &&
+        bar.mainActivity !== null &&
+        bar.retailActivity !== null &&
+        bar.mainActivity >= 0 &&
+        bar.retailActivity >= 0 &&
+        Number.isFinite(activityTotal) &&
+        activityTotal > 0 &&
+        bar.mainShare === bar.mainActivity / activityTotal &&
+        bar.retailShare === 1 - bar.mainShare;
       const available = hasShares;
       const approvedMissing =
         Number.isFinite(availableAt) &&
@@ -224,15 +237,9 @@ export function buildChartGeometry(
       };
     },
   );
-  const ma5Path = linePath(
-    pointInTimeCandles.flatMap((_, index) => {
-      if (index < 4) return [];
-      const window = pointInTimeCandles.slice(index - 4, index + 1);
-      const average = window.reduce((sum, candle) => sum + candle.close, 0) / window.length;
-      const x = candleGeometry[index]?.x;
-      return x === undefined ? [] : [{ x, y: mapY(average) }];
-    }),
-  );
+  // MA5 must come from a versioned server series; the client never derives
+  // indicator paths from its own candle closes.
+  const ma5Path = "";
 
   const forecastSpan = Math.max(width - inset.right - boundaryX, 1);
   const forecastGeometry = forecastPoints.map((point, index): ForecastGeometry => {

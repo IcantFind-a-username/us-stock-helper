@@ -152,9 +152,14 @@ export const PriceChart = memo(function PriceChart({
 
       <ChartLegend
         showForecast={hasForecast}
-        showMovingAverage={showMovingAverage}
+        showMovingAverage={showMovingAverage && geometry.ma5Path !== ""}
         showParticipation={showParticipation}
       />
+      {showMovingAverage && geometry.ma5Path === "" ? (
+        <Text style={styles.ma5Unavailable}>
+          MA5 图线暂不可用 · 服务端未提供版本化序列
+        </Text>
+      ) : null}
 
       <Pressable
         accessibilityLabel={summary}
@@ -457,6 +462,11 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   probabilityLabel: {
+    color: colors.navyMuted,
+    fontSize: 9,
+    fontWeight: "700",
+  },
+  ma5Unavailable: {
     color: colors.navyMuted,
     fontSize: 9,
     fontWeight: "700",
