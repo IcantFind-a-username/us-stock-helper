@@ -34,7 +34,11 @@ class MagicNineSignal:
     count: int
     completed: bool
     confirmed_at_index: int
-    perfected: bool = False
+    # None means the bar 8/9 comparison was not performed — a close-only
+    # summary cannot see highs and lows, and a non-standard setup length has no
+    # defined comparison. Publishing False there would present "not checked" as
+    # "checked and not perfected".
+    perfected: bool | None = None
     algorithm_version: str = TD_SETUP_VERSION
 
 
@@ -175,9 +179,9 @@ def _is_perfected(
     start: int,
     setup_length: int,
     direction: Direction,
-) -> bool:
+) -> bool | None:
     if setup_length != 9:
-        return False
+        return None
     bar_six, bar_seven = bars[start + 5], bars[start + 6]
     bar_eight, bar_nine = bars[start + 7], bars[start + 8]
     if direction is Direction.BULLISH:

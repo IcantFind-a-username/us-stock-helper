@@ -131,7 +131,14 @@ def dragon_trend(
 
         if state not in {TrendState.BULLISH, TrendState.BEARISH}:
             continue
-        if index and states[index - 1] == state:
+        previous = states[index - 1] if index else TrendState.WARMING_UP
+        if previous == state:
+            continue
+        if previous in {TrendState.WARMING_UP, TrendState.UNAVAILABLE}:
+            # A transition means the regime changed. With no measurable regime
+            # on the previous bar there is nothing to have changed from, and
+            # calling it a transition would put the signal wherever the caller's
+            # window happened to start.
             continue
         average_volume = volume_line[index]
         relative_volume = (

@@ -385,6 +385,17 @@ describe("schema-v2 stock snapshot validation", () => {
     expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
   });
 
+  it("accepts an unchecked perfection verdict as null", () => {
+    const value = stockSnapshotFixture();
+    // The server sends null when the bar 8/9 comparison was not performed;
+    // rejecting it here would throw away every in-progress setup.
+    value.indicators.magicNine.perfected = null;
+
+    const snapshot = decodeStockSnapshotEnvelope(value, { now });
+
+    expect(snapshot.magicNine.perfected).toBeNull();
+  });
+
   it("keeps a completed TD setup visible after counting restarts", () => {
     const value = stockSnapshotFixture();
     value.indicators.magicNine.lastCompleted = {
@@ -421,6 +432,9 @@ describe("schema-v2 stock snapshot validation", () => {
         perfected: true,
         barsSince: 7,
       };
+    }],
+    ["a non-boolean perfection verdict", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      (value.indicators.magicNine as { perfected: unknown }).perfected = "yes";
     }],
     ["an unknown completed direction", (value: ReturnType<typeof stockSnapshotFixture>) => {
       value.indicators.magicNine.lastCompleted = {

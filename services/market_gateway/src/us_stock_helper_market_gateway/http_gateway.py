@@ -300,7 +300,12 @@ class GatewayApplication:
             else ""
         )
         expected = self._config.token or ""
-        if not supplied or not hmac.compare_digest(supplied, expected):
+        # Compare bytes: hmac.compare_digest raises TypeError on non-ASCII
+        # strings, which would crash the handler thread before authentication
+        # and print a stack trace with absolute paths in it.
+        if not supplied or not hmac.compare_digest(
+            supplied.encode("utf-8"), expected.encode("utf-8")
+        ):
             raise GatewayError(
                 ErrorCode.AUTH_REQUIRED,
                 "Gateway authorization is required",

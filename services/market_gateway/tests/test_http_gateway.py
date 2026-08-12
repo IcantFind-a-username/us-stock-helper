@@ -138,6 +138,31 @@ class GatewayServerConfigTests(unittest.TestCase):
         self.assertTrue(config.allow_lan)
         self.assertEqual(config.allowed_client_networks, ("192.168.50.0/24",))
 
+    def test_a_non_ascii_authorization_header_is_rejected_not_crashed(self) -> None:
+        config = GatewayServerConfig.from_environment(
+            {
+                "MOOMOO_GATEWAY_ALLOW_LAN": "1",
+                "MOOMOO_GATEWAY_HOST": "0.0.0.0",
+                "MOOMOO_GATEWAY_TOKEN": "0123456789abcdef0123456789abcdef",
+                "MOOMOO_GATEWAY_ALLOWED_CLIENTS": "192.168.50.0/24",
+            }
+        )
+        app = GatewayApplication(StubService(), config)
+
+        status, _, body = app.handle(
+            "GET",
+            "/health",
+            {},
+            {"Authorization": "Bearer Ünicöde-Ünicöde-Ünicöde-Ünico"},
+            "192.168.50.8",
+        )
+
+        # hmac.compare_digest raises on non-ASCII strings; letting that escape
+        # crashes the handler thread before authentication and prints a stack
+        # trace containing absolute paths.
+        self.assertEqual(status, 401)
+        self.assertEqual(body["error"]["code"], "AUTH_REQUIRED")
+
     def test_lan_configuration_rejects_weak_tokens_and_world_cidrs(self) -> None:
         base = {
             "MOOMOO_GATEWAY_ALLOW_LAN": "1",

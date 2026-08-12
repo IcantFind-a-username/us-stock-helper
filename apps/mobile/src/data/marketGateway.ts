@@ -624,14 +624,19 @@ export function decodeStockSnapshotEnvelope(
   }
   const confirmedAtIndex: number | null = rawConfirmedAtIndex;
   if (typeof magicRecord.completed !== "boolean") throw new GatewayValidationError("magic nine completed must be boolean");
-  if (typeof magicRecord.perfected !== "boolean") throw new GatewayValidationError("magic nine perfected must be boolean");
+  const perfected = magicRecord.perfected;
+  if (perfected !== null && typeof perfected !== "boolean") {
+    // null means the bar 8/9 comparison was not performed; only a wrong type
+    // is a contract violation.
+    throw new GatewayValidationError("magic nine perfected must be boolean or null");
+  }
   const magicNine: MagicNineSnapshot = {
     ...magicMetadata,
     source: "analysis-core",
     direction,
     count,
     completed: magicRecord.completed,
-    perfected: magicRecord.perfected,
+    perfected,
     confirmedAtIndex,
     lastCompleted: decodeCompletedTdSetup(magicRecord.lastCompleted, candles.length),
     methodVersion: requireExpectedMethod(magicRecord, "td-setup-close-4-v2", "indicators.magicNine"),

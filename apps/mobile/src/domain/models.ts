@@ -352,7 +352,8 @@ export interface ChartMagicNineSnapshot {
   direction: string | null;
   count: number;
   completed: boolean;
-  perfected: boolean;
+  /** null when the bar 8/9 comparison was not performed. */
+  perfected: boolean | null;
   confirmedAtIndex: number | null;
   /** Counting restarts after a nine, so the finished run is carried here. */
   lastCompleted: CompletedTdSetup | null;

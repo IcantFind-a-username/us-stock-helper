@@ -125,7 +125,7 @@ export function stockSnapshotFixture() {
         direction: "bullish",
         count: 2,
         completed: false,
-        perfected: false,
+        perfected: false as boolean | null,
         confirmedAtIndex: null,
         lastCompleted: null as {
           direction: string;

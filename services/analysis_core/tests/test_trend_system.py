@@ -5,7 +5,7 @@ import unittest
 
 from us_stock_helper_core.indicators import ema_series, warmup_ema_series, wilder_atr
 from us_stock_helper_core.models import Direction, OHLCVBar
-from us_stock_helper_core.patterns import td_setup
+from us_stock_helper_core.patterns import magic_nine, td_setup
 from us_stock_helper_core.trend import DRAGON_TREND_VERSION, TrendState, dragon_trend
 
 
@@ -130,9 +130,9 @@ class DragonTrendTests(unittest.TestCase):
         assert result.strength[-1] is not None
         self.assertGreater(result.strength[-1], 0.0)
         self.assertLessEqual(result.strength[-1], 3.0)
-        self.assertTrue(result.signals)
-        self.assertEqual(result.signals[0].direction, Direction.BULLISH)
-        self.assertEqual(result.signals[0].algorithm_version, DRAGON_TREND_VERSION)
+        # A series that only ever rises was never anything but bullish once it
+        # became measurable, so there is no regime change to report.
+        self.assertEqual(result.signals, ())
 
     def test_dragon_trend_marks_a_falling_market_bearish(self) -> None:
         bars = tuple(bar(index, 300.0 - index) for index in range(90))
@@ -169,20 +169,67 @@ class DragonTrendTests(unittest.TestCase):
         )
 
     def test_dragon_trend_confirms_transitions_with_relative_volume(self) -> None:
-        quiet = tuple(bar(index, 100.0 + index, volume=1_000.0) for index in range(90))
-        loud = quiet[:-1] + (
-            bar(89, 100.0 + 89, volume=50_000.0),
-        )
+        # A downtrend that turns up, so the transition lands on a known bar and
+        # the volume on that exact bar decides confirmation.
+        closes = [200.0 - index for index in range(90)] + [
+            111.0 + index * 4.0 for index in range(60)
+        ]
 
-        quiet_signal = dragon_trend(quiet).signals[-1]
-        loud_result = dragon_trend(loud)
-
-        self.assertFalse(quiet_signal.volume_confirmed)
-        self.assertTrue(
-            all(
-                signal.relative_volume is None or signal.relative_volume >= 0.0
-                for signal in loud_result.signals
+        def build(turn_volume: float, turn_index: int) -> tuple[OHLCVBar, ...]:
+            return tuple(
+                bar(
+                    index,
+                    close,
+                    volume=turn_volume if index == turn_index else 1_000.0,
+                )
+                for index, close in enumerate(closes)
             )
+
+        quiet = dragon_trend(build(1_000.0, -1))
+        turn_index = next(
+            signal.confirmed_at_index
+            for signal in quiet.signals
+            if signal.direction is Direction.BULLISH
+        )
+        loud = dragon_trend(build(50_000.0, turn_index))
+        quiet_turn = [
+            signal
+            for signal in quiet.signals
+            if signal.direction is Direction.BULLISH
+        ]
+        loud_turn = [
+            signal for signal in loud.signals if signal.direction is Direction.BULLISH
+        ]
+
+        self.assertTrue(quiet_turn)
+        self.assertTrue(loud_turn)
+        self.assertFalse(quiet_turn[-1].volume_confirmed)
+        self.assertTrue(loud_turn[-1].volume_confirmed)
+        assert loud_turn[-1].relative_volume is not None
+        self.assertGreater(loud_turn[-1].relative_volume, 1.2)
+
+    def test_the_first_measurable_bar_is_not_reported_as_a_transition(self) -> None:
+        # A transition means the regime changed. At the first bar where a
+        # regime can be computed at all there is no earlier regime to change
+        # from, so calling it a transition invents information — and makes the
+        # reported position depend on how many bars the caller happened to pass.
+        bars = rising_bars(150)
+
+        full = dragon_trend(bars)
+        trimmed = dragon_trend(bars[30:])
+
+        self.assertEqual(
+            [signal.confirmed_at_index for signal in full.signals],
+            [signal.confirmed_at_index + 30 for signal in trimmed.signals],
+        )
+        first_measurable = next(
+            index
+            for index, state in enumerate(full.states)
+            if state is not TrendState.WARMING_UP
+        )
+        self.assertNotIn(
+            first_measurable,
+            [signal.confirmed_at_index for signal in full.signals],
         )
 
     def test_dragon_trend_rejects_incomplete_bars_and_bad_parameters(self) -> None:
@@ -283,6 +330,38 @@ class TdSetupTests(unittest.TestCase):
             prefix.signals,
             tuple(signal for signal in full.signals if signal.confirmed_at_index < 20),
         )
+
+    def test_magic_nine_does_not_contradict_td_setup_on_perfection(self) -> None:
+        # Both describe the same rule; a close-only summary cannot see highs
+        # and lows, so it must not claim a perfection verdict either way.
+        def falling(low_offsets: dict[int, float]) -> tuple[OHLCVBar, ...]:
+            return tuple(
+                bar(index, 120.0 - index, low=120.0 - index - low_offsets.get(index, 1.0))
+                for index in range(13)
+            )
+
+        bars = falling({9: 5.0, 10: 5.0, 11: 9.0, 12: 9.0})
+        setup = td_setup(bars)
+        summary = magic_nine([row.close for row in bars])
+
+        self.assertTrue(setup.signals[0].perfected)
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary.count, setup.signals[0].count)
+        self.assertEqual(summary.direction, setup.signals[0].direction)
+        self.assertIsNone(summary.perfected)
+
+    def test_td_setup_reports_perfection_only_where_it_checked(self) -> None:
+        bars = rising_bars(13)
+
+        # A non-standard setup length has no defined bar 6/7 vs 8/9 comparison,
+        # so publishing False would present "not checked" as "checked and not
+        # perfected".
+        short_setup = td_setup(bars, setup_length=5)
+
+        self.assertTrue(short_setup.signals)
+        for signal in short_setup.signals:
+            self.assertIsNone(signal.perfected)
 
     def test_td_setup_rejects_incomplete_bars_and_invalid_parameters(self) -> None:
         bars = rising_bars(13)

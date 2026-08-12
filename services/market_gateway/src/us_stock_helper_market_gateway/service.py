@@ -370,9 +370,8 @@ class MarketGatewayService:
             )
         received_at = require_utc(batch.received_at, "provider received_at")
         if received_at > now:
-            raise GatewayError(
-                ErrorCode.MALFORMED_PROVIDER_DATA,
-                "Provider response is timestamped in the future",
+            raise PointInTimeViolation(
+                "Provider response is timestamped in the future"
             )
         if now - received_at > self._response_max_age:
             raise GatewayError(

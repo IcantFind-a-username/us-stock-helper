@@ -231,6 +231,38 @@ it("shows unavailable Magic Nine honestly without a zero marker or sequence", as
   ).toBeNull();
 });
 
+it("keeps a finished nine visible even when the current count is unavailable", async () => {
+  const payload = stockSnapshotFixture();
+  Object.assign(payload.indicators.magicNine, {
+    direction: null,
+    count: 0,
+    completed: false,
+    perfected: null,
+    qualityStatus: "unavailable",
+    lastCompleted: {
+      direction: "bearish",
+      confirmedAtIndex: 0,
+      perfected: true,
+      barsSince: 1,
+    },
+  });
+  const snapshot = decodeStockSnapshotEnvelope(payload, {
+    now: new Date("2026-07-25T16:00:00.000Z"),
+  });
+
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => snapshot),
+  });
+
+  // Discarding the finished run here would defeat the field's whole purpose:
+  // it exists precisely because the current count stops describing it.
+  await waitFor(() =>
+    expect(view.getByTestId("stock-summary-meta")).toHaveTextContent(
+      /九转 暂不可用 · 最近完成 看跌九转 · 完美 · 1 根前/,
+    ),
+  );
+});
+
 it("shows realized volatility and says when it cannot be measured", async () => {
   const view = await renderDetail({
     repository: repositoryWithSnapshot(async () => liveSnapshot()),

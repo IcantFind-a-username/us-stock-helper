@@ -262,6 +262,22 @@ class StockSnapshotTests(unittest.TestCase):
 
         self.assertEqual(response["sourceStatus"], "unavailable")
 
+    def test_a_flow_batch_from_the_future_fails_rather_than_degrading(self) -> None:
+        # Batch-level receipt from the future is the same class of defect as a
+        # row-level one; softening it into "no capital flow" hides it.
+        self.provider.flow_result = ProviderBatch(
+            "moomoo",
+            NOW + timedelta(hours=1),
+            self.provider.flow_result.items,
+        )
+
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["sourceStatus"], "unavailable")
+        self.assertEqual(
+            response["error"]["code"], ErrorCode.MALFORMED_PROVIDER_DATA.value
+        )
+
     def test_a_cutoff_violation_is_never_reported_as_missing_data(self) -> None:
         self.provider.flow_result.items[10]["available_at"] = (
             NOW + timedelta(hours=1)
