@@ -241,6 +241,27 @@ class StockSnapshotTests(unittest.TestCase):
         reasons = {bar["missingReason"] for bar in response["participationBars"]}
         self.assertEqual(reasons, {"capital flow unavailable"})
 
+    def test_the_cutoff_guard_does_not_depend_on_upstream_wording(self) -> None:
+        # The guard must be an explicit precondition here, not a search for the
+        # word "cutoff" in someone else's exception message: rewording upstream
+        # would silently restore the swallow this exists to prevent.
+        import us_stock_helper_market_gateway.snapshot as snapshot_module
+
+        def reworded(*args: object, **kwargs: object) -> None:
+            raise ValueError("temporal ordering rejected")
+
+        original = snapshot_module.build_participation_bars
+        snapshot_module.build_participation_bars = reworded  # type: ignore[assignment]
+        try:
+            self.provider.flow_result.items[10]["available_at"] = (
+                NOW + timedelta(hours=1)
+            ).isoformat()
+            response = self.service.stock_snapshot("NVDA", "5m", 200)
+        finally:
+            snapshot_module.build_participation_bars = original  # type: ignore[assignment]
+
+        self.assertEqual(response["sourceStatus"], "unavailable")
+
     def test_a_cutoff_violation_is_never_reported_as_missing_data(self) -> None:
         self.provider.flow_result.items[10]["available_at"] = (
             NOW + timedelta(hours=1)

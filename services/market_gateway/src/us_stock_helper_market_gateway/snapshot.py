@@ -178,11 +178,17 @@ def _participation(
         return _unavailable_participation(bars), [
             "Capital-flow participation is unavailable for this snapshot."
         ]
+    # Check the cutoff here rather than reading it out of an upstream exception
+    # message: a reworded message would silently disable the guard.
+    for point in points:
+        if point.available_at > cutoff:
+            raise ValueError("flow point is after the decision cutoff")
+    for bar in bars:
+        if bar.closed_at > cutoff or bar.available_at > cutoff:
+            raise ValueError("completed candle is after the decision cutoff")
     try:
         result = build_participation_bars(points, bars, cutoff)
-    except (KeyError, TypeError, ValueError) as error:
-        if "cutoff" in str(error):
-            raise
+    except (KeyError, TypeError, ValueError):
         return _unavailable_participation(bars), [
             "Capital-flow participation is unavailable for this snapshot."
         ]
