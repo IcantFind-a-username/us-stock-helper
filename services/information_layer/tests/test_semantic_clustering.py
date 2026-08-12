@@ -202,6 +202,80 @@ class ClusterCorroborationTests(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0].independent_source_count, 1)
 
+    def test_one_wire_story_republished_is_not_five_independent_sources(
+        self,
+    ) -> None:
+        # Outlets that republish a wire copy verbatim are relaying one report,
+        # not confirming it five times. Counting them separately turns the
+        # corroboration gate into something a single press release can pass.
+        wire_headline = "NVIDIA raises full-year revenue guidance on data center demand"
+        wire_summary = (
+            "NVIDIA said on Thursday it raised its full-year revenue guidance, "
+            "citing sustained data center demand."
+        )
+        rows = tuple(
+            event(f"e{index}", publisher, wire_headline, wire_summary)
+            for index, publisher in enumerate(
+                ["site-a", "site-b", "site-c", "site-d", "site-e"]
+            )
+        )
+
+        clusters = build_clusters(rows, AS_OF)
+
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0].independent_source_count, 1)
+
+    def test_a_lightly_edited_republication_is_still_one_report(self) -> None:
+        # Real syndication is rarely byte-identical: an outlet trims the
+        # headline or appends its own tag. Matching only exact copies would
+        # miss the case the verbatim threshold exists for.
+        body = (
+            "NVIDIA said on Thursday it raised its full-year revenue guidance, "
+            "citing sustained data center demand from cloud providers and "
+            "enterprise customers across every major region."
+        )
+        rows = (
+            event(
+                "a",
+                "wire",
+                "NVIDIA raises full-year revenue guidance on data center demand",
+                body,
+            ),
+            event(
+                "b",
+                "portal",
+                "NVIDIA raises full-year revenue guidance on data center demand today",
+                body,
+            ),
+        )
+
+        clusters = build_clusters(rows, AS_OF)
+
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0].independent_source_count, 1)
+
+    def test_outlets_that_wrote_their_own_copy_still_count_separately(
+        self,
+    ) -> None:
+        rows = (
+            event(
+                "a",
+                "reuters",
+                "NVIDIA raises full-year revenue guidance",
+                "The chipmaker lifted its outlook after a strong quarter.",
+            ),
+            event(
+                "b",
+                "bloomberg",
+                "Nvidia raises full year revenue guidance outlook",
+                "Nvidia now expects higher revenue, driven by accelerator sales.",
+            ),
+        )
+
+        clusters = build_clusters(rows, AS_OF)
+
+        self.assertEqual(clusters[0].independent_source_count, 2)
+
     def test_merging_is_order_independent(self) -> None:
         rows = (
             event("a", "reuters", "NVIDIA raises full-year revenue guidance"),

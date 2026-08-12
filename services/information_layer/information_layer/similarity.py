@@ -29,6 +29,11 @@ SIMILARITY_VERSION = "headline-jaccard-window-v1"
 _TIME_WINDOW = timedelta(hours=36)
 _MINIMUM_OVERLAP = 0.6
 _MINIMUM_TOKENS = 3
+# Independent reporting rewords; a syndicated copy is close to verbatim. The
+# threshold sits high because the cost of being wrong is asymmetric: merging
+# two genuine sources understates corroboration, while splitting one wire copy
+# into five lets a single press release pass the gate.
+_VERBATIM_OVERLAP = 0.9
 
 _WORD = re.compile(r"[a-z0-9]+")
 # Words that carry no topic. Kept small and explicit: an aggressive stop list
@@ -98,3 +103,23 @@ def _shares_symbol(left: EvidenceEvent, right: EvidenceEvent) -> bool:
     if not left_symbols or not right_symbols:
         return False
     return bool(left_symbols & right_symbols)
+
+
+def same_copy(left: EvidenceEvent, right: EvidenceEvent) -> bool:
+    """Whether two reports are the same text, not two accounts of one event.
+
+    Outlets republishing a wire story are relaying one report; counting them
+    as separate confirmations would turn corroboration into a measure of how
+    widely a press release was syndicated.
+    """
+
+    if left.content_hash == right.content_hash:
+        return True
+    left_tokens = headline_tokens(f"{left.headline} {left.summary}")
+    right_tokens = headline_tokens(f"{right.headline} {right.summary}")
+    if min(len(left_tokens), len(right_tokens)) < _MINIMUM_TOKENS:
+        return False
+    union = left_tokens | right_tokens
+    if not union:
+        return False
+    return len(left_tokens & right_tokens) / len(union) >= _VERBATIM_OVERLAP

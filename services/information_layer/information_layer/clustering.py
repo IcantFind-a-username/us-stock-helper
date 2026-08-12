@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Sequence
 
-from .similarity import same_story
+from .similarity import same_copy, same_story
 from .models import ClaimStatus, EvidenceCluster, EvidenceEvent
 
 
@@ -207,6 +207,18 @@ def _independence_key(
     return item.provenance.ownership_group_id or item.provenance.publisher_id
 
 
+def _distinct_reports(
+    events: Sequence[EvidenceEvent],
+) -> tuple[EvidenceEvent, ...]:
+    """Collapse republished copies of one report down to a single report."""
+
+    kept: list[EvidenceEvent] = []
+    for item in events:
+        if not any(same_copy(item, existing) for existing in kept):
+            kept.append(item)
+    return tuple(kept)
+
+
 def _aggregate_events(
     events: Sequence[EvidenceEvent],
     as_of: datetime,
@@ -220,7 +232,8 @@ def _aggregate_events(
         for item in events
     }
     identities = {
-        _independence_key(item, owner_by_publisher) for item in events
+        _independence_key(item, owner_by_publisher)
+        for item in _distinct_reports(events)
     }
     weights = tuple(_event_weight(item, as_of) for item in events)
     weight_sum = sum(weights)

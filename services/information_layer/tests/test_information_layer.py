@@ -196,6 +196,11 @@ class ProvenanceAndClusteringTests(unittest.TestCase):
         )
         independent = event(
             "exchange-confirmation",
+            # Its own wording: an exchange notice is a separate report, not the
+            # wire copy again. Identical text would now collapse into the wire
+            # story, which is the point of the verbatim check.
+            headline="Exchange confirms NVDA supplier shipment forecast increase",
+            summary="The exchange published a confirmation of the raised forecast.",
             provenance=source("exchange", reliability=0.95),
         )
 
@@ -524,6 +529,8 @@ class UnmeasuredSentimentTests(unittest.TestCase):
                 event(
                     "b",
                     publisher_id="other",
+                    headline="NVDA supplier lifts its shipment forecast for the quarter",
+                    summary="A second outlet reported the raised shipment forecast.",
                     sentiment=0.0,
                     sentiment_measured=False,
                 ),
