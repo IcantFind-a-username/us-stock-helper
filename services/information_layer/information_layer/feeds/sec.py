@@ -82,6 +82,18 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         accession = self._accession(entry)
         return f"sec|{accession}" if accession else super()._claim_key(entry)
 
+    def _sentiment_text(self, entry: _ParsedEntry) -> str:
+        """A filing entry is metadata, not prose.
+
+        EDGAR titles read "8-K - LEGAL NAME (0001234567) (Filer)". Words like
+        strong, growth and record occur in company names, so reading them as
+        sentiment gave every filing from such an issuer a bullish vote — and
+        CIK attribution then delivered it precisely to that ticker. What the
+        filing means is in the document, which this feed does not carry.
+        """
+
+        return ""
+
     def _symbol_relevance(
         self, entry: _ParsedEntry, text: str
     ) -> tuple[tuple[str, float], ...]:

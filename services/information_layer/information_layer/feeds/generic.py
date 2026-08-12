@@ -356,7 +356,7 @@ class GenericFeedAdapter:
             f"{hashlib.sha256(f'{claim_key}|{preview_hash}'.encode()).hexdigest()[:20]}"
         )
         text = f"{entry.title}\n{entry.summary}".casefold()
-        reading = score_event_sentiment(f"{entry.title} {entry.summary}")
+        reading = score_event_sentiment(self._sentiment_text(entry))
         return EvidenceEvent.create(
             event_id=event_id,
             claim_key=claim_key,
@@ -396,6 +396,11 @@ class GenericFeedAdapter:
     def _claim_key(self, entry: _ParsedEntry) -> str:
         identity_hash = hashlib.sha256(entry.identity.encode()).hexdigest()[:20]
         return f"feed|{self.adapter_id}|{identity_hash}"
+
+    def _sentiment_text(self, entry: _ParsedEntry) -> str:
+        """The prose a sentiment reader may judge. Empty means unreadable."""
+
+        return f"{entry.title} {entry.summary}"
 
     def _symbol_relevance(
         self, entry: _ParsedEntry, text: str

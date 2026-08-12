@@ -541,3 +541,36 @@ class SecKeywordFallbackTests(unittest.TestCase):
         item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
 
         self.assertEqual(item.symbol_relevance, (("AAPL", 1.0),))
+
+
+class FilingMetadataSentimentTests(unittest.TestCase):
+    def test_a_filing_title_is_metadata_and_carries_no_sentiment(self) -> None:
+        """An EDGAR title is a form type, a legal name, a CIK and a role.
+
+        Words like "strong", "growth" and "record" appear in company names, so
+        scoring the title as prose gave every filing from such an issuer a
+        measured bullish vote — and CIK attribution then delivered it
+        precisely to that ticker.
+        """
+
+        atom = SEC_ATOM.replace(
+            b"8-K - Apple Inc. (0000320193)",
+            b"8-K - STRONG GLOBAL ENTERTAINMENT, INC. (0000320193)",
+        )
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(atom)),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertFalse(item.sentiment_measured)
+        self.assertEqual(item.sentiment, 0.0)
+
+    def test_an_ordinary_news_feed_still_gets_scored(self) -> None:
+        adapter = GenericFeedAdapter(config(), FakeTransport(response()))
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertTrue(item.sentiment_measured)

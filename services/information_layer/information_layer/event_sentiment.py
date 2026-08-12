@@ -162,10 +162,11 @@ _MAX_PHRASE = max(len(phrase) for phrase in _PHRASES)
 _NEGATORS = frozenset(
     {"not", "no", "never", "without", "fails", "failed", "unable", "denies", "denied"}
 )
-# How far a negator reaches. Wide enough for "did not manage to beat", narrow
-# enough that one "not" early in a headline cannot invert a separate later
-# clause.
-_NEGATION_WINDOW = 3
+# How far a negator reaches. Three was too short for the constructions this
+# register actually uses: "fails to win FDA approval" is a rejection, and the
+# words between the negator and the term used to exhaust the window, so it
+# read as good news.
+_NEGATION_WINDOW = 5
 _CLAUSE_BREAK = frozenset({";", ":", ".", ",", "—", "--"})
 _TOKEN = re.compile(r"[a-z]+|[;:.,]|--|—")
 

@@ -86,6 +86,22 @@ class EventSentimentTests(unittest.TestCase):
         assert result.score is not None
         self.assertLess(result.score, 0.0)
 
+    def test_a_negator_reaches_across_the_words_that_carry_no_meaning(
+        self,
+    ) -> None:
+        # "fails to win FDA approval" is a rejection — one of the sharpest
+        # negative events there is — but the filler words between the negator
+        # and the term used to exhaust its reach, so it read as good news.
+        for text in (
+            "Novavax fails to win FDA approval for its COVID booster",
+            "Company failed to secure the approval it needed",
+            "Regulator denies the approval sought by the sponsor",
+        ):
+            with self.subTest(text=text):
+                result = score_event_sentiment(text)
+                assert result.score is not None
+                self.assertLess(result.score, 0.0)
+
     def test_negation_expires_after_a_few_words(self) -> None:
         # No clause break here, so only the window itself can stop the negator
         # from reaching "profit" nine words later.
