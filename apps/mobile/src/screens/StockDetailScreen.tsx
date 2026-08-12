@@ -137,6 +137,7 @@ export function StockDetailScreen() {
       }`
     : "九转 暂不可用";
   const snapshotWarnings = liveStock?.warnings ?? [];
+  const realizedVolatility = liveStock?.indicators.volatility.value ?? null;
   const latestCandle = stock.candles.at(-1);
   const histogram = Array.isArray(stock.indicators.macd.histogram)
     ? (stock.indicators.macd.histogram.at(-1) ?? null)
@@ -217,6 +218,12 @@ export function StockDetailScreen() {
           </Text>
           <Text style={styles.fact}>
             MACD {histogram === null ? "暂不可用" : histogram.toFixed(2)}
+          </Text>
+          <Text style={styles.fact}>
+            年化波动{" "}
+            {realizedVolatility === null || realizedVolatility === undefined
+              ? "暂不可用"
+              : `${(realizedVolatility * 100).toFixed(1)}%`}
           </Text>
         </View>
         <Text style={styles.summaryMeta} testID="stock-summary-meta">

@@ -9,6 +9,7 @@ from us_stock_helper_core import (
     OHLCVBar,
     TDSetupResult,
     build_participation_bars,
+    estimate_annualized_volatility,
     macd,
     moving_average,
     rsi,
@@ -296,6 +297,7 @@ def _indicators(
     macd_value = macd(closes, 12, 26, 9)
     setup = td_setup(bars) if bars else None
     magic = setup.latest if setup else None
+    realized = estimate_annualized_volatility(bars, cutoff)
     return {
         "ma5": {
             **base,
@@ -316,6 +318,15 @@ def _indicators(
             "histogram": macd_value.histogram if macd_value else None,
             "methodVersion": "macd-12-26-9-v1",
             "qualityStatus": "live" if macd_value else "unavailable",
+        },
+        "volatility": {
+            **base,
+            "availableAt": iso_z(cutoff),
+            "value": realized.value,
+            "sampleSize": realized.sample_size,
+            "missingReason": realized.missing_reason,
+            "methodVersion": realized.method_version,
+            "qualityStatus": realized.quality_status,
         },
         "magicNine": {
             **base,

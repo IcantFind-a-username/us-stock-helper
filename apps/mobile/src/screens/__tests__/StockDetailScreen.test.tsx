@@ -231,6 +231,30 @@ it("shows unavailable Magic Nine honestly without a zero marker or sequence", as
   ).toBeNull();
 });
 
+it("shows realized volatility and says when it cannot be measured", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => liveSnapshot()),
+  });
+
+  await waitFor(() => expect(view.getByText("年化波动 42.0%")).toBeTruthy());
+
+  const quiet = stockSnapshotFixture();
+  quiet.indicators.volatility.value = null;
+  quiet.indicators.volatility.qualityStatus = "unavailable";
+  quiet.indicators.volatility.missingReason = "insufficient sample: 3 of 20 returns";
+  const quietView = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      decodeStockSnapshotEnvelope(quiet, {
+        now: new Date("2026-07-25T16:00:00.000Z"),
+      }),
+    ),
+  });
+
+  await waitFor(() =>
+    expect(quietView.getByText("年化波动 暂不可用")).toBeTruthy(),
+  );
+});
+
 it("shows the snapshot warnings instead of decoding them into nothing", async () => {
   const payload = stockSnapshotFixture();
   payload.warnings = [

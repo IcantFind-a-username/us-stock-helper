@@ -119,6 +119,16 @@
       "methodVersion": "td-setup-close-4-v2",
       "perfected": false,
       "lastCompleted": null
+    },
+    "volatility": {
+      "source": "analysis-core",
+      "asOf": "2026-07-25T04:00:00Z",
+      "availableAt": "2026-07-25T04:00:05Z",
+      "qualityStatus": "unavailable",
+      "value": null,
+      "sampleSize": 1,
+      "missingReason": "insufficient sample: 1 of 20 returns",
+      "methodVersion": "close-to-close-realized-v1"
     }
   },
   "institutionalHoldings": [],

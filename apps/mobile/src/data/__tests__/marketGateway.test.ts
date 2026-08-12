@@ -308,6 +308,50 @@ describe("schema-v2 stock snapshot validation", () => {
     expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
   });
 
+  it("carries realized volatility with its sample size", () => {
+    const snapshot = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
+
+    expect(snapshot.indicators.volatility).toMatchObject({
+      value: 0.42,
+      sampleSize: 60,
+      qualityStatus: "live",
+      missingReason: null,
+      methodVersion: "close-to-close-realized-v1",
+    });
+  });
+
+  it("keeps an unavailable volatility null instead of guessing a default", () => {
+    const value = stockSnapshotFixture();
+    value.indicators.volatility.value = null;
+    value.indicators.volatility.qualityStatus = "unavailable";
+    value.indicators.volatility.missingReason = "insufficient sample: 3 of 20 returns";
+
+    const snapshot = decodeStockSnapshotEnvelope(value, { now });
+
+    expect(snapshot.indicators.volatility.value).toBeNull();
+    expect(snapshot.indicators.volatility.missingReason).toContain("sample");
+  });
+
+  it.each([
+    ["a live volatility with no value", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.volatility.value = null;
+    }],
+    ["a live volatility carrying a missing reason", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.volatility.missingReason = "why";
+    }],
+    ["a non-positive volatility", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.volatility.value = 0;
+    }],
+    ["a negative sample size", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.volatility.sampleSize = -1;
+    }],
+  ])("rejects %s", (_label, mutate) => {
+    const value = stockSnapshotFixture();
+    mutate(value);
+
+    expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
+  });
+
   it("carries the price adjustment basis and gateway receipt times", () => {
     const snapshot = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
 

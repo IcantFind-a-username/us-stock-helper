@@ -57,6 +57,12 @@ from .scoring import (
     score_horizon,
 )
 from .temporal import select_bars_as_of, select_evidence_as_of
+from .volatility import (
+    VOLATILITY_VERSION,
+    VolatilityEstimate,
+    bars_per_year,
+    estimate_annualized_volatility,
+)
 from .trend import (
     DRAGON_TREND_VERSION,
     DragonTrendResult,
@@ -97,6 +103,9 @@ __all__ = [
     "TD_SETUP_VERSION",
     "TrendState",
     "TrendTransition",
+    "VOLATILITY_VERSION",
+    "VolatilityEstimate",
+    "bars_per_year",
     "build_participation_bars",
     "build_risk_plan",
     "build_scenario_forecast",
@@ -105,6 +114,7 @@ __all__ = [
     "detect_ma5_pullback",
     "dragon_trend",
     "ema_series",
+    "estimate_annualized_volatility",
     "extract_horizon_features",
     "freeze_evidence_packet",
     "macd",

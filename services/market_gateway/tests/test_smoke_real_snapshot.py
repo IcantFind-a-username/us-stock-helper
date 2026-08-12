@@ -137,6 +137,14 @@ def valid_snapshot() -> dict[str, Any]:
                 "histogram": 0.1,
                 "methodVersion": "macd-12-26-9-v1",
             },
+            "volatility": {
+                **metadata,
+                "availableAt": cutoff,
+                "value": 0.42,
+                "sampleSize": 60,
+                "missingReason": None,
+                "methodVersion": "close-to-close-realized-v1",
+            },
             "magicNine": {
                 **metadata,
                 "direction": "bullish",

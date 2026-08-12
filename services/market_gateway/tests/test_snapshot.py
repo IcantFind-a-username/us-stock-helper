@@ -197,6 +197,20 @@ class StockSnapshotTests(unittest.TestCase):
             response["institutionalHoldings"][0]["qualityStatus"], "delayed"
         )
 
+    def test_snapshot_carries_realized_volatility_or_says_why_not(self) -> None:
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        volatility = response["indicators"]["volatility"]
+        self.assertEqual(volatility["source"], "analysis-core")
+        self.assertEqual(volatility["methodVersion"], "close-to-close-realized-v1")
+        self.assertEqual(volatility["availableAt"], response["decisionCutoff"])
+        # Twenty rising candles give only nineteen returns, below the minimum
+        # sample, so the honest answer is "unavailable" with the reason.
+        self.assertEqual(volatility["qualityStatus"], "unavailable")
+        self.assertIsNone(volatility["value"])
+        self.assertIn("sample", volatility["missingReason"])
+        self.assertEqual(volatility["sampleSize"], 19)
+
     def test_snapshot_discloses_that_prices_are_rewritten_by_corporate_actions(
         self,
     ) -> None:

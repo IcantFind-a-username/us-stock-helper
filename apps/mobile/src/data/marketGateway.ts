@@ -7,6 +7,7 @@ import type {
   LiveQuote,
   LiveStockSnapshot,
   CompletedTdSetup,
+  LiveVolatilityIndicator,
   MagicNineSnapshot,
   ParticipationBar,
   SnapshotProvenance,
@@ -334,6 +335,33 @@ function decodeSnapshotError(value: Record<string, unknown>): GatewayRequestErro
   );
 }
 
+function decodeVolatility(
+  value: unknown,
+  cutoff: Date,
+): LiveVolatilityIndicator {
+  const base = decodeIndicatorValue(value, "volatility", "close-to-close-realized-v1", cutoff);
+  const record = value as Record<string, unknown>;
+  const sampleSize = requireFiniteNumber(record, "sampleSize");
+  if (!Number.isInteger(sampleSize) || sampleSize < 0) {
+    throw new GatewayValidationError("volatility sampleSize must be a non-negative integer");
+  }
+  const missingReason = record.missingReason;
+  if (missingReason !== null && (typeof missingReason !== "string" || missingReason.trim() === "")) {
+    throw new GatewayValidationError("volatility missingReason must be a non-empty string or null");
+  }
+  if (base.qualityStatus === "live") {
+    if (base.value === null || base.value <= 0) {
+      throw new GatewayValidationError("a live volatility must be positive");
+    }
+    if (missingReason !== null) {
+      throw new GatewayValidationError("a live volatility cannot carry a missing reason");
+    }
+  } else if (base.value !== null || missingReason === null) {
+    throw new GatewayValidationError("an unavailable volatility needs a null value and a reason");
+  }
+  return { ...base, sampleSize, missingReason };
+}
+
 function decodeCompletedTdSetup(
   value: unknown,
   candleCount: number,
@@ -371,7 +399,7 @@ function decodeCompletedTdSetup(
 
 function decodeIndicatorValue(
   value: unknown,
-  key: "ma5" | "rsi",
+  key: "ma5" | "rsi" | "volatility",
   methodVersion: string,
   cutoff: Date,
 ): LiveIndicatorValue {
@@ -561,6 +589,7 @@ export function decodeStockSnapshotEnvelope(
   if (!isRecord(value.indicators)) throw new GatewayValidationError("indicators must be an object");
   const ma5 = decodeIndicatorValue(value.indicators.ma5, "ma5", "sma-5-v1", cutoff);
   const rsi = decodeIndicatorValue(value.indicators.rsi, "rsi", "wilder-rsi-14-v1", cutoff);
+  const volatility = decodeVolatility(value.indicators.volatility, cutoff);
   const macdRecord = value.indicators.macd;
   if (!isRecord(macdRecord)) throw new GatewayValidationError("indicators.macd must be an object");
   const macdMetadata = requireSnapshotMetadata(macdRecord, "indicators.macd", cutoff);
@@ -679,7 +708,7 @@ export function decodeStockSnapshotEnvelope(
     quote,
     candles,
     participationBars,
-    indicators: { ma5, rsi, macd },
+    indicators: { ma5, rsi, macd, volatility },
     magicNine,
     forecast: null,
     institutionalHoldings,

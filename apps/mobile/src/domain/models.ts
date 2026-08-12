@@ -310,6 +310,12 @@ export interface LiveIndicatorValue extends ChartIndicatorValue {
   qualityStatus: "live" | "unavailable";
 }
 
+/** Realized volatility, or an explicit statement that it cannot be measured. */
+export interface LiveVolatilityIndicator extends LiveIndicatorValue {
+  sampleSize: number;
+  missingReason: string | null;
+}
+
 export interface ChartMacdIndicator {
   line: number | null;
   signal: number | null;
@@ -407,6 +413,7 @@ export interface LiveStockSnapshot extends ChartSnapshot {
     ma5: LiveIndicatorValue;
     rsi: LiveIndicatorValue;
     macd: LiveMacdIndicator;
+    volatility: LiveVolatilityIndicator;
   };
   magicNine: MagicNineSnapshot;
   institutionalHoldings: DelayedInstitutionalHolding[];

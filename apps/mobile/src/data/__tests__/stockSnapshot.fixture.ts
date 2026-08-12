@@ -111,6 +111,16 @@ export function stockSnapshotFixture() {
         methodVersion: "macd-12-26-9-v1",
         qualityStatus: "live",
       },
+      volatility: {
+        value: 0.42 as number | null,
+        sampleSize: 60,
+        missingReason: null as string | null,
+        source: "analysis-core",
+        asOf: "2026-07-25T15:55:00.000Z",
+        availableAt: cutoff,
+        methodVersion: "close-to-close-realized-v1",
+        qualityStatus: "live",
+      },
       magicNine: {
         direction: "bullish",
         count: 2,
