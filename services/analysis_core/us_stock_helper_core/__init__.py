@@ -49,6 +49,7 @@ from .risk import (
     build_risk_plan,
 )
 from .scoring import (
+    ADVISER_SCORE_CAP,
     FactorContribution,
     FeatureSet,
     HardGate,
@@ -72,6 +73,7 @@ from .trend import (
 )
 
 __all__ = [
+    "ADVISER_SCORE_CAP",
     "AnalyticalAction",
     "CalibrationStatus",
     "CapitalFlowPoint",

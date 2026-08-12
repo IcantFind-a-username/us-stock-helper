@@ -265,3 +265,20 @@ class DecisionEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdviserCapConsistencyTests(unittest.TestCase):
+    def test_the_engine_uses_the_scoring_layer_adviser_cap(self) -> None:
+        import inspect
+
+        from us_stock_helper_core.scoring import ADVISER_SCORE_CAP
+        from decision_engine import engine as engine_module
+
+        source = inspect.getsource(engine_module)
+        # The cap and the normalization divisor must both come from the shared
+        # constant; a repeated literal is how the layers drifted apart before.
+        self.assertIn("council_cap=ADVISER_SCORE_CAP", source)
+        self.assertIn("ADVISER_SCORE_CAP", source)
+        self.assertNotIn("council_cap=3.0", source)
+        self.assertNotIn("/ 3.0", source)
+        self.assertEqual(ADVISER_SCORE_CAP, 3.0)

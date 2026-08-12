@@ -25,6 +25,12 @@ from .patterns import (
 from .temporal import select_bars_as_of, select_evidence_as_of
 
 
+# The single authority for how far the adviser panel may move a score. Every
+# layer that caps, normalizes or displays an adviser adjustment must read this
+# rather than repeating the number, or the layers drift apart silently.
+ADVISER_SCORE_CAP = 3.0
+
+
 class HardGate(str, Enum):
     STALE_DATA = "stale_data"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
@@ -233,7 +239,7 @@ def score_horizon(
                 explanation=explanations[name],
             )
         )
-    adviser_points = _clamp(features.adviser_factor) * 3.0
+    adviser_points = _clamp(features.adviser_factor) * ADVISER_SCORE_CAP
     contributions.append(
         FactorContribution(
             name="adviser",
@@ -241,8 +247,8 @@ def score_horizon(
             weight=0.0,
             points=adviser_points,
             explanation=(
-                "Bounded style-adviser soft factor; capped at ±3 points and "
-                "never bypasses a hard gate."
+                f"Bounded style-adviser soft factor; capped at "
+                f"±{ADVISER_SCORE_CAP:g} points and never bypasses a hard gate."
             ),
         )
     )

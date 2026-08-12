@@ -18,6 +18,7 @@ from information_layer import (
     EvidencePacketBuilder,
 )
 from us_stock_helper_core import (
+    ADVISER_SCORE_CAP,
     CalibrationStatus,
     EvidenceKind,
     EvidenceRecord,
@@ -153,7 +154,7 @@ class DecisionEngine:
         adjusted = score_horizon(
             replace(
                 features,
-                adviser_factor=max(-1.0, min(1.0, adjustment / 3.0)),
+                adviser_factor=max(-1.0, min(1.0, adjustment / ADVISER_SCORE_CAP)),
             ),
             gates,
         )
@@ -283,7 +284,7 @@ class DecisionEngine:
             baseline_score=baseline.objective_score,
             baseline_direction=baseline.direction.value,
             opinions=validated,
-            council_cap=3.0,
+            council_cap=ADVISER_SCORE_CAP,
             hard_gate_passed=baseline.actionable,
         )
         return result.adjustment

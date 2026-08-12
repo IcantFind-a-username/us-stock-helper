@@ -51,6 +51,10 @@ it("keeps the objective layer frozen while selecting deterministic long and shor
   expect(view.getByText("回踩分批限价")).toBeTruthy();
   expect(view.getByText("$139.80 – $141.20")).toBeTruthy();
   expect(view.getByText("1.25× / 上限 1.50×")).toBeTruthy();
+  // The服务端 caps the adviser panel at ±3 points; showing a wider bound here
+  // would tell the user advisers carry more weight than they actually do.
+  expect(view.getByText("顾问软因子 / 上限 3.0")).toBeTruthy();
+  expect(view.queryByText(/上限 10/)).toBeNull();
 
   await fireEvent.press(view.getByRole("button", { name: "查看方案引用" }));
   expect(view.getByText("NVDA 方案证据")).toBeTruthy();

@@ -260,3 +260,27 @@ class ExplainableScoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdviserCapContractTests(unittest.TestCase):
+    def test_the_adviser_cap_is_a_single_published_constant(self) -> None:
+        from us_stock_helper_core.scoring import ADVISER_SCORE_CAP
+
+        self.assertEqual(ADVISER_SCORE_CAP, 3.0)
+
+    def test_no_adviser_factor_can_move_the_score_beyond_the_cap(self) -> None:
+        from us_stock_helper_core.scoring import ADVISER_SCORE_CAP
+
+        # Two defences: the feature model refuses an out-of-range factor, and
+        # scoring caps whatever survives.
+        for factor in (5.0, -5.0):
+            with self.subTest(factor=factor):
+                with self.assertRaisesRegex(ValueError, "adviser_factor"):
+                    manual_features(adviser_factor=factor)
+        for factor in (1.0, -1.0, 0.5):
+            with self.subTest(factor=factor):
+                result = score_horizon(manual_features(adviser_factor=factor))
+                adviser = next(
+                    item for item in result.contributions if item.name == "adviser"
+                )
+                self.assertLessEqual(abs(adviser.points), ADVISER_SCORE_CAP)

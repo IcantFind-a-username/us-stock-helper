@@ -109,6 +109,13 @@ export interface Candidate {
   citationIds: string[];
 }
 
+/**
+ * How far the adviser panel may move an objective score. Mirrors
+ * ADVISER_SCORE_CAP in services/analysis_core; the two must stay equal or the
+ * app tells the user advisers carry weight the server will never grant them.
+ */
+export const ADVISER_SCORE_CAP = 3.0;
+
 export type PriceAdjustment = "forward-adjusted" | "unadjusted";
 
 export interface Candle {

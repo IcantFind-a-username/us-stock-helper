@@ -11,6 +11,7 @@ import {
 } from "@/components/dashboard/DashboardDetailSheet";
 import { AnalysisNotConnected } from "@/components/ui/AnalysisNotConnected";
 import { Screen } from "@/components/ui/Screen";
+import { ADVISER_SCORE_CAP } from "@/domain/models";
 import type { PlanSide, RiskPreference } from "@/domain/models";
 import { evaluateTradePlanSafety, selectTradePlan } from "@/domain/plan";
 import { fixtureRepository } from "@/fixtures/repository";
@@ -40,9 +41,9 @@ export function AdvisersScreen() {
   const bearishCount = activeAdvisers.filter(({ direction }) => direction === "bearish").length;
   const neutralCount = activeAdvisers.length - bullishCount - bearishCount;
   const adviserAdjustment = Math.max(
-    -10,
+    -ADVISER_SCORE_CAP,
     Math.min(
-      10,
+      ADVISER_SCORE_CAP,
       activeAdvisers.reduce(
         (sum, adviser) =>
           sum +
@@ -128,7 +129,9 @@ export function AdvisersScreen() {
               {adviserAdjustment > 0 ? "+" : ""}
               {adviserAdjustment.toFixed(1)}
             </Text>
-            <Text style={styles.softLabel}>顾问软因子 / 上限 10</Text>
+            <Text style={styles.softLabel}>
+              顾问软因子 / 上限 {ADVISER_SCORE_CAP.toFixed(1)}
+            </Text>
           </View>
         </View>
       </View>
