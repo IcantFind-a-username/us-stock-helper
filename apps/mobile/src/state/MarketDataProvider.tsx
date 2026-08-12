@@ -9,7 +9,16 @@ import {
   type PropsWithChildren,
 } from "react";
 
-import { getMarketRuntimeConfig } from "@/config/runtimeConfig";
+import {
+  getAnalysisRuntimeConfig,
+  getMarketRuntimeConfig,
+} from "@/config/runtimeConfig";
+import {
+  AnalysisRequestError,
+  createAnalysisClient,
+  DecisionValidationError,
+  type AnalysisSource,
+} from "@/data/analysisGateway";
 import {
   createGatewayMarketRepository,
   isRetryableMarketError,
@@ -18,7 +27,9 @@ import {
   type MarketWatchlist,
 } from "@/data/marketRepository";
 import type {
+  Decision,
   DemoChartSnapshot,
+  Horizon,
   LiveStockSnapshot,
   WatchlistQuote,
 } from "@/domain/models";
@@ -48,6 +59,7 @@ export type DemoMarketWatchlist = {
 
 type MarketDataContextValue = {
   repository: MarketRepository;
+  analysis: AnalysisSource;
   demoMode: boolean;
   setDemoMode(value: boolean): void;
   development: boolean;
@@ -57,6 +69,7 @@ type MarketDataContextValue = {
 
 type MarketDataProviderProps = PropsWithChildren<{
   repository?: MarketRepository;
+  analysis?: AnalysisSource;
   development?: boolean;
   initialDemoMode?: boolean;
   demoWatchlist?: WatchlistQuote[];
@@ -82,9 +95,20 @@ function unavailableRepository(error: unknown) {
   } satisfies MarketRepository;
 }
 
+function unavailableAnalysis(error: unknown) {
+  const analysisError = new MarketDataError(
+    "configuration",
+    error instanceof Error ? error.message : "invalid analysis configuration",
+  );
+  return {
+    getDecision: async () => Promise.reject(analysisError),
+  } satisfies AnalysisSource;
+}
+
 export function MarketDataProvider({
   children,
   repository,
+  analysis,
   development = typeof __DEV__ !== "undefined" && __DEV__,
   initialDemoMode = false,
   demoWatchlist = [],
@@ -102,6 +126,23 @@ export function MarketDataProvider({
       return unavailableRepository(error);
     }
   }, [repository]);
+  const defaultAnalysis = useMemo(() => {
+    if (analysis) return analysis;
+    try {
+      const config = getAnalysisRuntimeConfig();
+      if (!config.apiUrl) {
+        throw new Error("EXPO_PUBLIC_ANALYSIS_API_URL is not configured");
+      }
+      return createAnalysisClient({
+        baseUrl: config.apiUrl,
+        ...(config.authorizationToken
+          ? { authorizationToken: config.authorizationToken }
+          : {}),
+      });
+    } catch (error) {
+      return unavailableAnalysis(error);
+    }
+  }, [analysis]);
   const [demoMode, setDemoModeState] = useState(initialDemoMode);
   const setDemoMode = useCallback(
     (value: boolean) => {
@@ -115,6 +156,7 @@ export function MarketDataProvider({
   const value = useMemo<MarketDataContextValue>(
     () => ({
       repository: defaultRepository,
+      analysis: defaultAnalysis,
       demoMode,
       setDemoMode,
       development,
@@ -122,6 +164,7 @@ export function MarketDataProvider({
       retryDelaysMs,
     }),
     [
+      defaultAnalysis,
       defaultRepository,
       demoMode,
       demoWatchlist,
@@ -148,6 +191,12 @@ function useMarketDataContext() {
 
 function toMarketError(error: unknown) {
   if (error instanceof MarketDataError) return error;
+  if (error instanceof AnalysisRequestError) {
+    return new MarketDataError(error.kind, error.message);
+  }
+  if (error instanceof DecisionValidationError) {
+    return new MarketDataError("validation", error.message);
+  }
   return new MarketDataError(
     "offline",
     error instanceof Error ? error.message : "market data is unavailable",
@@ -390,6 +439,29 @@ export function useStockSnapshot(
         { signal, forceRefresh },
       );
       return { data, verifiedAt: data.source.asOf };
+    },
+  });
+}
+
+/**
+ * A decision is never cached across mounts and never has a demo counterpart:
+ * a stored conclusion about a live market goes stale in a way the reader
+ * cannot see, and a fixture conclusion would be indistinguishable from a real
+ * one on the page.
+ */
+export function useDecision(
+  symbol: string,
+  horizon: Horizon,
+): MarketDataState<Decision> {
+  const { analysis } = useMarketDataContext();
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  return useLiveResource<Decision>({
+    resourceKey: `${normalizedSymbol}|${horizon}`,
+    cachedData: null,
+    demoData: null,
+    load: async (signal) => {
+      const data = await analysis.getDecision(normalizedSymbol, horizon, signal);
+      return { data, verifiedAt: data.decisionCutoff };
     },
   });
 }

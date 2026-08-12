@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { PriceChart } from "@/components/chart/PriceChart";
+import { DecisionCard } from "@/components/stock/DecisionCard";
 import { IndicatorStrip } from "@/components/stock/IndicatorStrip";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { StockHeader } from "@/components/stock/StockHeader";
@@ -12,12 +13,14 @@ import { Screen } from "@/components/ui/Screen";
 import {
   toDemoChartSnapshot,
   type ChartSnapshot,
+  type Decision,
   type LiveStockSnapshot,
 } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useAppState } from "@/state/AppStateProvider";
 import {
   type MarketDataState,
+  useDecision,
   useStockSnapshot,
 } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
@@ -33,6 +36,32 @@ function DisabledAnalysisCard({ title }: { title: string }) {
     <View style={styles.disabledCard}>
       <Text style={styles.disabledTitle}>{title}</Text>
       <Text style={styles.disabledText}>尚未接入真实分析</Text>
+    </View>
+  );
+}
+
+function DecisionState({ decision }: { decision: MarketDataState<Decision> }) {
+  const unavailable = decision.status === "unavailable";
+  return (
+    <View style={styles.decisionState} testID="decision-state">
+      <Text style={styles.eyebrow}>综合结论</Text>
+      <Text style={styles.decisionStateText}>
+        {unavailable
+          ? `分析不可用 · ${decision.error?.category ?? "offline"}`
+          : "正在读取分析…"}
+      </Text>
+      {unavailable ? (
+        <Pressable
+          accessibilityLabel="重试分析"
+          accessibilityRole="button"
+          onPress={decision.refresh}
+          style={({ pressed }) => [
+            styles.decisionRetry,
+            pressed && styles.pressed,
+          ]}>
+          <Text style={styles.decisionRetryText}>重试分析</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -101,6 +130,7 @@ export function StockDetailScreen() {
     : params.symbol;
   const symbol = (symbolParam ?? "NVDA").toUpperCase();
   const market = useStockSnapshot(symbol, "5m", 200);
+  const decision = useDecision(symbol, horizon);
   const stock =
     market.status === "demo"
       ? toDemoChartSnapshot(fixtureRepository.getStock(symbol, horizon))
@@ -307,7 +337,13 @@ export function StockDetailScreen() {
         />
       ) : null}
 
-      {!stock.forecast ? <DisabledAnalysisCard title="预测分析" /> : null}
+      {stock.demoData ? (
+        stock.forecast ? null : <DisabledAnalysisCard title="预测分析" />
+      ) : decision.data ? (
+        <DecisionCard decision={decision.data} />
+      ) : (
+        <DecisionState decision={decision} />
+      )}
       <DisabledAnalysisCard title="基本面与形态" />
       <DisabledAnalysisCard title="市场环境" />
 
@@ -440,6 +476,21 @@ const styles = StyleSheet.create({
   },
   disabledTitle: { color: colors.ink, fontSize: 11, fontWeight: "800" },
   disabledText: { color: colors.muted, fontSize: 9, fontWeight: "700" },
+  decisionState: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  decisionStateText: { color: colors.muted, fontSize: 12, fontWeight: "800" },
+  decisionRetry: {
+    alignItems: "flex-start",
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  decisionRetryText: { color: colors.blue, fontSize: 11, fontWeight: "900" },
   secondaryButton: {
     alignItems: "center",
     backgroundColor: colors.card,

@@ -10,6 +10,11 @@ import {
 import { StyleSheet } from "react-native";
 
 import {
+  AnalysisRequestError,
+  decodeDecisionEnvelope,
+  type AnalysisSource,
+} from "@/data/analysisGateway";
+import {
   decodeStockSnapshotEnvelope,
 } from "@/data/marketGateway";
 import {
@@ -18,10 +23,11 @@ import {
   type MarketDataSource,
   type MarketRepository,
 } from "@/data/marketRepository";
-import type { LiveStockSnapshot } from "@/domain/models";
+import type { Decision, LiveStockSnapshot } from "@/domain/models";
 import { AppStateProvider } from "@/state/AppStateProvider";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
 
+import { decisionFixture } from "../../data/__tests__/decision.fixture";
 import { stockSnapshotFixture } from "../../data/__tests__/stockSnapshot.fixture";
 import { StockDetailScreen } from "../StockDetailScreen";
 
@@ -73,6 +79,16 @@ function unavailableMagicSnapshot() {
   });
 }
 
+function liveDecision(
+  mutate: (value: ReturnType<typeof decisionFixture>) => void = () => {},
+) {
+  const value = decisionFixture();
+  mutate(value);
+  return decodeDecisionEnvelope(value, {
+    now: new Date("2026-07-25T16:00:10.000Z"),
+  });
+}
+
 function repositoryWithSnapshot(
   loadSnapshot: MarketDataSource["loadSnapshot"],
 ) {
@@ -86,16 +102,23 @@ function repositoryWithSnapshot(
   });
 }
 
+function analysisWith(getDecision: AnalysisSource["getDecision"]): AnalysisSource {
+  return { getDecision };
+}
+
 async function renderDetail({
   repository = repositoryWithSnapshot(async () => liveSnapshot()),
+  analysis = analysisWith(async () => liveDecision()),
   demoMode = false,
 }: {
   repository?: MarketRepository;
+  analysis?: AnalysisSource;
   demoMode?: boolean;
 } = {}) {
   return render(
     <AppStateProvider>
       <MarketDataProvider
+        analysis={analysis}
         development
         initialDemoMode={demoMode}
         repository={repository}
@@ -150,7 +173,8 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.getByText("2026-Q1 · 12.50% · 100 家机构")).toBeTruthy();
   expect(view.getByText(/报告期 2026-03-31 00:00:00 UTC/)).toBeTruthy();
 
-  expect(view.getAllByText("尚未接入真实分析")).toHaveLength(4);
+  expect(view.getAllByText("尚未接入真实分析")).toHaveLength(3);
+  expect(view.queryByText("预测分析")).toBeNull();
   const adviser = view.getByRole("button", { name: "顾问分析尚未接入真实分析" });
   expect(adviser.props.accessibilityState).toEqual({ disabled: true });
   expect(view.getByText("仅分析与建议 · 不连接券商 · 不会自动下单")).toBeTruthy();
@@ -487,4 +511,125 @@ it("uses the fixture only when runtime explicitly selects demo mode", async () =
   expect(view.getByText("$143.80")).toBeTruthy();
   expect(view.getByText(/demo-short · DEMO/i)).toBeTruthy();
   expect(view.queryByText("实时只读")).toBeNull();
+});
+
+it("shows the real decision with the share of the picture it had", async () => {
+  const requests: { symbol: string; horizon: string }[] = [];
+  const view = await renderDetail({
+    analysis: analysisWith(async (symbol, horizon) => {
+      requests.push({ symbol, horizon });
+      return liveDecision();
+    }),
+  });
+
+  await waitFor(() => expect(view.getByTestId("decision-card")).toBeTruthy());
+
+  expect(requests).toEqual([{ symbol: "NVDA", horizon: "short" }]);
+  expect(view.getByTestId("decision-score")).toHaveTextContent(/72.5/);
+  // A score shown without its coverage reads as a complete verdict.
+  expect(view.getByTestId("decision-coverage")).toHaveTextContent(
+    /因子覆盖 70%/,
+  );
+  expect(view.getByTestId("decision-missing-factors")).toHaveTextContent(
+    /macro/,
+  );
+  expect(view.queryByText("预测分析")).toBeNull();
+  expect(view.queryByTestId("decision-state")).toBeNull();
+});
+
+it("lets an unavailable decision speak for itself without a second placeholder", async () => {
+  const view = await renderDetail({
+    analysis: analysisWith(async () =>
+      liveDecision((value) => {
+        value.status = "unavailable";
+        value.score = null;
+        value.forecast = null;
+        value.riskPlan = null;
+        value.notes = ["No completed candles were available."];
+      }),
+    ),
+  });
+
+  await waitFor(() => expect(view.getByTestId("decision-card")).toBeTruthy());
+
+  expect(view.getByText("暂不可用")).toBeTruthy();
+  expect(view.getByTestId("decision-card")).toHaveTextContent(
+    /No completed candles were available/,
+  );
+  expect(view.queryByTestId("decision-score")).toBeNull();
+  expect(view.queryByText("预测分析")).toBeNull();
+  expect(view.queryByTestId("decision-state")).toBeNull();
+});
+
+it("names why the analysis service could not answer and offers one retry", async () => {
+  let attempts = 0;
+  const view = await renderDetail({
+    analysis: analysisWith(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new AnalysisRequestError("offline", "analysis service is offline");
+      }
+      return liveDecision();
+    }),
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("decision-state")).toHaveTextContent(
+      /分析不可用 · offline/,
+    ),
+  );
+  // Rendering nothing here would read as "this stock has no conclusion", and a
+  // placeholder card would claim the service is not connected at all.
+  expect(view.queryByTestId("decision-card")).toBeNull();
+  expect(view.queryByText("预测分析")).toBeNull();
+
+  await act(async () => {
+    fireEvent.press(view.getByRole("button", { name: "重试分析" }));
+  });
+  await waitFor(() => expect(view.getByTestId("decision-card")).toBeTruthy());
+  expect(view.getByTestId("decision-coverage")).toHaveTextContent(
+    /因子覆盖 70%/,
+  );
+});
+
+it("never asks the analysis service for a decision about demo data", async () => {
+  const getDecision = jest.fn<AnalysisSource["getDecision"]>(async () =>
+    liveDecision(),
+  );
+  const view = await renderDetail({
+    analysis: analysisWith(getDecision),
+    demoMode: true,
+  });
+
+  await waitFor(() =>
+    expect(view.getByText("演示数据 · 非实时行情")).toBeTruthy(),
+  );
+  expect(getDecision).not.toHaveBeenCalled();
+  expect(view.queryByTestId("decision-card")).toBeNull();
+  expect(view.queryByTestId("decision-state")).toBeNull();
+});
+
+it("cancels an in-flight decision request when the page leaves", async () => {
+  const signals: (AbortSignal | undefined)[] = [];
+  const view = await renderDetail({
+    analysis: analysisWith(
+      (_symbol, _horizon, signal) =>
+        new Promise<Decision>((_resolve, reject) => {
+          signals.push(signal);
+          signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                Object.assign(new Error("page left"), { name: "AbortError" }),
+              ),
+            { once: true },
+          );
+        }),
+    ),
+  });
+
+  await waitFor(() => expect(signals).toHaveLength(1));
+  await view.unmount();
+
+  expect(signals[0]?.aborted).toBe(true);
 });

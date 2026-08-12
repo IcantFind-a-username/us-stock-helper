@@ -3,6 +3,8 @@ export type MarketRuntimeConfig = {
   authorizationToken?: string;
 };
 
+export type AnalysisRuntimeConfig = MarketRuntimeConfig;
+
 type RuntimeConfigInput = {
   apiUrl?: string | undefined;
   development: boolean;
@@ -44,5 +46,16 @@ export function getMarketRuntimeConfig(): MarketRuntimeConfig {
     apiUrl: process.env.EXPO_PUBLIC_MARKET_API_URL,
     development,
     developmentToken: primaryToken ?? compatibilityToken,
+  });
+}
+
+export function getAnalysisRuntimeConfig(): AnalysisRuntimeConfig {
+  const development = typeof __DEV__ !== "undefined" && __DEV__;
+
+  return readRuntimeConfig({
+    apiUrl: process.env.EXPO_PUBLIC_ANALYSIS_API_URL,
+    development,
+    developmentToken:
+      process.env.EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN?.trim() || undefined,
   });
 }

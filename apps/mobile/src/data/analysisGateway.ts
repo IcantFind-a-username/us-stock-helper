@@ -4,6 +4,7 @@ import type {
   DecisionRiskPlan,
   DecisionScore,
   FactorContribution,
+  Horizon,
 } from "@/domain/models";
 
 /**
@@ -27,6 +28,35 @@ export class DecisionValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DecisionValidationError";
+  }
+}
+
+export type AnalysisRequestErrorKind =
+  | "configuration"
+  | "contract"
+  | "login-required"
+  | "malformed"
+  | "offline"
+  | "permission"
+  | "timeout";
+
+export class AnalysisRequestError extends DecisionValidationError {
+  constructor(
+    public readonly kind: AnalysisRequestErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AnalysisRequestError";
+  }
+}
+
+class AnalysisHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly payload: unknown,
+  ) {
+    super(`analysis service returned HTTP ${status}`);
+    this.name = "AnalysisHttpError";
   }
 }
 
@@ -262,5 +292,193 @@ export function decodeDecisionEnvelope(
       };
     }),
     notes: value.notes.map(String),
+  };
+}
+
+function normalizeUsSymbol(code: string) {
+  const normalized = code.trim().toUpperCase();
+  const match = /^(?:US\.)?([A-Z][A-Z0-9.-]{0,9})$/.exec(normalized);
+  if (!match?.[1]) throw new DecisionValidationError(`unsupported US code: ${code}`);
+  return match[1];
+}
+
+const kindByErrorCode: Record<string, AnalysisRequestErrorKind> = {
+  INVALID_ARGUMENT: "contract",
+  PATH_NOT_ALLOWED: "contract",
+  METHOD_NOT_ALLOWED: "contract",
+  LOGIN_REQUIRED: "login-required",
+  AUTH_REQUIRED: "login-required",
+  PERMISSION_DENIED: "permission",
+  ANALYSIS_FAILED: "malformed",
+};
+
+function kindForPayload(payload: unknown): AnalysisRequestErrorKind {
+  const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
+  const code = error && typeof error.code === "string" ? error.code : null;
+  return (code ? kindByErrorCode[code] : undefined) ?? "malformed";
+}
+
+export type AnalysisSource = {
+  getDecision(
+    symbol: string,
+    horizon: Horizon,
+    signal?: AbortSignal,
+  ): Promise<Decision>;
+};
+
+type AnalysisClientOptions = {
+  baseUrl: string;
+  authorizationToken?: string;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+  timeoutMs?: number;
+};
+
+export function createAnalysisClient({
+  baseUrl,
+  authorizationToken,
+  fetchImpl = fetch,
+  now = () => new Date(),
+  // The chain scores, forecasts and cites before it answers, so it needs a
+  // longer deadline than a quote read; the request still has to end by itself.
+  timeoutMs = 8_000,
+}: AnalysisClientOptions): AnalysisSource {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  let parsedBaseUrl: URL;
+  try {
+    parsedBaseUrl = new URL(normalizedBaseUrl);
+  } catch {
+    throw new DecisionValidationError("analysis baseUrl is invalid");
+  }
+  if (
+    !["http:", "https:"].includes(parsedBaseUrl.protocol) ||
+    parsedBaseUrl.username !== "" ||
+    parsedBaseUrl.password !== "" ||
+    (parsedBaseUrl.pathname !== "" && parsedBaseUrl.pathname !== "/") ||
+    parsedBaseUrl.search !== "" ||
+    parsedBaseUrl.hash !== ""
+  ) {
+    throw new DecisionValidationError(
+      "analysis baseUrl must be a credential-free HTTP(S) origin",
+    );
+  }
+  const isLoopback = new Set(["127.0.0.1", "localhost", "::1"]).has(
+    parsedBaseUrl.hostname,
+  );
+  if (!isLoopback && (!authorizationToken || authorizationToken.length < 32)) {
+    throw new DecisionValidationError(
+      "a 32-character or longer ephemeral token is required for a LAN analysis service",
+    );
+  }
+
+  async function fetchJson(path: string, callerSignal?: AbortSignal) {
+    if (callerSignal?.aborted) {
+      const error = new Error("analysis request was aborted by caller");
+      error.name = "AbortError";
+      throw error;
+    }
+
+    const controller = new AbortController();
+    let abortCause: "caller" | "timeout" | null = null;
+    const abortOnce = (cause: "caller" | "timeout") => {
+      if (abortCause !== null) return;
+      abortCause = cause;
+      controller.abort();
+    };
+    const abortFromCaller = () => abortOnce("caller");
+    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+    const timeout = setTimeout(() => abortOnce("timeout"), timeoutMs);
+    try {
+      const response = await fetchImpl(`${normalizedBaseUrl}${path}`, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          ...(authorizationToken
+            ? { Authorization: `Bearer ${authorizationToken}` }
+            : {}),
+        },
+        signal: controller.signal,
+      });
+      let payload: unknown;
+      try {
+        payload = (await response.json()) as unknown;
+      } catch {
+        throw new AnalysisHttpError(response.status, null);
+      }
+      if (!response.ok) throw new AnalysisHttpError(response.status, payload);
+      return payload;
+    } catch (error) {
+      if (abortCause === "timeout") {
+        throw new AnalysisRequestError("timeout", "analysis request timed out");
+      }
+      if (abortCause === "caller") {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        const callerError = new Error("analysis request was aborted by caller");
+        callerError.name = "AbortError";
+        throw callerError;
+      }
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new AnalysisRequestError(
+          "offline",
+          "analysis request was aborted without a known cause",
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      callerSignal?.removeEventListener("abort", abortFromCaller);
+    }
+  }
+
+  function toAnalysisRequestError(error: unknown): AnalysisRequestError {
+    if (error instanceof AnalysisRequestError) return error;
+    if (error instanceof AnalysisHttpError) {
+      if (error.status === 401) {
+        return new AnalysisRequestError("login-required", error.message);
+      }
+      if (error.status === 403) {
+        return new AnalysisRequestError("permission", error.message);
+      }
+      if (error.status === 408 || error.status === 504) {
+        return new AnalysisRequestError("timeout", error.message);
+      }
+      return new AnalysisRequestError(kindForPayload(error.payload), error.message);
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+      return new AnalysisRequestError(
+        "offline",
+        "analysis request was aborted without a known cause",
+      );
+    }
+    if (error instanceof DecisionValidationError) {
+      return new AnalysisRequestError("malformed", error.message);
+    }
+    return new AnalysisRequestError("offline", "the analysis service is unavailable");
+  }
+
+  return {
+    async getDecision(symbol, horizon, signal) {
+      const normalizedSymbol = normalizeUsSymbol(symbol);
+      const query = new URLSearchParams({
+        symbol: normalizedSymbol,
+        horizon,
+      });
+      try {
+        const payload = await fetchJson(`/decision?${query.toString()}`, signal);
+        const decision = decodeDecisionEnvelope(payload, { now: now() });
+        if (
+          decision.symbol !== normalizedSymbol ||
+          decision.horizon !== horizon
+        ) {
+          throw new DecisionValidationError(
+            "decision response does not match the requested symbol and horizon",
+          );
+        }
+        return decision;
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        throw toAnalysisRequestError(error);
+      }
+    },
   };
 }
