@@ -43,14 +43,18 @@ class HardGate(str, Enum):
 class FeatureSet:
     as_of: datetime
     horizon: Horizon
-    technical_trend: float
-    momentum: float
-    pattern: float
-    market_sentiment: float
-    macro: float
-    geopolitics: float
-    institutional_flow: float
-    fundamentals: float
+    # None means no source could supply this factor. Distinct from 0.0, which
+    # is a measured neutral: filling absence with zero states a judgement
+    # nobody made and drags the score toward the middle in proportion to how
+    # blind the system is.
+    technical_trend: float | None
+    momentum: float | None
+    pattern: float | None
+    market_sentiment: float | None
+    macro: float | None
+    geopolitics: float | None
+    institutional_flow: float | None
+    fundamentals: float | None
     adviser_factor: float
     evidence_confidence: float
     latest_market_data_at: datetime | None
@@ -68,9 +72,11 @@ class FeatureSet:
             "geopolitics",
             "institutional_flow",
             "fundamentals",
-            "adviser_factor",
         ):
-            require_unit_range(getattr(self, field_name), field_name)
+            value = getattr(self, field_name)
+            if value is not None:
+                require_unit_range(value, field_name)
+        require_unit_range(self.adviser_factor, "adviser_factor")
         if not 0.0 <= self.evidence_confidence <= 1.0:
             raise ValueError("evidence_confidence must be between 0 and 1")
 
@@ -78,7 +84,8 @@ class FeatureSet:
 @dataclass(frozen=True, slots=True)
 class FactorContribution:
     name: str
-    raw_value: float
+    # None when no source could supply the factor, as opposed to a measured 0.
+    raw_value: float | None
     weight: float
     points: float
     explanation: str
@@ -93,6 +100,8 @@ class ScoreResult:
     actionable: bool
     contributions: tuple[FactorContribution, ...]
     blocked_by: tuple[HardGate, ...]
+    unavailable_factors: tuple[str, ...] = ()
+    factor_coverage: float = 1.0
     method_version: str = "explainable-horizon-score-v1"
 
 
@@ -191,8 +200,11 @@ def extract_horizon_features(
             )
             / scored_confidence
         )
-        market_sentiment = _clamp(
-            context.market_sentiment * 0.6 + evidence_sentiment * 0.4
+        market_sentiment = (
+            _clamp(context.market_sentiment * 0.6 + evidence_sentiment * 0.4)
+            if context.market_sentiment is not None
+            # No market-wide reading, but the cited evidence is a reading.
+            else _clamp(evidence_sentiment)
         )
     else:
         market_sentiment = context.market_sentiment
@@ -236,14 +248,36 @@ def score_horizon(
         "fundamentals": "Point-in-time company financial health.",
     }
     contributions: list[FactorContribution] = []
+    unavailable = tuple(
+        sorted(name for name in weights if getattr(features, name) is None)
+    )
+    available_weight = sum(
+        weight for name, weight in weights.items() if getattr(features, name) is not None
+    )
+    total_weight = sum(weights.values())
+    # Redistribute the missing weight across what is left rather than letting
+    # absent factors vote zero. The score then means "given what we could see",
+    # and factor_coverage says how much that was.
+    scale = total_weight / available_weight if available_weight else 0.0
     for name, weight in weights.items():
         raw_value = getattr(features, name)
+        if raw_value is None:
+            contributions.append(
+                FactorContribution(
+                    name=name,
+                    raw_value=None,
+                    weight=0.0,
+                    points=0.0,
+                    explanation=f"{explanations[name]} Unavailable for this snapshot.",
+                )
+            )
+            continue
         contributions.append(
             FactorContribution(
                 name=name,
                 raw_value=raw_value,
-                weight=weight,
-                points=raw_value * weight * 50.0,
+                weight=weight * scale,
+                points=raw_value * weight * scale * 50.0,
                 explanation=explanations[name],
             )
         )
@@ -290,9 +324,14 @@ def score_horizon(
         horizon=features.horizon,
         objective_score=objective_score,
         direction=direction,
-        actionable=not unique_gates,
+        # A score built on nothing is not a weak opinion, it is no opinion.
+        actionable=not unique_gates and available_weight > 0.0,
         contributions=tuple(contributions),
         blocked_by=unique_gates,
+        unavailable_factors=unavailable,
+        factor_coverage=(
+            available_weight / total_weight if total_weight else 0.0
+        ),
     )
 
 

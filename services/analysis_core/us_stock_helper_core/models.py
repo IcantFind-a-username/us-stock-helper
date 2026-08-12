@@ -242,15 +242,23 @@ class EvidenceRecord:
 @dataclass(frozen=True, slots=True)
 class MarketContext:
     as_of: datetime
-    market_sentiment: float
-    macro: float
-    geopolitics: float
-    institutional_flow: float
+    # None means no source supplies this factor yet. Requiring a number here
+    # forces the caller to invent one, and an invented neutral is
+    # indistinguishable downstream from a measured one.
+    market_sentiment: float | None
+    macro: float | None
+    geopolitics: float | None
+    institutional_flow: float | None
     evidence_ids: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         require_utc(self.as_of, "as_of")
-        require_unit_range(self.market_sentiment, "market_sentiment")
-        require_unit_range(self.macro, "macro")
-        require_unit_range(self.geopolitics, "geopolitics")
-        require_unit_range(self.institutional_flow, "institutional_flow")
+        for name in (
+            "market_sentiment",
+            "macro",
+            "geopolitics",
+            "institutional_flow",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                require_unit_range(value, name)

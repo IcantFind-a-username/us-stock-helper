@@ -333,3 +333,116 @@ class UnmeasuredEvidenceTests(unittest.TestCase):
             make_evidence(
                 "bad", EvidenceKind.NEWS, 0.5, 0.9, sentiment_measured=False
             )
+
+
+class UnavailableFactorTests(unittest.TestCase):
+    def test_a_missing_factor_is_not_scored_as_neutral(self) -> None:
+        # Filling an absent factor with 0.0 states a neutral judgement nobody
+        # made, and it drags the score toward 50 in proportion to how much
+        # data is missing — the more blind the system is, the more confident
+        # it looks.
+        complete = manual_features(sign=1.0)
+        partial = replace(complete, macro=None, geopolitics=None)
+
+        zero_filled = score_horizon(
+            replace(complete, macro=0.0, geopolitics=0.0)
+        ).objective_score
+        renormalized = score_horizon(partial).objective_score
+        full = score_horizon(complete).objective_score
+
+        # Zero-filling pulls the score toward the middle; renormalizing keeps
+        # it where the evidence that does exist puts it.
+        self.assertLess(zero_filled, full)
+        self.assertGreaterEqual(renormalized, full)
+        self.assertGreater(renormalized, zero_filled)
+
+    def test_the_result_names_the_factors_it_could_not_use(self) -> None:
+        features = replace(
+            manual_features(), macro=None, geopolitics=None, fundamentals=None
+        )
+
+        result = score_horizon(features)
+
+        self.assertEqual(
+            result.unavailable_factors, ("fundamentals", "geopolitics", "macro")
+        )
+        self.assertLess(result.factor_coverage, 1.0)
+        self.assertGreater(result.factor_coverage, 0.0)
+
+    def test_full_coverage_is_reported_when_everything_is_present(self) -> None:
+        result = score_horizon(manual_features())
+
+        self.assertEqual(result.unavailable_factors, ())
+        self.assertEqual(result.factor_coverage, 1.0)
+
+    def test_an_unavailable_factor_contributes_no_points(self) -> None:
+        result = score_horizon(replace(manual_features(), macro=None))
+
+        macro = next(
+            item for item in result.contributions if item.name == "macro"
+        )
+        self.assertIsNone(macro.raw_value)
+        self.assertEqual(macro.points, 0.0)
+        self.assertIn("unavailable", macro.explanation.lower())
+
+    def test_a_score_with_no_usable_factor_is_not_actionable(self) -> None:
+        blind = replace(
+            manual_features(),
+            technical_trend=None,
+            momentum=None,
+            pattern=None,
+            market_sentiment=None,
+            macro=None,
+            geopolitics=None,
+            institutional_flow=None,
+            fundamentals=None,
+        )
+
+        result = score_horizon(blind)
+
+        self.assertEqual(result.factor_coverage, 0.0)
+        self.assertFalse(result.actionable)
+        self.assertEqual(result.objective_score, 50.0)
+
+
+class ContextAvailabilityTests(unittest.TestCase):
+    def test_a_context_may_declare_a_factor_it_has_no_source_for(self) -> None:
+        # Today only price and news reach the live path; macro, geopolitics
+        # and institutional flow have no feed. Requiring a number forces the
+        # caller to invent one.
+        context = MarketContext(
+            as_of=AS_OF,
+            market_sentiment=0.4,
+            macro=None,
+            geopolitics=None,
+            institutional_flow=None,
+        )
+        bars = make_bars([100.0 + index * 0.5 for index in range(60)])
+
+        features = extract_horizon_features(Horizon.SHORT, bars, (), context)
+
+        self.assertIsNone(features.macro)
+        self.assertIsNone(features.geopolitics)
+        self.assertIsNone(features.institutional_flow)
+        self.assertIsNotNone(features.market_sentiment)
+
+    def test_a_score_from_a_partial_context_reports_its_coverage(self) -> None:
+        context = MarketContext(
+            as_of=AS_OF,
+            market_sentiment=0.4,
+            macro=None,
+            geopolitics=None,
+            institutional_flow=None,
+        )
+        bars = make_bars([100.0 + index * 0.5 for index in range(60)])
+
+        result = score_horizon(
+            extract_horizon_features(Horizon.SHORT, bars, (), context)
+        )
+
+        self.assertIn("macro", result.unavailable_factors)
+        self.assertIn("institutional_flow", result.unavailable_factors)
+        self.assertEqual(result.factor_coverage, 0.75)
+        # Partial coverage is reported, not punished: actionability stays a
+        # matter for the hard gates, which here fire on the absent evidence.
+        self.assertNotIn("coverage", " ".join(gate.value for gate in result.blocked_by))
