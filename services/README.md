@@ -10,6 +10,9 @@ can be tested before deployment topology is chosen:
    factor; it cannot replace facts or bypass hard gates.
 4. `decision_engine` composes those three layers against one `as_of` cutoff.
 5. `market_gateway` is the isolated, read-only moomoo OpenD boundary.
+6. `analysis_api` is the read-only HTTP boundary that serves the composed
+   decision to the app, carrying every refusal — partial factor coverage, an
+   unmeasurable forecast — through to the screen rather than smoothing it over.
 
 Python is the correct first production language because the workload is
 research- and I/O-heavy, the numerical ecosystem is mature, and the current
@@ -35,6 +38,8 @@ PYTHONPATH=services/analysis_core:services/information_layer:services/adviser_la
   python3 -m unittest discover -s services/decision_engine/tests -v
 PYTHONPATH=services/market_gateway/src:services/analysis_core \
   python3 -m unittest discover -s services/market_gateway/tests -v
+PYTHONPATH=services/analysis_api/src:services/analysis_api/tests:services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine \
+  python3 -m unittest discover -s services/analysis_api/tests -v
 ```
 
 Every decision-bearing object preserves `as_of`/`available_at` semantics.
