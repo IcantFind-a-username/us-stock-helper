@@ -274,7 +274,9 @@ class MarketGatewayService:
             return self._snapshot_error(
                 GatewayError(
                     error.code,
-                    self._message_for_code(error.code),
+                    self._message_for_code(
+                        error.code, "Market data failed point-in-time validation"
+                    ),
                     retriable=error.retriable,
                 ),
                 symbol=from_moomoo_code(code),
@@ -844,7 +846,18 @@ class MarketGatewayService:
         }.get(state, ErrorCode.MALFORMED_PROVIDER_DATA)
 
     @staticmethod
-    def _message_for_code(code: ErrorCode) -> str:
+    def _message_for_code(
+        code: ErrorCode,
+        default: str = "moomoo OpenD returned malformed health data",
+    ) -> str:
+        """Replace provider text with a message we authored.
+
+        ``default`` exists because the same code covers two very different
+        failures: a health check that returned nonsense, and market data that
+        failed validation. Describing the second as the first sends the reader
+        to the wrong place.
+        """
+
         return {
             ErrorCode.OPEND_OFFLINE: "moomoo OpenD is offline",
             ErrorCode.LOGIN_REQUIRED: "moomoo OpenD login is required",
@@ -852,4 +865,4 @@ class MarketGatewayService:
             ErrorCode.QUOTA_EXCEEDED: "Provider quota exceeded",
             ErrorCode.SDK_UNAVAILABLE: "moomoo OpenAPI SDK is not installed",
             ErrorCode.STALE_DATA: "moomoo OpenD health is stale",
-        }.get(code, "moomoo OpenD returned malformed health data")
+        }.get(code, default)

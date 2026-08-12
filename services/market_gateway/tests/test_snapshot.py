@@ -313,6 +313,19 @@ class StockSnapshotTests(unittest.TestCase):
             response["error"]["code"], ErrorCode.MALFORMED_PROVIDER_DATA.value
         )
 
+    def test_a_data_error_is_not_described_as_a_health_check_failure(self) -> None:
+        # The message is the only human-readable part of the error. Telling the
+        # reader that OpenD's health data is malformed, when the real problem
+        # is a capital-flow row from the future, sends them to the wrong place.
+        self.provider.flow_result.items[10]["available_at"] = (
+            NOW + timedelta(hours=1)
+        ).isoformat()
+
+        error = self.service.stock_snapshot("NVDA", "5m", 200)["error"]
+
+        self.assertEqual(error["code"], ErrorCode.MALFORMED_PROVIDER_DATA.value)
+        self.assertNotIn("health", error["message"].lower())
+
     def test_a_cutoff_violation_is_never_reported_as_missing_data(self) -> None:
         self.provider.flow_result.items[10]["available_at"] = (
             NOW + timedelta(hours=1)

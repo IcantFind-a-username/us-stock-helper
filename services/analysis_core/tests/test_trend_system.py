@@ -334,6 +334,53 @@ class TdSetupTests(unittest.TestCase):
         self.assertTrue(td_setup(perfected).signals[0].perfected)
         self.assertFalse(td_setup(blunted).signals[0].perfected)
 
+    def test_td_setup_compares_closes_and_nothing_else(self) -> None:
+        # Opens, highs and lows are arranged to point the opposite way. If the
+        # comparison ever drifted onto one of them the direction would flip,
+        # which is how a mutated reference price slipped past the suite before.
+        bars = tuple(
+            OHLCVBar(
+                symbol="NVDA",
+                interval="5m",
+                opened_at=BASE_TIME + timedelta(minutes=5 * index),
+                closed_at=BASE_TIME + timedelta(minutes=5 * (index + 1)),
+                available_at=BASE_TIME + timedelta(minutes=5 * (index + 1)),
+                open=200.0 - index,
+                high=210.0,
+                low=50.0,
+                close=100.0 + index,
+                volume=1_000.0,
+            )
+            for index in range(13)
+        )
+
+        result = td_setup(bars)
+
+        self.assertEqual(result.bearish_counts[4:], tuple(range(1, 10)))
+        self.assertEqual(result.bullish_counts, (0,) * 13)
+        self.assertEqual(result.signals[0].direction, Direction.BEARISH)
+
+    def test_bearish_perfection_can_fail(self) -> None:
+        # The bearish branch previously had only a positive example, so forcing
+        # it to return True left the suite green.
+        def rising(high_offsets: dict[int, float]) -> tuple[OHLCVBar, ...]:
+            return tuple(
+                bar(
+                    index,
+                    100.0 + index,
+                    high=100.0 + index + high_offsets.get(index, 1.0),
+                )
+                for index in range(13)
+            )
+
+        # Bars 6 and 7 of the setup are indices 9 and 10; bars 8 and 9 are 11
+        # and 12.
+        perfected = rising({9: 1.0, 10: 1.0, 11: 9.0, 12: 9.0})
+        blunted = rising({9: 40.0, 10: 40.0, 11: 0.5, 12: 0.5})
+
+        self.assertTrue(td_setup(perfected).signals[0].perfected)
+        self.assertFalse(td_setup(blunted).signals[0].perfected)
+
     def test_td_setup_restarts_counting_after_a_completed_run(self) -> None:
         bars = rising_bars(22)
 
