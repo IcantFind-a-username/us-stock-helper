@@ -118,6 +118,78 @@ export const ADVISER_SCORE_CAP = 3.0;
 
 export type PriceAdjustment = "forward-adjusted" | "unadjusted";
 
+export interface FactorContribution {
+  name: string;
+  /** null when no source supplied the factor, as opposed to a measured zero. */
+  rawValue: number | null;
+  weight: number;
+  points: number;
+  explanation: string;
+}
+
+export interface DecisionScore {
+  value: number;
+  direction: "bullish" | "bearish" | "neutral";
+  actionable: boolean;
+  methodVersion: string;
+  /** Share of the factor weight that had a source. */
+  factorCoverage: number;
+  unavailableFactors: string[];
+  blockedBy: string[];
+  contributions: FactorContribution[];
+}
+
+export interface DecisionScenario {
+  kind: string;
+  probability: number;
+  priceLow: number;
+  priceHigh: number;
+  explanation: string;
+}
+
+export interface DecisionForecast {
+  currentPrice: number;
+  methodVersion: string;
+  calibrationStatus: string;
+  invalidationConditions: string[];
+  disclaimer: string;
+  cases: DecisionScenario[];
+}
+
+export interface DecisionRiskPlan {
+  action: "long" | "short" | "watch" | "avoid";
+  direction: string;
+  entryRange: [number, number] | null;
+  invalidationPrice: number | null;
+  targetRange: [number, number] | null;
+  maxPositionPercent: number;
+  leverage: number;
+  warnings: string[];
+  methodVersion: string;
+}
+
+export interface DecisionCitation {
+  id: string;
+  headline: string;
+  publisher: string;
+  url: string;
+  availableAt: string;
+}
+
+export interface Decision {
+  status: "live" | "unavailable";
+  symbol: string;
+  horizon: string;
+  decisionCutoff: string;
+  /** null when the chain had nothing to score. */
+  score: DecisionScore | null;
+  /** null when volatility could not be measured; notes say why. */
+  forecast: DecisionForecast | null;
+  riskPlan: DecisionRiskPlan | null;
+  citations: DecisionCitation[];
+  notes: string[];
+}
+
 export interface Candle {
   /** Bar-close time. Indicators and patterns may only consume completed bars. */
   timestamp: string;
