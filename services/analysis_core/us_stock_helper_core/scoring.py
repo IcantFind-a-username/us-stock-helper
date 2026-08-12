@@ -112,7 +112,7 @@ def extract_horizon_features(
     context: MarketContext,
     *,
     adviser_factor: float = 0.0,
-    fundamentals: float = 0.0,
+    fundamentals: float | None = None,
 ) -> FeatureSet:
     selected_bars = select_bars_as_of(bars, context.as_of)
     series = {
@@ -139,7 +139,9 @@ def extract_horizon_features(
         price_return = closes[-1] / closes[-lookback] - 1.0
         technical_trend = _clamp(price_return / return_scale)
     else:
-        technical_trend = 0.0
+        # Too short to measure a return over this horizon. Zero would claim a
+        # flat market where there is simply no observation.
+        technical_trend = None
 
     momentum_window = closes[-max(35, lookback + 1) :]
     rsi_value = rsi(momentum_window)
@@ -152,7 +154,7 @@ def extract_horizon_features(
             _clamp(macd_value.histogram / max(closes[-1] * 0.01, 0.01))
         )
     momentum = (
-        sum(momentum_parts) / len(momentum_parts) if momentum_parts else 0.0
+        sum(momentum_parts) / len(momentum_parts) if momentum_parts else None
     )
 
     pattern_values: list[float] = []
@@ -180,9 +182,9 @@ def extract_horizon_features(
         pattern_values.append(
             0.3 if fractals[-1].direction == Direction.BULLISH else -0.3
         )
-    pattern = (
-        max(pattern_values, key=abs) if pattern_values else 0.0
-    )
+    # No confirmed pattern is a genuine reading of zero: the detectors ran and
+    # found nothing. It stays 0.0, unlike a factor that could not be computed.
+    pattern = max(pattern_values, key=abs) if pattern_values else 0.0
 
     confidence_total = sum(record.confidence for record in selected_evidence)
     # Only sources something actually read contribute an opinion. Unread ones

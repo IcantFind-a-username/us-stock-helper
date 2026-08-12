@@ -206,3 +206,33 @@ class AnalysisContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CutoffRaceTests(unittest.TestCase):
+    def test_a_bar_that_lands_during_the_fetch_does_not_fail_the_request(
+        self,
+    ) -> None:
+        """The cutoff has to be taken after the data is in hand.
+
+        Sampling it first meant any bar published during the round trip was
+        newer than the cutoff, and the chain's own invariant then rejected the
+        request. The sibling services select as of a cutoff rather than
+        exploding on data that arrived a moment early.
+        """
+
+        rows = bars()
+        late = replace(rows[-1], available_at=AS_OF + timedelta(seconds=2))
+        moments = iter([AS_OF, AS_OF + timedelta(seconds=5)])
+
+        class SlowProvider(Provider):
+            def bars_for(self, symbol: str, interval: str):
+                # The round trip takes time; the bar lands while it is in
+                # flight.
+                next(moments)
+                return super().bars_for(symbol, interval)
+
+        result = AnalysisService(
+            SlowProvider(rows=rows[:-1] + (late,)), clock=lambda: next(moments)
+        ).decision("NVDA", "short")
+
+        self.assertEqual(result["status"], "live")

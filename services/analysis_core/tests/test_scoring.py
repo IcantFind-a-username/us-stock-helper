@@ -442,7 +442,54 @@ class ContextAvailabilityTests(unittest.TestCase):
 
         self.assertIn("macro", result.unavailable_factors)
         self.assertIn("institutional_flow", result.unavailable_factors)
-        self.assertEqual(result.factor_coverage, 0.75)
+        # Fundamentals has no feed either and now says so, rather than
+        # counting itself as a measured neutral.
+        self.assertEqual(result.factor_coverage, 0.70)
         # Partial coverage is reported, not punished: actionability stays a
         # matter for the hard gates, which here fire on the absent evidence.
         self.assertNotIn("coverage", " ".join(gate.value for gate in result.blocked_by))
+
+
+class UncomputableFactorTests(unittest.TestCase):
+    def test_too_few_bars_leaves_the_technical_factors_unmeasured(self) -> None:
+        """The extractor promised None and delivered zero.
+
+        FeatureSet documents that None means no source could supply a factor
+        and that filling absence with zero states a judgement nobody made.
+        The extractor honoured that only for the context factors: technical
+        trend, momentum and pattern silently became 0.0 whenever there were
+        too few bars to compute them, so coverage was overstated and the
+        score was pulled toward the middle exactly when least was known.
+        """
+
+        bars = make_bars([100.0, 100.5, 101.0])
+
+        features = extract_horizon_features(Horizon.SHORT, bars, (), context())
+
+        self.assertIsNone(features.technical_trend)
+        self.assertIsNone(features.momentum)
+
+    def test_an_uncomputable_factor_lowers_the_reported_coverage(self) -> None:
+        short_series = extract_horizon_features(
+            Horizon.SHORT, make_bars([100.0, 100.5, 101.0]), (), context()
+        )
+        long_series = extract_horizon_features(
+            Horizon.SHORT,
+            make_bars([100.0 + index * 0.5 for index in range(60)]),
+            (),
+            context(),
+        )
+
+        self.assertLess(
+            score_horizon(short_series).factor_coverage,
+            score_horizon(long_series).factor_coverage,
+        )
+
+    def test_fundamentals_defaults_to_unavailable_not_neutral(self) -> None:
+        import inspect
+
+        signature = inspect.signature(extract_horizon_features)
+
+        # A default of 0.0 hands every caller that omits the argument a
+        # measured neutral for a factor that has no feed at all.
+        self.assertIsNone(signature.parameters["fundamentals"].default)

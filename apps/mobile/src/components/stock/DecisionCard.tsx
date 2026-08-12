@@ -44,6 +44,20 @@ export function DecisionCard({ decision }: { decision: Decision }) {
               : "中性"}
         </Text>
       </Text>
+      {!score.actionable ? (
+        <View style={styles.blocked} testID="decision-blocked">
+          <Text style={styles.blockedTitle}>不可行动</Text>
+          {score.blockedBy.length ? (
+            <Text style={styles.blockedReason}>
+              被拦截：{score.blockedBy.map(gateLabel).join("、")}
+            </Text>
+          ) : (
+            <Text style={styles.blockedReason}>
+              可用因子不足以形成结论
+            </Text>
+          )}
+        </View>
+      ) : null}
       {score.unavailableFactors.length ? (
         <Text style={styles.missing} testID="decision-missing-factors">
           未接入因子：{score.unavailableFactors.join("、")}
@@ -88,6 +102,25 @@ export function DecisionCard({ decision }: { decision: Decision }) {
   );
 }
 
+/**
+ * A blocked conclusion must not look like an ordinary one.
+ *
+ * The gate used to reach the screen only through the risk plan's warnings,
+ * and a decision with no measurable volatility has no risk plan — so a score
+ * the engine had refused to act on was displayed exactly like a clean one.
+ */
+function gateLabel(gate: string) {
+  return (
+    {
+      stale_data: "数据陈旧",
+      insufficient_evidence: "证据不足",
+      conflicting_evidence: "证据冲突",
+      unverified_rumor: "未证实传闻",
+      borrow_unavailable: "无券可借",
+    }[gate] ?? gate
+  );
+}
+
 function planLabel(action: string) {
   return { long: "做多", short: "做空", watch: "观望", avoid: "回避" }[action] ?? action;
 }
@@ -110,6 +143,14 @@ const styles = StyleSheet.create({
   coverage: { color: colors.amber, fontSize: 10, fontWeight: "800" },
   score: { color: colors.ink, fontSize: 26, fontWeight: "900" },
   direction: { color: colors.muted, fontSize: 12, fontWeight: "800" },
+  blocked: {
+    backgroundColor: colors.amberSoft,
+    borderRadius: radius.sm,
+    gap: 2,
+    padding: spacing.xs,
+  },
+  blockedTitle: { color: colors.ink, fontSize: 11, fontWeight: "900" },
+  blockedReason: { color: colors.ink, fontSize: 10, lineHeight: 14 },
   missing: { color: colors.amber, fontSize: 10, fontWeight: "700", lineHeight: 15 },
   unavailable: { color: colors.muted, fontSize: 14, fontWeight: "800" },
   scenarios: { gap: 2, marginTop: 2 },

@@ -78,3 +78,31 @@ it("renders an unavailable decision without inventing a score", async () => {
   expect(view.queryByTestId("decision-coverage")).toBeNull();
   expect(view.queryByTestId("decision-score")).toBeNull();
 });
+
+it("says the conclusion was blocked instead of showing it like any other", async () => {
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        const score = value.score as Record<string, unknown>;
+        score.actionable = false;
+        score.blockedBy = ["stale_data", "insufficient_evidence"];
+        // A blocked score with no forecast loses the risk plan too, and the
+        // plan's warnings were the only place the gate was ever written down.
+        value.forecast = null;
+        value.riskPlan = null;
+        value.notes = ["Realized volatility could not be measured."];
+      })}
+    />,
+  );
+
+  const card = view.getByTestId("decision-card");
+  expect(card).toHaveTextContent(/不可行动/);
+  expect(card).toHaveTextContent(/数据陈旧/);
+  expect(card).toHaveTextContent(/证据不足/);
+});
+
+it("does not cry blocked when nothing is blocking", async () => {
+  const view = await render(<DecisionCard decision={decision()} />);
+
+  expect(view.queryByTestId("decision-blocked")).toBeNull();
+});

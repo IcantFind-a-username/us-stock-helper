@@ -6,7 +6,12 @@ from .gateway_provider import (
     provider_from_environment,
 )
 from .http_app import AnalysisApplication, AnalysisServerConfig, build_server
-from .service import SCHEMA_VERSION, AnalysisProvider, AnalysisService
+from .service import (
+    SCHEMA_VERSION,
+    AnalysisProvider,
+    AnalysisService,
+    InvalidRequest,
+)
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -14,6 +19,7 @@ __all__ = [
     "AnalysisProvider",
     "AnalysisServerConfig",
     "AnalysisService",
+    "InvalidRequest",
     "MarketGatewayProvider",
     "MarketGatewayUnavailable",
     "build_server",

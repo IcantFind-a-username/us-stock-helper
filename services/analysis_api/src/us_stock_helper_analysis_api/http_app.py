@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
-from .service import AnalysisService
+from .service import AnalysisService, InvalidRequest
 
 
 _PATHS = {"/health", "/decision"}
@@ -63,7 +63,7 @@ class AnalysisApplication:
 
         try:
             payload = self.service.decision(symbol, horizon)
-        except ValueError as error:
+        except InvalidRequest as error:
             return 400, headers, _error("INVALID_ARGUMENT", str(error))
         except Exception:
             # Provider failures can carry credentials in their text; replace

@@ -95,6 +95,48 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertNotIn("secret", repr(body))
         self.assertNotIn("account", repr(body))
 
+    def test_a_data_failure_is_not_reported_as_a_client_argument_error(
+        self,
+    ) -> None:
+        """JSONDecodeError is a ValueError.
+
+        Catching ValueError ahead of the sanitizing branch meant an upstream
+        HTML error page, or an internal invariant failure, came back as HTTP
+        400 with the internal text attached — blaming the caller for a server
+        problem and defeating the sanitizer for the commonest exception type.
+        """
+
+        import json as json_module
+
+        class Broken:
+            def bars_for(self, symbol: str, interval: str) -> tuple[()]:
+                raise json_module.JSONDecodeError("Expecting delimiter", "{}", 1)
+
+            def evidence_for(self, symbol: str) -> tuple[()]:
+                return ()
+
+        from us_stock_helper_analysis_api.service import AnalysisService
+
+        broken = AnalysisApplication(
+            AnalysisService(Broken(), clock=lambda: AS_OF),  # type: ignore[arg-type]
+            clock=lambda: AS_OF,
+        )
+
+        status, _, body = broken.handle(
+            "GET", "/decision", {"symbol": ["NVDA"], "horizon": ["short"]}
+        )
+
+        self.assertEqual(status, 500)
+        self.assertNotIn("delimiter", repr(body))
+
+    def test_an_unknown_horizon_is_still_a_client_error(self) -> None:
+        status, _, body = app().handle(
+            "GET", "/decision", {"symbol": ["NVDA"], "horizon": ["forever"]}
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "INVALID_ARGUMENT")
+
     def test_the_health_path_reports_readiness_without_data(self) -> None:
         status, _, body = app().handle("GET", "/health", {})
 

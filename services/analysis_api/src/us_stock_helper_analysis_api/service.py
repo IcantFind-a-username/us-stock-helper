@@ -27,6 +27,17 @@ from us_stock_helper_core import (
 
 
 SCHEMA_VERSION = "1"
+
+
+class InvalidRequest(ValueError):
+    """A caller supplied an argument this service cannot honour.
+
+    Kept apart from every other ValueError because json.JSONDecodeError and
+    the decision chain's own invariant failures are ValueErrors too: catching
+    the base class blamed the caller for server-side problems and forwarded
+    internal text that the sanitizer exists to withhold.
+    """
+
 _HORIZONS = {horizon.value: horizon for horizon in Horizon}
 _PREFERENCES = {value.value: value for value in RiskPreference}
 
@@ -52,14 +63,17 @@ class AnalysisService:
     ) -> dict[str, Any]:
         normalized = symbol.strip().upper()
         if not normalized:
-            raise ValueError("symbol is required")
+            raise InvalidRequest("symbol is required")
         if horizon not in _HORIZONS:
-            raise ValueError(f"unsupported horizon: {horizon}")
+            raise InvalidRequest(f"unsupported horizon: {horizon}")
         if risk_preference not in _PREFERENCES:
-            raise ValueError(f"unsupported risk preference: {risk_preference}")
+            raise InvalidRequest(f"unsupported risk preference: {risk_preference}")
 
-        as_of = self.clock()
+        # Take the cutoff after the data is in hand. Sampling it first made
+        # any bar published during the round trip newer than the cutoff, and
+        # the chain's own point-in-time invariant then rejected the request.
         bars = self.provider.bars_for(normalized, self.interval)
+        as_of = self.clock()
         if not bars:
             return self._unavailable(
                 normalized,
