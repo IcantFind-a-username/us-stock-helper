@@ -375,11 +375,7 @@ class GenericFeedAdapter:
             sentiment=reading.score if reading.measured else 0.0,
             sentiment_measured=reading.measured,
             confidence=self.config.reliability,
-            symbol_relevance=_match_keywords(
-                text,
-                self.config.symbol_mappings,
-                uppercase=True,
-            ),
+            symbol_relevance=self._symbol_relevance(entry, text),
             entity_relevance=_match_keywords(
                 text,
                 self.config.entity_mappings,
@@ -396,6 +392,13 @@ class GenericFeedAdapter:
     def _claim_key(self, entry: _ParsedEntry) -> str:
         identity_hash = hashlib.sha256(entry.identity.encode()).hexdigest()[:20]
         return f"feed|{self.adapter_id}|{identity_hash}"
+
+    def _symbol_relevance(
+        self, entry: _ParsedEntry, text: str
+    ) -> tuple[tuple[str, float], ...]:
+        """Attribute the entry to symbols. Keyword matching is the fallback."""
+
+        return _match_keywords(text, self.config.symbol_mappings, uppercase=True)
 
     def _attributes(self, entry: _ParsedEntry) -> tuple[tuple[str, str], ...]:
         return (

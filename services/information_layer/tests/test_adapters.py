@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
 from information_layer import ClaimStatus
+from information_layer.cik_registry import CikTickerRegistry
 from information_layer.feeds import (
     CacheValidators,
     FeedAccessError,
@@ -415,3 +417,54 @@ class FeedSentimentTests(unittest.TestCase):
         # sentiment pipeline produce "中性" no matter what the news said.
         self.assertNotIn("sentiment=0.0", source)
         self.assertIn("score_event_sentiment", source)
+
+
+SEC_TICKERS = json.dumps(
+    {
+        "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+        "1": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
+    }
+)
+
+
+class SecSymbolAttributionTests(unittest.TestCase):
+    def test_a_filing_is_attributed_by_cik_not_by_reading_the_name(self) -> None:
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_ATOM)),
+            cik_registry=CikTickerRegistry.from_sec_payload(SEC_TICKERS),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertIn(("AAPL", 1.0), item.symbol_relevance)
+        self.assertIn(("cik", "0000320193"), item.attributes)
+
+    def test_a_filer_outside_the_registry_gets_no_invented_symbol(self) -> None:
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_ATOM)),
+            cik_registry=CikTickerRegistry.from_sec_payload(
+                json.dumps(
+                    {"0": {"cik_str": 1045810, "ticker": "NVDA", "title": "N"}}
+                )
+            ),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertEqual(item.symbol_relevance, ())
+        self.assertIn(("cik", "0000320193"), item.attributes)
+
+    def test_without_a_registry_the_adapter_still_works(self) -> None:
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_ATOM)),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertEqual(item.symbol_relevance, ())

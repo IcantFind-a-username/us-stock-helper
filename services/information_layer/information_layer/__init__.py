@@ -1,4 +1,9 @@
 from .adapter import SourceAdapter
+from .cik_registry import (
+    CIK_REGISTRY_VERSION,
+    CikTickerRegistry,
+    extract_cik,
+)
 from .compact import compact_render, estimate_tokens
 from .event_sentiment import (
     SENTIMENT_LEXICON_VERSION,
@@ -19,7 +24,9 @@ from .models import (
 from .pipeline import EvidencePacketBuilder, prioritize_events
 
 __all__ = [
+    "CIK_REGISTRY_VERSION",
     "SENTIMENT_LEXICON_VERSION",
+    "CikTickerRegistry",
     "Citation",
     "ClaimStatus",
     "CompactRender",
@@ -34,6 +41,7 @@ __all__ = [
     "SourceProvenance",
     "compact_render",
     "estimate_tokens",
+    "extract_cik",
     "prioritize_events",
     "score_event_sentiment",
 ]

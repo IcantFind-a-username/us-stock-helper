@@ -4,6 +4,7 @@ import re
 from typing import Iterable
 from urllib.parse import urlencode
 
+from ..cik_registry import CikTickerRegistry, extract_cik
 from ..models import ClaimStatus
 from .generic import (
     FeedConfig,
@@ -28,6 +29,7 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         entity_mappings: tuple[KeywordMapping, ...] = (),
         macro_mappings: tuple[KeywordMapping, ...] = (),
         geopolitical_mappings: tuple[KeywordMapping, ...] = (),
+        cik_registry: CikTickerRegistry | None = None,
     ) -> None:
         clean_form = form_type.strip().upper()
         if not clean_form:
@@ -37,6 +39,7 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
                 "SEC User-Agent must identify the application and contact email"
             )
         self.form_type = clean_form
+        self.cik_registry = cik_registry
         query = urlencode(
             {
                 "action": "getcurrent",
@@ -79,9 +82,27 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         accession = self._accession(entry)
         return f"sec|{accession}" if accession else super()._claim_key(entry)
 
+    def _symbol_relevance(
+        self, entry: _ParsedEntry, text: str
+    ) -> tuple[tuple[str, float], ...]:
+        """Attribute a filing by its filer identity, never by its prose.
+
+        Reading the company name out of the text both misses filings that use
+        a legal name and matches filings that merely mention a competitor. A
+        filer outside the registry gets no symbol at all rather than a guess.
+        """
+
+        cik = extract_cik(entry.title, entry.canonical_url)
+        if cik is None or self.cik_registry is None:
+            return ()
+        return self.cik_registry.symbol_relevance_for(cik)
+
     def _attributes(self, entry: _ParsedEntry) -> tuple[tuple[str, str], ...]:
         values = list(super()._attributes(entry))
         values.append(("form_type", self.form_type))
+        cik = extract_cik(entry.title, entry.canonical_url)
+        if cik:
+            values.append(("cik", cik))
         accession = self._accession(entry)
         if accession:
             values.append(("accession", accession))
@@ -105,6 +126,7 @@ def build_sec_current_filings_adapters(
     entity_mappings: tuple[KeywordMapping, ...] = (),
     macro_mappings: tuple[KeywordMapping, ...] = (),
     geopolitical_mappings: tuple[KeywordMapping, ...] = (),
+    cik_registry: CikTickerRegistry | None = None,
 ) -> tuple[SecCurrentFilingsAdapter, ...]:
     return tuple(
         SecCurrentFilingsAdapter(
@@ -115,6 +137,7 @@ def build_sec_current_filings_adapters(
             entity_mappings=entity_mappings,
             macro_mappings=macro_mappings,
             geopolitical_mappings=geopolitical_mappings,
+            cik_registry=cik_registry,
         )
         for form in forms
     )
