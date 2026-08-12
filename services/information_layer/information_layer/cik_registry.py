@@ -25,6 +25,10 @@ CIK_REGISTRY_VERSION = "sec-company-tickers-v1"
 _TITLE_CIK = re.compile(r"\((\d{10})\)")
 _URL_CIK = re.compile(r"/data/(\d{1,10})(?:/|$)")
 _BARE_CIK = re.compile(r"^\d{1,10}$")
+# EDGAR labels every entry with the role that filer played. A Form 4 produces
+# one entry per party, and only the issuer's names the stock the filing is
+# about.
+_ROLE = re.compile(r"\((issuer|reporting|filer|subject)\)", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +118,25 @@ def extract_ciks(title: str, url: str) -> tuple[str, ...]:
         if cik and cik not in found:
             found.append(cik)
     return tuple(found)
+
+
+def filer_role(title: str) -> str | None:
+    """The role EDGAR assigned this entry's filer, if it stated one."""
+
+    match = _ROLE.search(title or "")
+    return match.group(1).casefold() if match else None
+
+
+def role_attributes_symbol(role: str | None) -> bool:
+    """Whether a filer in this role names the stock the filing is about.
+
+    A reporting person does not. Corporate ten-percent holders are both
+    insiders and listed issuers, so resolving "the first candidate with a
+    ticker" sent a DaVita insider trade to Berkshire's stock as verified,
+    top-reliability evidence.
+    """
+
+    return role != "reporting"
 
 
 def _normalize(cik: str | int) -> str:

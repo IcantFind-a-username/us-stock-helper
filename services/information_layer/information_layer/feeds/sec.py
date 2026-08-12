@@ -4,7 +4,12 @@ import re
 from typing import Iterable
 from urllib.parse import urlencode
 
-from ..cik_registry import CikTickerRegistry, extract_ciks
+from ..cik_registry import (
+    CikTickerRegistry,
+    extract_ciks,
+    filer_role,
+    role_attributes_symbol,
+)
 from ..models import ClaimStatus
 from .generic import (
     FeedConfig,
@@ -16,6 +21,8 @@ from .http import FeedAccessError, HttpTransport
 
 
 _ACCESSION = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
+# EDGAR titles begin with the actual form type: "424B2 - LEGAL NAME (...)".
+_TITLE_FORM = re.compile(r"^\s*([A-Z0-9][A-Z0-9./-]*)\s+-\s", re.IGNORECASE)
 
 
 class SecCurrentFilingsAdapter(GenericFeedAdapter):
@@ -117,6 +124,12 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         candidates = extract_ciks(entry.title, entry.canonical_url)
         if not candidates:
             return None, ()
+        if not role_attributes_symbol(filer_role(entry.title)):
+            # A reporting person is an insider of some other company. Its own
+            # CIK may well be listed — corporate ten-percent holders are both
+            # — and claiming it would file the trade under the wrong stock.
+            # The issuer arrives as its own entry in the same feed.
+            return candidates[0], ()
         if self.cik_registry is None:
             return candidates[0], ()
         cik, relevance = self.cik_registry.resolve_first(candidates)
@@ -126,14 +139,25 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
 
     def _attributes(self, entry: _ParsedEntry) -> tuple[tuple[str, str], ...]:
         values = list(super()._attributes(entry))
-        values.append(("form_type", self.form_type))
+        # browse-edgar matches type= by prefix, so a request for "4" also
+        # returns 424B2, 425 and 497K. Record what the entry says it is, not
+        # what was asked for, or a prospectus supplement reads as an insider
+        # transaction.
+        values.append(("form_type", self._entry_form(entry)))
         cik, _ = self._resolve_filer(entry)
         if cik:
             values.append(("cik", cik))
+        role = filer_role(entry.title)
+        if role:
+            values.append(("filer_role", role))
         accession = self._accession(entry)
         if accession:
             values.append(("accession", accession))
         return tuple(values)
+
+    def _entry_form(self, entry: _ParsedEntry) -> str:
+        match = _TITLE_FORM.match(entry.title or "")
+        return match.group(1).upper() if match else self.form_type
 
     @staticmethod
     def _accession(entry: _ParsedEntry) -> str | None:

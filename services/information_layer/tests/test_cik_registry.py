@@ -8,6 +8,8 @@ from information_layer.cik_registry import (
     CikTickerRegistry,
     extract_cik,
     extract_ciks,
+    filer_role,
+    role_attributes_symbol,
 )
 
 
@@ -78,6 +80,29 @@ class CikRegistryTests(unittest.TestCase):
         self.assertEqual(registry.symbol_relevance_for("1652044"),
                          (("GOOG", 1.0), ("GOOGL", 1.0)))
         self.assertEqual(registry.symbol_relevance_for("9999999999"), ())
+
+
+class FilerRoleTests(unittest.TestCase):
+    def test_edgar_states_the_role_and_it_must_be_read(self) -> None:
+        self.assertEqual(
+            filer_role("4 - BERKSHIRE HATHAWAY INC (0001067983) (Reporting)"),
+            "reporting",
+        )
+        self.assertEqual(
+            filer_role("4 - DAVITA INC. (0000927066) (Issuer)"), "issuer"
+        )
+        self.assertEqual(filer_role("8-K - Apple Inc. (0000320193) (Filer)"), "filer")
+        self.assertIsNone(filer_role("8-K - Apple Inc. (0000320193)"))
+
+    def test_a_reporting_person_is_never_the_subject_of_the_filing(self) -> None:
+        # Berkshire filing a Form 4 about DaVita is a listed company acting as
+        # an insider of another. Its own CIK resolves to BRK-A/BRK-B, so
+        # "first candidate that resolves" attributed a DaVita insider trade to
+        # Berkshire stock as verified, top-reliability evidence.
+        self.assertFalse(role_attributes_symbol("reporting"))
+        self.assertTrue(role_attributes_symbol("issuer"))
+        self.assertTrue(role_attributes_symbol("filer"))
+        self.assertTrue(role_attributes_symbol(None))
 
 
 class InsiderFilingAttributionTests(unittest.TestCase):

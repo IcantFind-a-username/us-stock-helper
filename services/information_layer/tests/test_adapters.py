@@ -490,7 +490,17 @@ SEC_FORM4_ATOM = b"""<?xml version="1.0" encoding="UTF-8"?>
 
 
 class InsiderFilingAttributionTests(unittest.TestCase):
-    def test_a_form_4_reaches_the_issuer_not_the_reporting_person(self) -> None:
+    def test_a_reporting_entry_claims_no_symbol_of_its_own(self) -> None:
+        """EDGAR's getcurrent feed does not carry the issuer on this entry.
+
+        An earlier attempt read a second CIK out of the archive path; against
+        live EDGAR that produced no second candidate in any of 499 entries, so
+        it never fired. Worse, when the reporting person is itself listed, the
+        first resolvable candidate is that insider's own stock. The issuer
+        arrives as a separate entry of the same filing, which is where the
+        symbol comes from.
+        """
+
         adapter = SecCurrentFilingsAdapter(
             form_type="4",
             user_agent="USStockHelper/0.1 research@example.test",
@@ -500,10 +510,8 @@ class InsiderFilingAttributionTests(unittest.TestCase):
 
         item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
 
-        # Insider transactions are one of the highest-value signals in this
-        # product; attributing them to a natural person loses them entirely.
-        self.assertEqual(item.symbol_relevance, (("AAPL", 1.0),))
-        self.assertIn(("cik", "0000320193"), item.attributes)
+        self.assertEqual(item.symbol_relevance, ())
+        self.assertIn(("filer_role", "reporting"), item.attributes)
 
 
 class SecKeywordFallbackTests(unittest.TestCase):
@@ -574,3 +582,100 @@ class FilingMetadataSentimentTests(unittest.TestCase):
         item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
 
         self.assertTrue(item.sentiment_measured)
+
+
+BERKSHIRE_FORM4 = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>urn:tag:sec.gov,2008:accession-number=0001193125-26-333151</id>
+    <title>4 - BERKSHIRE HATHAWAY INC (0001067983) (Reporting)</title>
+    <summary>Statement of changes in beneficial ownership.</summary>
+    <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/1067983/000119312526333151/x.htm"/>
+    <updated>2026-07-25T13:58:00Z</updated>
+  </entry>
+</feed>
+"""
+
+BERKSHIRE_TICKERS = json.dumps(
+    {
+        "0": {"cik_str": 1067983, "ticker": "BRK-B", "title": "BERKSHIRE HATHAWAY"},
+        "1": {"cik_str": 927066, "ticker": "DVA", "title": "DAVITA INC."},
+    }
+)
+
+
+class ReportingPersonAttributionTests(unittest.TestCase):
+    def test_a_listed_insider_is_not_the_subject_of_its_own_form_4(self) -> None:
+        """Berkshire files a Form 4 about DaVita; both are listed.
+
+        Resolving "the first candidate CIK with a ticker" sent that DaVita
+        insider trade to Berkshire's own stock, at relevance 1.0, as verified
+        top-reliability evidence. EDGAR labels the entry (Reporting); that
+        label is the answer.
+        """
+
+        adapter = SecCurrentFilingsAdapter(
+            form_type="4",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(BERKSHIRE_FORM4)),
+            cik_registry=CikTickerRegistry.from_sec_payload(BERKSHIRE_TICKERS),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertEqual(item.symbol_relevance, ())
+        self.assertIn(("filer_role", "reporting"), item.attributes)
+        # Still traceable to the party that filed it.
+        self.assertIn(("cik", "0001067983"), item.attributes)
+
+    def test_the_issuer_entry_of_the_same_filing_is_attributed(self) -> None:
+        issuer_atom = BERKSHIRE_FORM4.replace(
+            b"4 - BERKSHIRE HATHAWAY INC (0001067983) (Reporting)",
+            b"4 - DAVITA INC. (0000927066) (Issuer)",
+        )
+        adapter = SecCurrentFilingsAdapter(
+            form_type="4",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(issuer_atom)),
+            cik_registry=CikTickerRegistry.from_sec_payload(BERKSHIRE_TICKERS),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertEqual(item.symbol_relevance, (("DVA", 1.0),))
+
+
+class FormTypePrefixTests(unittest.TestCase):
+    def test_a_prefix_match_is_not_labelled_as_the_requested_form(self) -> None:
+        """EDGAR's type= parameter matches by prefix.
+
+        Asking for "4" also returns 424B2, 425 and 497K. Stamping those with
+        form_type=4 turns a prospectus supplement into an insider transaction
+        for anything reading that attribute.
+        """
+
+        atom = SEC_ATOM.replace(
+            b"8-K - Apple Inc. (0000320193)",
+            b"424B2 - Apple Inc. (0000320193)",
+        )
+        adapter = SecCurrentFilingsAdapter(
+            form_type="4",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(atom)),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertIn(("form_type", "424B2"), item.attributes)
+        self.assertNotIn(("form_type", "4"), item.attributes)
+
+    def test_the_requested_form_is_still_recorded_when_it_matches(self) -> None:
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_ATOM)),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertIn(("form_type", "8-K"), item.attributes)
