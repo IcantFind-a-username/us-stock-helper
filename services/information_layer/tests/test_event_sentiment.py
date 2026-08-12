@@ -58,6 +58,34 @@ class EventSentimentTests(unittest.TestCase):
         assert result.score is not None
         self.assertGreater(result.score, 0.0)
 
+    def test_denying_bad_news_is_not_good_news(self) -> None:
+        # A denial does not turn an allegation into an achievement. Flipping
+        # the sign made "denies fraud" the most bullish reading the lexicon
+        # can produce, which is the single most dangerous thing it could say.
+        for text in (
+            "Company denies fraud allegations",
+            "Company denies bankruptcy rumors",
+            "Company denied the investigation findings",
+        ):
+            with self.subTest(text=text):
+                result = score_event_sentiment(text)
+                assert result.score is not None
+                self.assertLessEqual(result.score, 0.0)
+
+    def test_denying_good_news_still_reads_as_bad(self) -> None:
+        result = score_event_sentiment("Company denies it will raise guidance")
+
+        assert result.score is not None
+        self.assertLess(result.score, 0.0)
+
+    def test_a_negator_governs_every_term_in_its_window(self) -> None:
+        # Clearing the negation on the first hit let the second term through
+        # unflipped, so "no growth in profit" came out measured-neutral.
+        result = score_event_sentiment("No growth in profit this quarter")
+
+        assert result.score is not None
+        self.assertLess(result.score, 0.0)
+
     def test_negation_expires_after_a_few_words(self) -> None:
         # No clause break here, so only the window itself can stop the negator
         # from reaching "profit" nine words later.

@@ -92,7 +92,12 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         filer outside the registry gets no symbol at all rather than a guess.
         """
 
-        return self._resolve_filer(entry)[1]
+        registry_match = self._resolve_filer(entry)[1]
+        if registry_match:
+            return registry_match
+        # No listed issuer among the candidates: fall back to whatever keyword
+        # attribution the caller configured, at its own lower relevance.
+        return super()._symbol_relevance(entry, text)
 
     def _resolve_filer(
         self, entry: _ParsedEntry

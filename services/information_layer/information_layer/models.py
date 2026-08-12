@@ -273,6 +273,9 @@ class EvidenceCluster:
     revision_chain: tuple[str, ...]
     independent_source_count: int
     sentiment: float
+    # False when nothing in this cluster could be read. Without it the packet
+    # layer treats the resulting 0.0 as a full-weight neutral vote.
+    sentiment_measured: bool
     confidence: float
     trust_score: float
     freshness_score: float

@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 
 
-SENTIMENT_LEXICON_VERSION = "financial-lexicon-negation-v1"
+SENTIMENT_LEXICON_VERSION = "financial-lexicon-negation-v2"
 
 # Weights are deliberately coarse. They express direction and rough strength,
 # not calibrated probability, and must never be presented as one.
@@ -34,10 +34,27 @@ _POSITIVE = {
     "soared": 0.8,
     "jumped": 0.6,
     "rallied": 0.6,
+    "raise": 0.6,
     "raised": 0.6,
     "raises": 0.6,
+    "raising": 0.6,
+    "lifts": 0.6,
+    "lifted": 0.6,
+    "rose": 0.5,
+    "rises": 0.5,
+    "climbed": 0.5,
+    "gains": 0.5,
+    "gained": 0.5,
+    "wins": 0.5,
+    "won": 0.5,
+    "exceeds": 0.6,
+    "exceeded": 0.6,
+    "accelerates": 0.5,
+    "accelerated": 0.5,
     "upgraded": 0.7,
     "upgrade": 0.6,
+    "upgrades": 0.7,
+    "profitability": 0.4,
     "outperform": 0.6,
     "record": 0.5,
     "profit": 0.4,
@@ -61,10 +78,26 @@ _NEGATIVE = {
     "slumped": -0.7,
     "tumbled": -0.7,
     "fell": -0.4,
+    "falls": -0.4,
+    "drops": -0.5,
+    "dropped": -0.5,
+    "sinks": -0.6,
+    "sank": -0.6,
+    "declines": -0.4,
+    "declined": -0.4,
+    "halts": -0.6,
+    "sues": -0.5,
+    "sued": -0.5,
+    "recalls": -0.6,
+    "warns": -0.5,
     "cut": -0.6,
     "cuts": -0.6,
     "lowered": -0.6,
+    "lowers": -0.6,
+    "slashed": -0.7,
+    "slashes": -0.7,
     "downgraded": -0.7,
+    "downgrades": -0.7,
     "downgrade": -0.6,
     "underperform": -0.6,
     "loss": -0.5,
@@ -93,6 +126,11 @@ _LEXICON = {**_POSITIVE, **_NEGATIVE}
 # Without them "cut costs" reads as badly as "cut guidance", and a headline
 # about the shares falling is scored on whatever it fell in spite of.
 _PHRASES: dict[tuple[str, ...], float] = {
+    # A central-bank rate cut is not a company cutting its own outlook.
+    ("cuts", "interest"): 0.5,
+    ("cut", "interest"): 0.5,
+    ("rate", "cut"): 0.5,
+    ("rate", "cuts"): 0.5,
     ("cut", "costs"): 0.4,
     ("cuts", "costs"): 0.4,
     ("cost", "cuts"): 0.4,
@@ -180,8 +218,8 @@ def score_event_sentiment(text: str) -> EventSentiment:
             index += 1
             continue
         if negation_countdown:
-            weight = -weight
-            negation_countdown = 0
+            weight = _negate(weight)
+            negation_countdown -= 1
         matched.append((label, weight))
         index += phrase_length
 
@@ -197,6 +235,19 @@ def score_event_sentiment(text: str) -> EventSentiment:
         score=max(-1.0, min(1.0, round(score, 6))),
         matched_terms=tuple(matched),
     )
+
+
+def _negate(weight: float) -> float:
+    """Apply a negator to a term without turning bad news into good news.
+
+    Denying a positive claim is negative: "did not beat estimates" is a miss.
+    Denying a negative one is not positive — a company that denies fraud is
+    still a company answering fraud allegations — so the term is damped toward
+    neutral instead of flipped. Flipping it made "denies fraud" the most
+    bullish reading this lexicon could produce.
+    """
+
+    return -weight if weight > 0 else weight * 0.5
 
 
 def _longest_phrase(

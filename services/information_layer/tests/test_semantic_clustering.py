@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from information_layer.clustering import build_clusters
+from information_layer.event_sentiment import score_event_sentiment
 from information_layer.models import ClaimStatus, EvidenceEvent, SourceProvenance
 from information_layer.similarity import (
     SIMILARITY_VERSION,
@@ -24,9 +25,15 @@ def event(
     *,
     published_at: datetime | None = None,
     symbol: str = "NVDA",
-    sentiment: float = 0.6,
+    sentiment: float | None = None,
 ) -> EvidenceEvent:
     published = published_at or AS_OF - timedelta(minutes=20)
+    if sentiment is None:
+        reading = score_event_sentiment(f"{headline} {summary}")
+        sentiment = reading.score if reading.measured else 0.0
+        measured = reading.measured
+    else:
+        measured = True
     return EvidenceEvent.create(
         event_id=event_id,
         claim_key=f"{publisher_id}|{event_id}",
@@ -47,6 +54,7 @@ def event(
         retrieved_at=published + timedelta(minutes=3),
         claim_status=ClaimStatus.REPORTED,
         sentiment=sentiment,
+        sentiment_measured=measured,
         confidence=0.85,
         symbol_relevance=((symbol, 0.95),),
     )
@@ -294,3 +302,64 @@ class ClusterCorroborationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClusterMeasurementTests(unittest.TestCase):
+    def test_a_cluster_nobody_could_read_says_so(self) -> None:
+        # Without this the packet layer treats an unreadable cluster's 0.0 as a
+        # full-weight neutral vote, undoing the exclusion done one layer down.
+        clusters = build_clusters(
+            (
+                event("a", "reuters", "Board schedules its annual meeting date"),
+            ),
+            AS_OF,
+        )
+
+        self.assertFalse(clusters[0].sentiment_measured)
+
+    def test_a_cluster_with_one_readable_report_is_measured(self) -> None:
+        clusters = build_clusters(
+            (event("a", "reuters", "NVIDIA raises full-year revenue guidance"),),
+            AS_OF,
+        )
+
+        self.assertTrue(clusters[0].sentiment_measured)
+
+
+class BlindPacketTests(unittest.TestCase):
+    def test_a_packet_nobody_could_read_does_not_sound_confident(self) -> None:
+        from information_layer.sentiment import assess_sentiment
+
+        clusters = build_clusters(
+            (
+                event("a", "reuters", "Board schedules its annual meeting date"),
+                event("b", "bloomberg", "Company confirms a venue for the meeting"),
+            ),
+            AS_OF,
+        )
+
+        result = assess_sentiment(clusters)
+
+        # Reporting a plain "中性" here claims a reading that was never taken.
+        self.assertIn("情绪未测量", result.uncertainty)
+
+    def test_unreadable_clusters_do_not_dilute_a_readable_one(self) -> None:
+        from information_layer.sentiment import assess_sentiment
+
+        readable = build_clusters(
+            (event("a", "reuters", "NVIDIA raises full-year revenue guidance"),),
+            AS_OF,
+        )
+        padded = build_clusters(
+            (
+                event("a", "reuters", "NVIDIA raises full-year revenue guidance"),
+                event("b", "ft", "Board schedules its annual meeting date"),
+                event("c", "wsj", "Company confirms a venue for the meeting"),
+            ),
+            AS_OF,
+        )
+
+        self.assertEqual(
+            assess_sentiment(readable).observed_score,
+            assess_sentiment(padded).observed_score,
+        )

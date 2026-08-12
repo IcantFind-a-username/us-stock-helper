@@ -50,6 +50,22 @@ class CikRegistryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     CikTickerRegistry.from_sec_payload(payload)
 
+    def test_a_malformed_cik_is_rejected_not_collapsed_into_a_catch_all(
+        self,
+    ) -> None:
+        # A CIK that does not parse used to normalize to the empty string,
+        # creating a bucket that every invalid lookup then resolved to — so a
+        # nonsense CIK came back with a real ticker.
+        payload = json.dumps(
+            {
+                "0": {"cik_str": "abc", "ticker": "BOGUS", "title": "x"},
+                "1": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple"},
+            }
+        )
+
+        with self.assertRaises(ValueError):
+            CikTickerRegistry.from_sec_payload(payload)
+
     def test_relevance_for_a_registry_match_is_exact(self) -> None:
         registry = CikTickerRegistry.from_sec_payload(SEC_PAYLOAD)
 

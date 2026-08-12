@@ -56,7 +56,12 @@ class CikTickerRegistry:
             ticker = row.get("ticker")
             if cik is None or not isinstance(ticker, str) or not ticker.strip():
                 raise ValueError("SEC ticker row is missing cik_str or ticker")
-            by_cik.setdefault(_normalize(cik), set()).add(ticker.strip().upper())
+            normalized = _normalize(cik)
+            if not normalized:
+                # Otherwise it lands in an empty-string bucket that every
+                # invalid lookup later resolves to.
+                raise ValueError(f"SEC ticker row has an unusable cik_str: {cik!r}")
+            by_cik.setdefault(normalized, set()).add(ticker.strip().upper())
         return cls(
             _by_cik={key: tuple(sorted(value)) for key, value in by_cik.items()}
         )

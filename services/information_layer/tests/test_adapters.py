@@ -498,3 +498,40 @@ class InsiderFilingAttributionTests(unittest.TestCase):
         # product; attributing them to a natural person loses them entirely.
         self.assertEqual(item.symbol_relevance, (("AAPL", 1.0),))
         self.assertIn(("cik", "0000320193"), item.attributes)
+
+
+class SecKeywordFallbackTests(unittest.TestCase):
+    def test_configured_symbol_keywords_still_apply_without_a_registry(
+        self,
+    ) -> None:
+        # The CIK override silently ignored symbol_mappings, so a caller that
+        # configured keyword attribution got nothing and no error.
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_ATOM)),
+            symbol_mappings=(
+                KeywordMapping(key="AAPL", keywords=("Apple",), relevance=0.7),
+            ),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        # A keyword guess keeps its configured relevance; only a CIK match is
+        # allowed to claim 1.0.
+        self.assertEqual(item.symbol_relevance, (("AAPL", 0.7),))
+
+    def test_a_registry_match_outranks_a_keyword_guess(self) -> None:
+        adapter = SecCurrentFilingsAdapter(
+            form_type="8-K",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_ATOM)),
+            cik_registry=CikTickerRegistry.from_sec_payload(SEC_TICKERS),
+            symbol_mappings=(
+                KeywordMapping(key="TSLA", keywords=("Apple",), relevance=0.7),
+            ),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertEqual(item.symbol_relevance, (("AAPL", 1.0),))

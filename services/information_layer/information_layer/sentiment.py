@@ -36,6 +36,10 @@ def assess_sentiment(
         cluster.action_independent_source_count < 2 for cluster in actionable
     ):
         uncertainty.append("独立来源不足")
+    if clusters and not any(cluster.sentiment_measured for cluster in clusters):
+        # Reporting a plain "中性" with nothing read claims a reading that was
+        # never taken; the reader has to know the difference.
+        uncertainty.append("情绪未测量")
 
     confidence = (
         sum(
@@ -112,7 +116,11 @@ def _weighted_score(
     action_only: bool,
 ) -> float:
     weighted: list[tuple[float, float]] = []
+    # Clusters nothing could read carry no opinion. Averaging their 0.0 in at
+    # full weight would undo the exclusion done when the cluster was built.
     for cluster in clusters:
+        if not cluster.sentiment_measured:
+            continue
         if action_only:
             values = (
                 cluster.action_sentiment,

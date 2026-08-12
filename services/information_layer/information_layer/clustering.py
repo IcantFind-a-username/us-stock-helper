@@ -120,6 +120,7 @@ def _summarize_cluster(
         revision_chain=_revision_lineage(events, representative),
         independent_source_count=observed_metrics[0],
         sentiment=round(observed_metrics[1], 6),
+        sentiment_measured=any(item.sentiment_measured for item in events),
         confidence=round(observed_metrics[2], 6),
         trust_score=round(observed_metrics[3], 6),
         freshness_score=round(observed_metrics[4], 6),
