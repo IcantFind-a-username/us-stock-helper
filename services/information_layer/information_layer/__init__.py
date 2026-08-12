@@ -22,9 +22,11 @@ from .models import (
     SourceProvenance,
 )
 from .pipeline import EvidencePacketBuilder, prioritize_events
+from .similarity import SIMILARITY_VERSION, headline_tokens, same_story
 
 __all__ = [
     "CIK_REGISTRY_VERSION",
+    "SIMILARITY_VERSION",
     "SENTIMENT_LEXICON_VERSION",
     "CikTickerRegistry",
     "Citation",
@@ -42,6 +44,8 @@ __all__ = [
     "compact_render",
     "estimate_tokens",
     "extract_cik",
+    "headline_tokens",
     "prioritize_events",
+    "same_story",
     "score_event_sentiment",
 ]

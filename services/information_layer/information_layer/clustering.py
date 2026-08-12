@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Sequence
 
+from .similarity import same_story
 from .models import ClaimStatus, EvidenceCluster, EvidenceEvent
 
 
@@ -53,6 +54,16 @@ def _cluster_events(
                 owners[key] = index
         if item.revision_of in id_owner:
             union(index, id_owner[item.revision_of])
+
+    # Exact keys only catch a story republished verbatim. Two outlets covering
+    # one announcement differ in URL and wording, so without this pass they
+    # stay two single-source claims and the corroboration gate never opens.
+    for index, item in enumerate(events):
+        for other in range(index + 1, len(events)):
+            if find(index) == find(other):
+                continue
+            if same_story(item, events[other]):
+                union(index, other)
 
     groups: dict[int, list[EvidenceEvent]] = defaultdict(list)
     for index, item in enumerate(events):
