@@ -76,6 +76,9 @@ class EvidenceEvent:
     revision_number: int
     claim_status: ClaimStatus
     sentiment: float
+    # False means no scorer could read this text. Kept apart from a measured
+    # 0.0 because the aggregator must not average in an opinion nobody formed.
+    sentiment_measured: bool
     confidence: float
     symbol_relevance: tuple[tuple[str, float], ...]
     entity_relevance: tuple[tuple[str, float], ...]
@@ -141,6 +144,7 @@ class EvidenceEvent:
         claim_status: ClaimStatus,
         sentiment: float,
         confidence: float,
+        sentiment_measured: bool = True,
         revised_at: datetime | None = None,
         revision_of: str | None = None,
         revision_number: int = 0,
@@ -166,6 +170,10 @@ class EvidenceEvent:
             raise ValueError("headline is required")
         if not -1.0 <= sentiment <= 1.0:
             raise ValueError("sentiment must be between -1 and 1")
+        if not sentiment_measured and sentiment != 0.0:
+            raise ValueError(
+                "sentiment_measured=False requires a sentiment of exactly 0"
+            )
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
         if not isinstance(claim_status, ClaimStatus):
@@ -198,6 +206,7 @@ class EvidenceEvent:
             revision_number=revision_number,
             claim_status=claim_status,
             sentiment=float(sentiment),
+            sentiment_measured=bool(sentiment_measured),
             confidence=float(confidence),
             symbol_relevance=_normalize_relevance(
                 symbol_relevance,

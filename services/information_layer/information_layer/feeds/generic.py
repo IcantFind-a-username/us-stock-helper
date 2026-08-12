@@ -11,6 +11,7 @@ from html.parser import HTMLParser
 from typing import Iterable
 from urllib.parse import urlparse
 
+from ..event_sentiment import score_event_sentiment
 from ..models import ClaimStatus, EvidenceEvent, SourceProvenance, _require_aware
 from .http import (
     FeedAccessError,
@@ -351,6 +352,7 @@ class GenericFeedAdapter:
             f"{hashlib.sha256(f'{claim_key}|{preview_hash}'.encode()).hexdigest()[:20]}"
         )
         text = f"{entry.title}\n{entry.summary}".casefold()
+        reading = score_event_sentiment(f"{entry.title} {entry.summary}")
         return EvidenceEvent.create(
             event_id=event_id,
             claim_key=claim_key,
@@ -370,7 +372,8 @@ class GenericFeedAdapter:
             available_at=retrieved_at,
             retrieved_at=retrieved_at,
             claim_status=self.config.claim_status,
-            sentiment=0.0,
+            sentiment=reading.score if reading.measured else 0.0,
+            sentiment_measured=reading.measured,
             confidence=self.config.reliability,
             symbol_relevance=_match_keywords(
                 text,

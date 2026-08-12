@@ -13,6 +13,7 @@ from information_layer import (
     compact_render,
     prioritize_events,
 )
+from information_layer.clustering import build_clusters
 
 
 UTC = timezone.utc
@@ -46,6 +47,7 @@ def event(
     headline: str = "NVDA supplier raises shipment forecast",
     summary: str = "Shipment guidance was raised.",
     sentiment: float = 0.6,
+    sentiment_measured: bool = True,
     confidence: float = 0.8,
     status: ClaimStatus = ClaimStatus.REPORTED,
     first_seen_at: datetime = AS_OF - timedelta(minutes=15),
@@ -72,6 +74,7 @@ def event(
         revision_number=revision_number,
         claim_status=status,
         sentiment=sentiment,
+        sentiment_measured=sentiment_measured,
         confidence=confidence,
         symbol_relevance=(("NVDA", 0.95),),
         entity_relevance=(("NVIDIA", 0.9),),
@@ -485,3 +488,71 @@ class SafetyAndRenderingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnmeasuredSentimentTests(unittest.TestCase):
+    def test_an_unmeasured_event_does_not_drag_the_cluster_toward_neutral(
+        self,
+    ) -> None:
+        # A headline the lexicon cannot read is not a neutral opinion. Counting
+        # it as 0.0 is exactly the "missing data disguised as a judgement" the
+        # project forbids.
+        measured_only = build_clusters((event("a", sentiment=0.8),), AS_OF)
+        with_silent = build_clusters(
+            (
+                event("a", sentiment=0.8),
+                event(
+                    "b",
+                    publisher_id="other",
+                    sentiment=0.0,
+                    sentiment_measured=False,
+                ),
+            ),
+            AS_OF,
+        )
+
+        self.assertEqual(
+            measured_only[0].sentiment, with_silent[0].sentiment
+        )
+
+    def test_an_unmeasured_event_still_counts_as_an_independent_source(
+        self,
+    ) -> None:
+        clusters = build_clusters(
+            (
+                event("a", sentiment=0.8),
+                event(
+                    "b",
+                    publisher_id="other",
+                    sentiment=0.0,
+                    sentiment_measured=False,
+                ),
+            ),
+            AS_OF,
+        )
+
+        # It carries no opinion, but it is still a second outlet reporting the
+        # same claim, which is what the corroboration rule counts.
+        self.assertEqual(clusters[0].independent_source_count, 2)
+
+    def test_a_cluster_of_only_unmeasured_events_reports_zero_not_a_verdict(
+        self,
+    ) -> None:
+        clusters = build_clusters(
+            (
+                event("a", sentiment=0.0, sentiment_measured=False),
+                event(
+                    "b",
+                    publisher_id="other",
+                    sentiment=0.0,
+                    sentiment_measured=False,
+                ),
+            ),
+            AS_OF,
+        )
+
+        self.assertEqual(clusters[0].sentiment, 0.0)
+
+    def test_an_event_cannot_claim_a_score_it_did_not_measure(self) -> None:
+        with self.assertRaisesRegex(ValueError, "sentiment_measured"):
+            event("bad", sentiment=0.7, sentiment_measured=False)

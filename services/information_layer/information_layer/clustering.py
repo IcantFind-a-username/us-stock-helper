@@ -213,9 +213,20 @@ def _aggregate_events(
     }
     weights = tuple(_event_weight(item, as_of) for item in events)
     weight_sum = sum(weights)
-    sentiment = sum(
-        item.sentiment * weight for item, weight in zip(events, weights)
-    ) / weight_sum
+    # Only events something actually read contribute an opinion. An unreadable
+    # headline is still a source reporting the claim — it counts toward
+    # corroboration above — but averaging it in as 0.0 would let silence vote.
+    scored = tuple(
+        (item, weight)
+        for item, weight in zip(events, weights)
+        if item.sentiment_measured
+    )
+    scored_weight = sum(weight for _, weight in scored)
+    sentiment = (
+        sum(item.sentiment * weight for item, weight in scored) / scored_weight
+        if scored_weight
+        else 0.0
+    )
     confidence = sum(
         item.confidence * weight for item, weight in zip(events, weights)
     ) / weight_sum

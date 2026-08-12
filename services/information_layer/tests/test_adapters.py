@@ -390,3 +390,28 @@ class SecAndCoordinatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FeedSentimentTests(unittest.TestCase):
+    def test_a_feed_event_carries_a_real_reading_not_a_hardcoded_zero(
+        self,
+    ) -> None:
+        from information_layer.event_sentiment import score_event_sentiment
+
+        upbeat = score_event_sentiment("Quarterly profit surged, guidance raised")
+        grim = score_event_sentiment("Company warned of a widening loss")
+
+        assert upbeat.score is not None and grim.score is not None
+        self.assertGreater(upbeat.score, 0.0)
+        self.assertLess(grim.score, 0.0)
+
+    def test_generic_adapter_no_longer_hardcodes_neutral(self) -> None:
+        import inspect
+
+        from information_layer.feeds import generic
+
+        source = inspect.getsource(generic)
+        # Every real event used to be born neutral, which made the whole
+        # sentiment pipeline produce "中性" no matter what the news said.
+        self.assertNotIn("sentiment=0.0", source)
+        self.assertIn("score_event_sentiment", source)
