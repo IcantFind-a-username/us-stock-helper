@@ -176,21 +176,29 @@ def extract_horizon_features(
     )
 
     confidence_total = sum(record.confidence for record in selected_evidence)
-    if confidence_total:
+    # Only sources something actually read contribute an opinion. Unread ones
+    # still count as corroborating evidence below; averaging them in as 0.0
+    # would let silence pull a real signal toward the middle.
+    scored_evidence = tuple(
+        record for record in selected_evidence if record.sentiment_measured
+    )
+    scored_confidence = sum(record.confidence for record in scored_evidence)
+    if scored_confidence:
         evidence_sentiment = (
             sum(
                 record.sentiment * record.confidence
-                for record in selected_evidence
+                for record in scored_evidence
             )
-            / confidence_total
+            / scored_confidence
         )
         market_sentiment = _clamp(
             context.market_sentiment * 0.6 + evidence_sentiment * 0.4
         )
-        evidence_confidence = confidence_total / len(selected_evidence)
     else:
         market_sentiment = context.market_sentiment
-        evidence_confidence = 0.0
+    evidence_confidence = (
+        confidence_total / len(selected_evidence) if selected_evidence else 0.0
+    )
     return FeatureSet(
         as_of=context.as_of,
         horizon=horizon,

@@ -51,6 +51,7 @@ def make_evidence(
     kind: EvidenceKind,
     sentiment: float,
     confidence: float,
+    sentiment_measured: bool = True,
 ) -> EvidenceRecord:
     return EvidenceRecord(
         evidence_id=evidence_id,
@@ -65,6 +66,7 @@ def make_evidence(
         first_seen_at=AS_OF - timedelta(hours=2) + timedelta(seconds=5),
         available_at=AS_OF - timedelta(hours=2) + timedelta(seconds=10),
         sentiment=sentiment,
+        sentiment_measured=sentiment_measured,
         confidence=confidence,
     )
 
@@ -284,3 +286,50 @@ class AdviserCapContractTests(unittest.TestCase):
                     item for item in result.contributions if item.name == "adviser"
                 )
                 self.assertLessEqual(abs(adviser.points), ADVISER_SCORE_CAP)
+
+
+class UnmeasuredEvidenceTests(unittest.TestCase):
+    def test_unread_evidence_does_not_dilute_the_sentiment_it_carries_none_of(
+        self,
+    ) -> None:
+        # An article no scorer could read is not a neutral opinion. Averaging
+        # it in as 0.0 pulls a real signal toward the middle, which is the
+        # missing-data-as-judgement failure the project forbids.
+        bars = make_bars([100.0 + i * 0.5 for i in range(60)])
+        loud = (make_evidence("a", EvidenceKind.NEWS, 0.8, 0.9),)
+        loud_plus_silent = loud + (
+            make_evidence(
+                "b", EvidenceKind.NEWS, 0.0, 0.9, sentiment_measured=False
+            ),
+        )
+
+        only = extract_horizon_features(Horizon.SHORT, bars, loud, context())
+        both = extract_horizon_features(
+            Horizon.SHORT, bars, loud_plus_silent, context()
+        )
+
+        self.assertEqual(only.market_sentiment, both.market_sentiment)
+
+    def test_unread_evidence_still_counts_toward_evidence_confidence(
+        self,
+    ) -> None:
+        bars = make_bars([100.0 + i * 0.5 for i in range(60)])
+        records = (
+            make_evidence("a", EvidenceKind.NEWS, 0.8, 0.9),
+            make_evidence(
+                "b", EvidenceKind.NEWS, 0.0, 0.9, sentiment_measured=False
+            ),
+        )
+
+        features = extract_horizon_features(
+            Horizon.SHORT, bars, records, context()
+        )
+
+        # It carries no opinion, but it is still a cited, corroborating source.
+        self.assertGreater(features.evidence_confidence, 0.0)
+
+    def test_a_record_cannot_claim_a_reading_it_never_took(self) -> None:
+        with self.assertRaisesRegex(ValueError, "sentiment_measured"):
+            make_evidence(
+                "bad", EvidenceKind.NEWS, 0.5, 0.9, sentiment_measured=False
+            )

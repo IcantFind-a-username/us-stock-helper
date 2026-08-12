@@ -223,6 +223,7 @@ class DecisionEngine:
                     available_at=item.available_at,
                     revision=item.revision_number + 1,
                     sentiment=item.sentiment,
+                    sentiment_measured=item.sentiment_measured,
                     confidence=(
                         item.confidence * item.provenance.reliability
                     ),

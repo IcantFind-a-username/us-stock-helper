@@ -282,3 +282,17 @@ class AdviserCapConsistencyTests(unittest.TestCase):
         self.assertNotIn("council_cap=3.0", source)
         self.assertNotIn("/ 3.0", source)
         self.assertEqual(ADVISER_SCORE_CAP, 3.0)
+
+
+class UnmeasuredSentimentBridgeTests(unittest.TestCase):
+    def test_the_engine_carries_the_unmeasured_flag_across_the_boundary(
+        self,
+    ) -> None:
+        import inspect
+
+        from decision_engine import engine as engine_module
+
+        source = inspect.getsource(engine_module)
+        # Without this the flag stops at the information layer and unreadable
+        # articles rejoin the score as neutral opinions.
+        self.assertIn("sentiment_measured=item.sentiment_measured", source)

@@ -200,6 +200,9 @@ class EvidenceRecord:
     available_at: datetime
     revision: int = 1
     sentiment: float = 0.0
+    # False means nothing could read this source's text. Kept distinct from a
+    # measured 0.0 so scoring does not average in an opinion nobody formed.
+    sentiment_measured: bool = True
     confidence: float = 1.0
     claim_key: str | None = None
     tags: tuple[str, ...] = field(default_factory=tuple)
@@ -219,6 +222,10 @@ class EvidenceRecord:
         if self.revision < 1:
             raise ValueError("revision must be at least 1")
         require_unit_range(self.sentiment, "sentiment")
+        if not self.sentiment_measured and self.sentiment != 0.0:
+            raise ValueError(
+                "sentiment_measured=False requires a sentiment of exactly 0"
+            )
         if not isfinite(self.confidence) or not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
         required = (
