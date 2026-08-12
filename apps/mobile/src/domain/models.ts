@@ -317,11 +317,21 @@ export interface LiveMacdIndicator extends ChartMacdIndicator {
   qualityStatus: "live" | "unavailable";
 }
 
+export interface CompletedTdSetup {
+  direction: "bullish" | "bearish";
+  confirmedAtIndex: number;
+  perfected: boolean;
+  barsSince: number;
+}
+
 export interface ChartMagicNineSnapshot {
   direction: string | null;
   count: number;
   completed: boolean;
+  perfected: boolean;
   confirmedAtIndex: number | null;
+  /** Counting restarts after a nine, so the finished run is carried here. */
+  lastCompleted: CompletedTdSetup | null;
   source: string;
   asOf: string;
   availableAt: string;
@@ -439,7 +449,9 @@ export function toDemoChartSnapshot(stock: StockSnapshot): DemoChartSnapshot {
       direction: null,
       count: stock.magicNine.count,
       completed: stock.magicNine.complete,
+      perfected: false,
       confirmedAtIndex: null,
+      lastCompleted: null,
     },
     forecast: stock.forecast,
   };

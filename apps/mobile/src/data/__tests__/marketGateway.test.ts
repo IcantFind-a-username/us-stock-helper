@@ -308,6 +308,61 @@ describe("schema-v2 stock snapshot validation", () => {
     expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
   });
 
+  it("keeps a completed TD setup visible after counting restarts", () => {
+    const value = stockSnapshotFixture();
+    value.indicators.magicNine.lastCompleted = {
+      direction: "bearish",
+      confirmedAtIndex: 0,
+      perfected: true,
+      barsSince: 1,
+    };
+
+    const snapshot = decodeStockSnapshotEnvelope(value, { now });
+
+    expect(snapshot.magicNine.lastCompleted).toEqual({
+      direction: "bearish",
+      confirmedAtIndex: 0,
+      perfected: true,
+      barsSince: 1,
+    });
+    expect(snapshot.magicNine.perfected).toBe(false);
+  });
+
+  it.each([
+    ["an out-of-range completed index", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.magicNine.lastCompleted = {
+        direction: "bearish",
+        confirmedAtIndex: 99,
+        perfected: true,
+        barsSince: 1,
+      };
+    }],
+    ["a bars-since count that contradicts the index", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.magicNine.lastCompleted = {
+        direction: "bearish",
+        confirmedAtIndex: 0,
+        perfected: true,
+        barsSince: 7,
+      };
+    }],
+    ["an unknown completed direction", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.magicNine.lastCompleted = {
+        direction: "sideways",
+        confirmedAtIndex: 0,
+        perfected: true,
+        barsSince: 1,
+      };
+    }],
+    ["a superseded method version", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.indicators.magicNine.methodVersion = "sequential-close-4-v1";
+    }],
+  ])("rejects magic nine with %s", (_label, mutate) => {
+    const value = stockSnapshotFixture();
+    mutate(value);
+
+    expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
+  });
+
   it("adapts an explicit demo stock into the shared chart shape", () => {
     const chart = toDemoChartSnapshot(stockFixtures["NVDA:short"]!);
 

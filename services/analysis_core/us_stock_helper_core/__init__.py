@@ -8,7 +8,15 @@ from .forecasting import (
     ScenarioKind,
     build_scenario_forecast,
 )
-from .indicators import MACDValue, ema_series, macd, moving_average, rsi
+from .indicators import (
+    MACDValue,
+    ema_series,
+    macd,
+    moving_average,
+    rsi,
+    warmup_ema_series,
+    wilder_atr,
+)
 from .models import (
     CapitalFlowPoint,
     Direction,
@@ -22,13 +30,16 @@ from .models import (
 )
 from .participation import build_participation_bars
 from .patterns import (
+    TD_SETUP_VERSION,
     MagicNineSignal,
     PatternKind,
     PatternSignal,
+    TDSetupResult,
     detect_double_bottom,
     detect_head_and_shoulders,
     detect_ma5_pullback,
     magic_nine,
+    td_setup,
     three_bar_fractals,
 )
 from .risk import (
@@ -46,12 +57,21 @@ from .scoring import (
     score_horizon,
 )
 from .temporal import select_bars_as_of, select_evidence_as_of
+from .trend import (
+    DRAGON_TREND_VERSION,
+    DragonTrendResult,
+    TrendState,
+    TrendTransition,
+    dragon_trend,
+)
 
 __all__ = [
     "AnalyticalAction",
     "CalibrationStatus",
     "CapitalFlowPoint",
+    "DRAGON_TREND_VERSION",
     "Direction",
+    "DragonTrendResult",
     "EvidenceKind",
     "EvidencePacket",
     "EvidenceRecord",
@@ -73,12 +93,17 @@ __all__ = [
     "ScenarioKind",
     "ScoreResult",
     "ShortBorrowSnapshot",
-    "build_risk_plan",
+    "TDSetupResult",
+    "TD_SETUP_VERSION",
+    "TrendState",
+    "TrendTransition",
     "build_participation_bars",
+    "build_risk_plan",
     "build_scenario_forecast",
     "detect_double_bottom",
     "detect_head_and_shoulders",
     "detect_ma5_pullback",
+    "dragon_trend",
     "ema_series",
     "extract_horizon_features",
     "freeze_evidence_packet",
@@ -89,5 +114,8 @@ __all__ = [
     "score_horizon",
     "select_bars_as_of",
     "select_evidence_as_of",
+    "td_setup",
     "three_bar_fractals",
+    "warmup_ema_series",
+    "wilder_atr",
 ]

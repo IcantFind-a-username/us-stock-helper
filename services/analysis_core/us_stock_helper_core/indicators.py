@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass
 from math import isfinite
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from .models import OHLCVBar
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +30,62 @@ def ema_series(values: Sequence[float], period: int) -> tuple[float, ...]:
     result = [checked[0]]
     for value in checked[1:]:
         result.append((value - result[-1]) * multiplier + result[-1])
+    return tuple(result)
+
+
+def warmup_ema_series(
+    values: Sequence[float], period: int
+) -> tuple[float | None, ...]:
+    """EMA that publishes nothing until one full window has closed.
+
+    ``ema_series`` seeds from the first value, so its early output reflects a
+    single bar rather than the requested period.  Anything drawn for a user or
+    fed into a trend state must use this variant instead: it stays ``None``
+    through the warm-up and, once published, a value never changes when later
+    bars arrive.
+    """
+
+    checked = _validated(values, period)
+    result: list[float | None] = [None] * len(checked)
+    if len(checked) < period:
+        return tuple(result)
+    multiplier = 2.0 / (period + 1.0)
+    current = sum(checked[:period]) / period
+    result[period - 1] = current
+    for index in range(period, len(checked)):
+        current = (checked[index] - current) * multiplier + current
+        result[index] = current
+    return tuple(result)
+
+
+def wilder_atr(
+    bars: "Sequence[OHLCVBar]", period: int = 14
+) -> tuple[float | None, ...]:
+    """Wilder's average true range, published only after a complete window."""
+
+    if period <= 0:
+        raise ValueError("period must be positive")
+    result: list[float | None] = [None] * len(bars)
+    if len(bars) < period:
+        return tuple(result)
+    true_ranges: list[float] = []
+    for index, current in enumerate(bars):
+        if index == 0:
+            true_ranges.append(current.high - current.low)
+            continue
+        previous_close = bars[index - 1].close
+        true_ranges.append(
+            max(
+                current.high - current.low,
+                abs(current.high - previous_close),
+                abs(current.low - previous_close),
+            )
+        )
+    average = sum(true_ranges[:period]) / period
+    result[period - 1] = average
+    for index in range(period, len(bars)):
+        average = (average * (period - 1) + true_ranges[index]) / period
+        result[index] = average
     return tuple(result)
 
 

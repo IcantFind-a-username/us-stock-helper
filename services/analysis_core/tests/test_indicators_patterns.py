@@ -79,7 +79,7 @@ class PatternTests(unittest.TestCase):
                 rising.confirmed_at_index,
                 rising.algorithm_version,
             ),
-            (9, True, Direction.BEARISH, 12, "sequential-close-4-v1"),
+            (9, True, Direction.BEARISH, 12, "td-setup-close-4-v2"),
         )
         self.assertEqual(falling.direction, Direction.BULLISH)
 

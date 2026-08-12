@@ -129,6 +129,7 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.getByText("DIF 0.45 · DEA 0.30 · 柱 0.15")).toBeTruthy();
   expect(view.getByText("多头")).toBeTruthy();
   expect(view.getByText("九转 2 · 尚未完成")).toBeTruthy();
+  expect(view.queryByText(/最近完成/)).toBeNull();
 
   expect(
     view.getByText("订单规模活动占比 · 深色主力代理 / 浅色散户代理"),
@@ -228,6 +229,29 @@ it("shows unavailable Magic Nine honestly without a zero marker or sequence", as
       includeHiddenElements: true,
     }),
   ).toBeNull();
+});
+
+it("keeps a finished nine visible after the count restarts", async () => {
+  const payload = stockSnapshotFixture();
+  payload.indicators.magicNine.lastCompleted = {
+    direction: "bearish",
+    confirmedAtIndex: 0,
+    perfected: true,
+    barsSince: 1,
+  };
+  const snapshot = decodeStockSnapshotEnvelope(payload, {
+    now: new Date("2026-07-25T16:00:00.000Z"),
+  });
+
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => snapshot),
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("stock-summary-meta")).toHaveTextContent(
+      /九转 2 · 尚未完成 · 最近完成 看跌九转 · 完美 · 1 根前/,
+    ),
+  );
 });
 
 it("preserves the original timestamp when cached live data becomes stale", async () => {

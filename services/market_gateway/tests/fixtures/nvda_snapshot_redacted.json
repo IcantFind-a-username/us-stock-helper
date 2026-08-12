@@ -112,7 +112,9 @@
       "count": 2,
       "completed": false,
       "confirmedAtIndex": null,
-      "methodVersion": "sequential-close-4-v1"
+      "methodVersion": "td-setup-close-4-v2",
+      "perfected": false,
+      "lastCompleted": null
     }
   },
   "institutionalHoldings": [],

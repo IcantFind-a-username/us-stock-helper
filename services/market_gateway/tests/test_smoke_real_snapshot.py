@@ -138,7 +138,7 @@ def valid_snapshot() -> dict[str, Any]:
                 "count": 2,
                 "completed": False,
                 "confirmedAtIndex": None,
-                "methodVersion": "sequential-close-4-v1",
+                "methodVersion": "td-setup-close-4-v2",
             },
         },
         "institutionalHoldings": [],

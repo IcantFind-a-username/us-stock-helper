@@ -110,11 +110,18 @@ export function stockSnapshotFixture() {
         direction: "bullish",
         count: 2,
         completed: false,
+        perfected: false,
         confirmedAtIndex: null,
+        lastCompleted: null as {
+          direction: string;
+          confirmedAtIndex: number;
+          perfected: boolean;
+          barsSince: number;
+        } | null,
         source: "analysis-core",
         asOf: "2026-07-25T15:55:00.000Z",
         availableAt: cutoff,
-        methodVersion: "sequential-close-4-v1",
+        methodVersion: "td-setup-close-4-v2",
         qualityStatus: "live",
       },
     },

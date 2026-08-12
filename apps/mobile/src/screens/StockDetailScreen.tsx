@@ -122,9 +122,18 @@ export function StockDetailScreen() {
   const dataStatus = getChartDataStatus(market.status, stock.demoData);
   const magicNineAvailable =
     stock.magicNine.qualityStatus !== "unavailable";
+  const lastCompletedSetup = stock.magicNine.lastCompleted;
   const magicNineSummary = magicNineAvailable
     ? `九转 ${stock.magicNine.count} · ${
         stock.magicNine.completed ? "序列完成" : "尚未完成"
+      }${
+        lastCompletedSetup
+          ? ` · 最近完成 ${
+              lastCompletedSetup.direction === "bullish" ? "看涨" : "看跌"
+            }九转 · ${lastCompletedSetup.perfected ? "完美" : "未完美"} · ${
+              lastCompletedSetup.barsSince
+            } 根前`
+          : ""
       }`
     : "九转 暂不可用";
   const latestCandle = stock.candles.at(-1);

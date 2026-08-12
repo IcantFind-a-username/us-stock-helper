@@ -173,11 +173,40 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertEqual(response["indicators"]["ma5"]["value"], 18.0)
         self.assertEqual(response["indicators"]["rsi"]["value"], 100.0)
         self.assertEqual(response["indicators"]["macd"]["qualityStatus"], "unavailable")
-        self.assertEqual(response["indicators"]["magicNine"]["count"], 9)
-        self.assertTrue(response["indicators"]["magicNine"]["completed"])
+        # Twenty rising closes complete one nine at index 12; counting then
+        # restarts, so the current run is seven bars long.
+        magic_nine = response["indicators"]["magicNine"]
+        self.assertEqual(magic_nine["count"], 7)
+        self.assertFalse(magic_nine["completed"])
+        self.assertEqual(magic_nine["direction"], "bearish")
+        self.assertEqual(magic_nine["methodVersion"], "td-setup-close-4-v2")
+        self.assertEqual(
+            magic_nine["lastCompleted"],
+            {
+                "direction": "bearish",
+                "confirmedAtIndex": 12,
+                "perfected": True,
+                "barsSince": 7,
+            },
+        )
         self.assertEqual(
             response["institutionalHoldings"][0]["qualityStatus"], "delayed"
         )
+
+    def test_magic_nine_reports_no_completed_setup_when_none_has_closed(self) -> None:
+        self.provider.candle_result = ProviderBatch(
+            "moomoo",
+            self.provider.candle_result.received_at,
+            self.provider.candle_result.items[:8],
+        )
+
+        magic_nine = self.service.stock_snapshot("NVDA", "5m", 200)["indicators"][
+            "magicNine"
+        ]
+
+        self.assertIsNone(magic_nine["lastCompleted"])
+        self.assertFalse(magic_nine["completed"])
+        self.assertEqual(magic_nine["count"], 4)
 
     def test_later_flow_receipt_remains_usable_until_operation_completion(self) -> None:
         self.provider.quote_result = ProviderBatch(

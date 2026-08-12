@@ -342,7 +342,7 @@ def _validate_indicators(payload: dict[str, Any], cutoff: datetime) -> None:
         "ma5": "sma-5-v1",
         "rsi": "wilder-rsi-14-v1",
         "macd": "macd-12-26-9-v1",
-        "magicNine": "sequential-close-4-v1",
+        "magicNine": "td-setup-close-4-v2",
     }
     for name, method in expected.items():
         label = f"indicators.{name}"

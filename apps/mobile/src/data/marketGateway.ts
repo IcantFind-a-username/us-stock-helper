@@ -6,6 +6,7 @@ import type {
   LiveMacdIndicator,
   LiveQuote,
   LiveStockSnapshot,
+  CompletedTdSetup,
   MagicNineSnapshot,
   ParticipationBar,
   SnapshotProvenance,
@@ -333,6 +334,41 @@ function decodeSnapshotError(value: Record<string, unknown>): GatewayRequestErro
   );
 }
 
+function decodeCompletedTdSetup(
+  value: unknown,
+  candleCount: number,
+): CompletedTdSetup | null {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value)) {
+    throw new GatewayValidationError("magic nine lastCompleted must be an object or null");
+  }
+  const direction = value.direction;
+  if (direction !== "bullish" && direction !== "bearish") {
+    throw new GatewayValidationError("magic nine lastCompleted direction is unsupported");
+  }
+  const confirmedAtIndex = value.confirmedAtIndex;
+  if (
+    typeof confirmedAtIndex !== "number" ||
+    !Number.isInteger(confirmedAtIndex) ||
+    confirmedAtIndex < 0 ||
+    confirmedAtIndex >= candleCount
+  ) {
+    throw new GatewayValidationError("magic nine lastCompleted index is outside the candle series");
+  }
+  const barsSince = value.barsSince;
+  if (
+    typeof barsSince !== "number" ||
+    !Number.isInteger(barsSince) ||
+    barsSince !== candleCount - 1 - confirmedAtIndex
+  ) {
+    throw new GatewayValidationError("magic nine lastCompleted barsSince contradicts its index");
+  }
+  if (typeof value.perfected !== "boolean") {
+    throw new GatewayValidationError("magic nine lastCompleted perfected must be boolean");
+  }
+  return { direction, confirmedAtIndex, perfected: value.perfected, barsSince };
+}
+
 function decodeIndicatorValue(
   value: unknown,
   key: "ma5" | "rsi",
@@ -543,14 +579,17 @@ export function decodeStockSnapshotEnvelope(
   }
   const confirmedAtIndex: number | null = rawConfirmedAtIndex;
   if (typeof magicRecord.completed !== "boolean") throw new GatewayValidationError("magic nine completed must be boolean");
+  if (typeof magicRecord.perfected !== "boolean") throw new GatewayValidationError("magic nine perfected must be boolean");
   const magicNine: MagicNineSnapshot = {
     ...magicMetadata,
     source: "analysis-core",
     direction,
     count,
     completed: magicRecord.completed,
+    perfected: magicRecord.perfected,
     confirmedAtIndex,
-    methodVersion: requireExpectedMethod(magicRecord, "sequential-close-4-v1", "indicators.magicNine"),
+    lastCompleted: decodeCompletedTdSetup(magicRecord.lastCompleted, candles.length),
+    methodVersion: requireExpectedMethod(magicRecord, "td-setup-close-4-v2", "indicators.magicNine"),
     qualityStatus: magicStatus,
   };
 

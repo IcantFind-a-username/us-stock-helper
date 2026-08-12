@@ -4,13 +4,15 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_stock_helper_core import (
+    TD_SETUP_VERSION,
     CapitalFlowPoint,
     OHLCVBar,
+    TDSetupResult,
     build_participation_bars,
     macd,
-    magic_nine,
     moving_average,
     rsi,
+    td_setup,
 )
 
 from .time_utils import iso_z, parse_aware, require_utc
@@ -47,7 +49,7 @@ def assemble_stock_snapshot(
     bars = _analysis_bars(symbol, interval, candles)
     participation, warnings = _participation(symbol, interval, bars, flow_items, cutoff)
     holdings = _holdings(holding_items, cutoff)
-    indicators = _indicators(candles, cutoff)
+    indicators = _indicators(candles, cutoff, bars)
     provenance = _provenance(quote, candles, participation, holdings, indicators)
     return {
         "schemaVersion": "2",
@@ -248,7 +250,11 @@ def _holdings(items: list[dict[str, Any]], cutoff: datetime) -> list[dict[str, A
     return result
 
 
-def _indicators(candles: list[dict[str, Any]], cutoff: datetime) -> dict[str, dict[str, Any]]:
+def _indicators(
+    candles: list[dict[str, Any]],
+    cutoff: datetime,
+    bars: tuple[OHLCVBar, ...] = (),
+) -> dict[str, dict[str, Any]]:
     closes = [float(item["close"]) for item in candles]
     as_of = (
         parse_aware(candles[-1]["timestamp"], "candle timestamp")
@@ -263,7 +269,8 @@ def _indicators(candles: list[dict[str, Any]], cutoff: datetime) -> dict[str, di
     ma5 = moving_average(closes, 5)
     rsi14 = rsi(closes, 14)
     macd_value = macd(closes, 12, 26, 9)
-    magic = magic_nine(closes)
+    setup = td_setup(bars) if bars else None
+    magic = setup.latest if setup else None
     return {
         "ma5": {
             **base,
@@ -290,10 +297,26 @@ def _indicators(candles: list[dict[str, Any]], cutoff: datetime) -> dict[str, di
             "direction": magic.direction.value if magic else None,
             "count": magic.count if magic else 0,
             "completed": magic.completed if magic else False,
+            "perfected": magic.perfected if magic else False,
             "confirmedAtIndex": magic.confirmed_at_index if magic else None,
-            "methodVersion": magic.algorithm_version if magic else "sequential-close-4-v1",
+            "lastCompleted": _last_completed_setup(setup),
+            "methodVersion": TD_SETUP_VERSION,
             "qualityStatus": "live" if magic else "unavailable",
         },
+    }
+
+
+def _last_completed_setup(setup: TDSetupResult | None) -> dict[str, Any] | None:
+    """Keep a completed nine visible after counting restarts on the next bar."""
+
+    if setup is None or not setup.signals:
+        return None
+    last = setup.signals[-1]
+    return {
+        "direction": last.direction.value,
+        "confirmedAtIndex": last.confirmed_at_index,
+        "perfected": last.perfected,
+        "barsSince": len(setup.bullish_counts) - 1 - last.confirmed_at_index,
     }
 
 

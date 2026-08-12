@@ -106,7 +106,9 @@ const snapshot: ChartSnapshot = {
     direction: "bullish",
     count: 2,
     completed: false,
+    perfected: false,
     confirmedAtIndex: null,
+    lastCompleted: null,
   },
   forecast: null,
 };

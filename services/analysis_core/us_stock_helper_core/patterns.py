@@ -25,49 +25,164 @@ class PatternSignal:
     explanation: str
 
 
+TD_SETUP_VERSION = "td-setup-close-4-v2"
+
+
 @dataclass(frozen=True, slots=True)
 class MagicNineSignal:
     direction: Direction
     count: int
     completed: bool
     confirmed_at_index: int
-    algorithm_version: str = "sequential-close-4-v1"
+    perfected: bool = False
+    algorithm_version: str = TD_SETUP_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class TDSetupResult:
+    """Per-bar TD Setup counts, every completed run, and the state right now."""
+
+    bullish_counts: tuple[int, ...]
+    bearish_counts: tuple[int, ...]
+    signals: tuple[MagicNineSignal, ...]
+    latest: MagicNineSignal | None
+    algorithm_version: str = TD_SETUP_VERSION
+
+
+def td_setup(
+    bars: Sequence[OHLCVBar],
+    *,
+    lookback: int = 4,
+    setup_length: int = 9,
+) -> TDSetupResult:
+    """Count closes against the close ``lookback`` bars earlier.
+
+    A completed count is an exhaustion warning, never an instruction. Counting
+    restarts after each completed run so a long one-sided stretch reports every
+    exhaustion point rather than only its first.
+    """
+
+    if lookback <= 0:
+        raise ValueError("lookback must be positive")
+    if setup_length < 2:
+        raise ValueError("setup_length must be at least two")
+    completed = tuple(bars)
+    if any(not row.complete for row in completed):
+        raise ValueError("TD setup requires completed candles")
+
+    bullish_counts = [0] * len(completed)
+    bearish_counts = [0] * len(completed)
+    signals: list[MagicNineSignal] = []
+    streak = 0
+    direction: Direction | None = None
+
+    for index in range(lookback, len(completed)):
+        current = completed[index].close
+        reference = completed[index - lookback].close
+        if current < reference:
+            candidate = Direction.BULLISH
+        elif current > reference:
+            candidate = Direction.BEARISH
+        else:
+            streak = 0
+            direction = None
+            continue
+        streak = streak + 1 if candidate == direction else 1
+        direction = candidate
+        if candidate is Direction.BULLISH:
+            bullish_counts[index] = streak
+        else:
+            bearish_counts[index] = streak
+        if streak == setup_length:
+            start = index - setup_length + 1
+            signals.append(
+                MagicNineSignal(
+                    direction=candidate,
+                    count=streak,
+                    completed=True,
+                    confirmed_at_index=index,
+                    perfected=_is_perfected(completed, start, setup_length, candidate),
+                )
+            )
+            streak = 0
+            direction = None
+
+    latest: MagicNineSignal | None = None
+    if signals and signals[-1].confirmed_at_index == len(completed) - 1:
+        latest = signals[-1]
+    elif direction is not None and streak > 0:
+        latest = MagicNineSignal(
+            direction=direction,
+            count=streak,
+            completed=False,
+            confirmed_at_index=len(completed) - 1,
+        )
+
+    return TDSetupResult(
+        bullish_counts=tuple(bullish_counts),
+        bearish_counts=tuple(bearish_counts),
+        signals=tuple(signals),
+        latest=latest,
+    )
 
 
 def magic_nine(closes: Sequence[float]) -> MagicNineSignal | None:
+    """Summarize the TD Setup state as of the last close.
+
+    Reports the run in progress right now, not the first one in history: a
+    "current state" reading that ignores everything after an old completed
+    sequence would describe a market that no longer exists.
+    """
+
     if len(closes) < 5:
         return None
-    count = 0
+    values = [float(close) for close in closes]
+    streak = 0
     direction: Direction | None = None
-    for index in range(4, len(closes)):
-        if closes[index] > closes[index - 4]:
-            candidate = Direction.BEARISH
-        elif closes[index] < closes[index - 4]:
+    for index in range(4, len(values)):
+        if values[index] < values[index - 4]:
             candidate = Direction.BULLISH
+        elif values[index] > values[index - 4]:
+            candidate = Direction.BEARISH
         else:
-            count = 0
+            streak = 0
             direction = None
             continue
-        if candidate == direction:
-            count += 1
-        else:
-            direction = candidate
-            count = 1
-        if count == 9:
-            return MagicNineSignal(
-                direction=direction,
-                count=count,
-                completed=True,
-                confirmed_at_index=index,
-            )
-    if direction is None or count == 0:
+        streak = streak + 1 if candidate == direction else 1
+        direction = candidate
+        if streak == 9:
+            if index == len(values) - 1:
+                return MagicNineSignal(
+                    direction=candidate,
+                    count=9,
+                    completed=True,
+                    confirmed_at_index=index,
+                )
+            streak = 0
+            direction = None
+    if direction is None or streak == 0:
         return None
     return MagicNineSignal(
         direction=direction,
-        count=count,
+        count=streak,
         completed=False,
-        confirmed_at_index=len(closes) - 1,
+        confirmed_at_index=len(values) - 1,
     )
+
+
+def _is_perfected(
+    bars: Sequence[OHLCVBar],
+    start: int,
+    setup_length: int,
+    direction: Direction,
+) -> bool:
+    if setup_length != 9:
+        return False
+    bar_six, bar_seven = bars[start + 5], bars[start + 6]
+    bar_eight, bar_nine = bars[start + 7], bars[start + 8]
+    if direction is Direction.BULLISH:
+        return min(bar_eight.low, bar_nine.low) <= min(bar_six.low, bar_seven.low)
+    return max(bar_eight.high, bar_nine.high) >= max(bar_six.high, bar_seven.high)
 
 
 def three_bar_fractals(bars: Sequence[OHLCVBar]) -> tuple[PatternSignal, ...]:
