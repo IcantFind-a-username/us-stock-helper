@@ -89,6 +89,38 @@ _NEGATIVE = {
 }
 _LEXICON = {**_POSITIVE, **_NEGATIVE}
 
+# Phrases are matched before single words and consume the tokens they cover.
+# Without them "cut costs" reads as badly as "cut guidance", and a headline
+# about the shares falling is scored on whatever it fell in spite of.
+_PHRASES: dict[tuple[str, ...], float] = {
+    ("cut", "costs"): 0.4,
+    ("cuts", "costs"): 0.4,
+    ("cost", "cuts"): 0.4,
+    ("cutting", "costs"): 0.4,
+    ("cut", "guidance"): -0.7,
+    ("cuts", "guidance"): -0.7,
+    ("lowered", "guidance"): -0.7,
+    ("raised", "guidance"): 0.7,
+    ("raises", "guidance"): 0.7,
+    ("profit", "warning"): -0.8,
+    ("beat", "and", "raised"): 0.9,
+    ("beats", "and", "raises"): 0.9,
+    # The market's own verdict on the stock, which outranks the item it reacted to.
+    ("shares", "fell"): -0.9,
+    ("shares", "plunged"): -0.95,
+    ("shares", "slumped"): -0.9,
+    ("shares", "tumbled"): -0.9,
+    ("shares", "surged"): 0.9,
+    ("shares", "soared"): 0.95,
+    ("shares", "jumped"): 0.9,
+    ("shares", "rallied"): 0.9,
+    ("stock", "fell"): -0.9,
+    ("stock", "plunged"): -0.95,
+    ("stock", "surged"): 0.9,
+    ("stock", "soared"): 0.95,
+}
+_MAX_PHRASE = max(len(phrase) for phrase in _PHRASES)
+
 _NEGATORS = frozenset(
     {"not", "no", "never", "without", "fails", "failed", "unable", "denies", "denied"}
 )
@@ -125,30 +157,54 @@ def score_event_sentiment(text: str) -> EventSentiment:
     tokens = _TOKEN.findall(text.casefold())
     matched: list[tuple[str, float]] = []
     negation_countdown = 0
-    for token in tokens:
-        if token in _CLAUSE_BREAK or token == "--" or token == "—":
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _CLAUSE_BREAK:
             negation_countdown = 0
+            index += 1
             continue
         if token in _NEGATORS:
             negation_countdown = _NEGATION_WINDOW
+            index += 1
             continue
-        weight = _LEXICON.get(token)
+
+        phrase_length, weight, label = _longest_phrase(tokens, index)
+        if weight is None:
+            weight = _LEXICON.get(token)
+            label = token
+            phrase_length = 1
         if weight is None:
             if negation_countdown:
                 negation_countdown -= 1
+            index += 1
             continue
         if negation_countdown:
             weight = -weight
             negation_countdown = 0
-        matched.append((token, weight))
+        matched.append((label, weight))
+        index += phrase_length
 
     if not matched:
         return EventSentiment(score=None, matched_terms=())
-    total = sum(weight for _, weight in matched)
-    # Average rather than sum: a long article should not outscore a decisive
-    # headline merely by repeating itself.
-    score = total / len(matched)
+    # Weight each term by its own magnitude rather than averaging equally: a
+    # decisive word should not be watered down by whatever mild vocabulary
+    # happened to appear beside it, and a long article should still not
+    # outscore a sharp headline by repeating itself.
+    magnitude = sum(abs(weight) for _, weight in matched)
+    score = sum(weight * abs(weight) for _, weight in matched) / magnitude
     return EventSentiment(
         score=max(-1.0, min(1.0, round(score, 6))),
         matched_terms=tuple(matched),
     )
+
+
+def _longest_phrase(
+    tokens: list[str], index: int
+) -> tuple[int, float | None, str]:
+    for length in range(min(_MAX_PHRASE, len(tokens) - index), 1, -1):
+        candidate = tuple(tokens[index : index + length])
+        weight = _PHRASES.get(candidate)
+        if weight is not None:
+            return length, weight, " ".join(candidate)
+    return 1, None, tokens[index]

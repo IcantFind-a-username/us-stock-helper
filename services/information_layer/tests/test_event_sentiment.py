@@ -70,6 +70,47 @@ class EventSentimentTests(unittest.TestCase):
         self.assertLess(near.score, 0.0)
         self.assertGreater(far.score, 0.0)
 
+    def test_a_headline_about_the_shares_falling_is_not_bullish(self) -> None:
+        # Two mild positives used to outvote the actual news: the market's own
+        # verdict on the stock is the story, not the profit it reacted to.
+        result = score_event_sentiment(
+            "Shares fell after the record profit was reported"
+        )
+
+        assert result.score is not None
+        self.assertLess(result.score, 0.0)
+
+    def test_cutting_costs_is_not_the_same_as_cutting_guidance(self) -> None:
+        # "cut" alone is one of the most negative words in this register, but
+        # "cut costs" is what companies say when margins are improving.
+        cost = score_event_sentiment("Company cut costs and margins expanded")
+        guidance = score_event_sentiment("Company cut its full-year guidance")
+
+        assert cost.score is not None and guidance.score is not None
+        self.assertGreater(cost.score, 0.0)
+        self.assertLess(guidance.score, 0.0)
+
+    def test_a_matched_phrase_consumes_its_own_words(self) -> None:
+        # Re-scanning a phrase's tokens counts the same evidence twice, which
+        # both distorts the weighting and makes the audit trail claim two
+        # findings where the text contained one.
+        result = score_event_sentiment("Shares fell on the news")
+
+        terms = [term for term, _ in result.matched_terms]
+        self.assertEqual(terms, ["shares fell"])
+
+    def test_a_strong_term_is_not_diluted_by_weak_company(self) -> None:
+        # Averaging every matched term equally let a decisive word be watered
+        # down by whatever else happened to appear beside it.
+        alone = score_event_sentiment("The company disclosed fraud")
+        padded = score_event_sentiment(
+            "The company disclosed fraud despite record growth and a dividend"
+        )
+
+        assert alone.score is not None and padded.score is not None
+        self.assertLess(alone.score, 0.0)
+        self.assertLess(padded.score, 0.0)
+
     def test_scores_stay_within_the_declared_range(self) -> None:
         piled_on = score_event_sentiment(
             "surged soared beat raised upgraded record profit growth strong"
