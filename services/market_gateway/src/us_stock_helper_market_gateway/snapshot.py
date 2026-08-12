@@ -113,11 +113,7 @@ def _candles(
             raise ValueError("candle timestamps are not strictly increasing")
         if closed_at > cutoff:
             raise ValueError("completed candle is after decision cutoff")
-        received_at = (
-            parse_aware(item["receivedAt"], "candle receivedAt")
-            if "receivedAt" in item
-            else available_at
-        )
+        received_at = parse_aware(item["receivedAt"], "candle receivedAt")
         if received_at < available_at or received_at > cutoff:
             raise ValueError("candle receipt time is outside the decision cutoff")
         previous = closed_at
@@ -134,7 +130,7 @@ def _candles(
                 "asOf": iso_z(closed_at),
                 "availableAt": iso_z(available_at),
                 "receivedAt": iso_z(received_at),
-                "priceAdjustment": item.get("priceAdjustment", "unknown"),
+                "priceAdjustment": _require_adjustment(item),
                 "methodVersion": "provider-completed-candle-v1",
                 "qualityStatus": "live",
             }
@@ -348,11 +344,32 @@ def _indicators(
     }
 
 
+_KNOWN_ADJUSTMENTS = {"forward-adjusted", "unadjusted"}
+
+
+def _require_adjustment(item: dict[str, Any]) -> str:
+    """The basis is a fact about the gateway's own request, never a guess."""
+
+    basis = item.get("priceAdjustment")
+    if basis not in _KNOWN_ADJUSTMENTS:
+        raise ValueError("candle does not declare a known price adjustment basis")
+    return basis
+
+
 def _price_adjustment(candles: list[dict[str, Any]]) -> str:
     bases = {candle["priceAdjustment"] for candle in candles}
     if len(bases) > 1:
         raise ValueError("candles mix price adjustment bases")
-    return bases.pop() if bases else "unknown"
+    if not bases:
+        # No completed candles yet is a normal state before the first bar of a
+        # session closes. The basis of the series is still known — the gateway
+        # always requests forward adjustment — and emitting "unknown" here made
+        # the app reject an otherwise valid snapshot.
+        return "forward-adjusted"
+    basis = bases.pop()
+    if basis not in _KNOWN_ADJUSTMENTS:
+        raise ValueError(f"unsupported price adjustment basis: {basis}")
+    return basis
 
 
 def _last_completed_setup(setup: TDSetupResult | None) -> dict[str, Any] | None:

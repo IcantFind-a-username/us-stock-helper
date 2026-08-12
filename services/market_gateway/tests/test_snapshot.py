@@ -211,6 +211,41 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertIn("sample", volatility["missingReason"])
         self.assertEqual(volatility["sampleSize"], 19)
 
+    def test_a_snapshot_without_candles_still_declares_a_known_basis(self) -> None:
+        # Before the first bar of a session there are no completed candles.
+        # Degrading to "unknown" made the app reject an otherwise valid
+        # snapshot outright, so its empty state was unreachable.
+        response = assemble_stock_snapshot(
+            symbol="NVDA",
+            interval="5m",
+            decision_cutoff=NOW,
+            quote_items=[
+                {
+                    "code": "US.NVDA",
+                    "price": 100.0,
+                    "changePercent": 1.0,
+                    "availableAt": NOW.isoformat(),
+                }
+            ],
+            candle_items=[],
+            flow_items=[],
+            holding_items=[],
+        )
+
+        self.assertEqual(response["completedCandles"], [])
+        self.assertEqual(response["priceAdjustment"], "forward-adjusted")
+
+    def test_a_candle_with_an_unknown_basis_is_rejected_not_forwarded(self) -> None:
+        rows = list(self.provider.candle_result.items)
+        rows[0] = {**rows[0], "price_adjustment": "surprise"}
+        self.provider.candle_result = ProviderBatch(
+            "moomoo", self.provider.candle_result.received_at, rows
+        )
+
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["sourceStatus"], "unavailable")
+
     def test_snapshot_discloses_that_prices_are_rewritten_by_corporate_actions(
         self,
     ) -> None:
@@ -356,6 +391,8 @@ class StockSnapshotTests(unittest.TestCase):
                             "timeframe": vendor_label,
                             "timestamp": NOW.isoformat(),
                             "availableAt": NOW.isoformat(),
+                            "receivedAt": NOW.isoformat(),
+                            "priceAdjustment": "forward-adjusted",
                             "open": 172.0,
                             "high": 174.0,
                             "low": 171.5,

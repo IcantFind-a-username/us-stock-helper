@@ -474,11 +474,10 @@ class MarketGatewayService:
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "Provider candle failed point-in-time validation",
                 )
-            received_at = (
-                parse_aware(item["received_at"], "received_at")
-                if "received_at" in item
-                else available_at
-            )
+            # No fallback: substituting availableAt would invent the earliest,
+            # most permissive receipt time and disable the cutoff check for any
+            # provider that simply omits the field.
+            received_at = parse_aware(item["received_at"], "received_at")
             if received_at < available_at or received_at > now:
                 raise GatewayError(
                     ErrorCode.MALFORMED_PROVIDER_DATA,
@@ -490,7 +489,7 @@ class MarketGatewayService:
                     "timestamp": iso_z(timestamp),
                     "availableAt": iso_z(available_at),
                     "receivedAt": iso_z(received_at),
-                    "priceAdjustment": item.get("price_adjustment", "unknown"),
+                    "priceAdjustment": self._adjustment(item),
                     "complete": True,
                     "code": item.get("code"),
                     "timeframe": item.get("timeframe"),
@@ -807,6 +806,16 @@ class MarketGatewayService:
             "availableAt": iso_z(available_at),
             "items": items,
         }
+
+    @staticmethod
+    def _adjustment(item: dict[str, Any]) -> str:
+        basis = item.get("price_adjustment")
+        if basis not in {"forward-adjusted", "unadjusted"}:
+            raise GatewayError(
+                ErrorCode.MALFORMED_PROVIDER_DATA,
+                "Provider candle does not declare a price adjustment basis",
+            )
+        return basis
 
     @staticmethod
     def _number(value: object, label: str) -> float:
