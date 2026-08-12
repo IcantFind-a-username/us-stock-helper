@@ -3,12 +3,14 @@ import { useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { CandidateCard } from "@/components/discover/CandidateCard";
+import { AnalysisNotConnected } from "@/components/ui/AnalysisNotConnected";
 import {
   DashboardDetailSheet,
   type DetailSection,
 } from "@/components/dashboard/DashboardDetailSheet";
 import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
 import { Screen } from "@/components/ui/Screen";
+import { useMarketDataMode } from "@/state/MarketDataProvider";
 import type { Candidate, Citation, PlanSide } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useAppState } from "@/state/AppStateProvider";
@@ -25,6 +27,7 @@ type DetailState = {
 export function DiscoverScreen() {
   const router = useRouter();
   const { horizon, setHorizon } = useAppState();
+  const { demoMode } = useMarketDataMode();
   const [sideFilter, setSideFilter] = useState<SideFilter>("all");
   const [asymmetricOnly, setAsymmetricOnly] = useState(false);
   const [detail, setDetail] = useState<DetailState>(null);
@@ -53,6 +56,14 @@ export function DiscoverScreen() {
       ],
       citations: fixtureRepository.getCitations(candidate.citationIds),
     });
+
+  if (!demoMode) {
+    return (
+      <Screen hideGlobalHeader style={styles.screen}>
+        <AnalysisNotConnected surface="全市场机会扫描" />
+      </Screen>
+    );
+  }
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>

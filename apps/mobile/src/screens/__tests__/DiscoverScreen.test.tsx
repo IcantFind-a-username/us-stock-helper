@@ -5,6 +5,18 @@ import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { AppStateProvider } from "@/state/AppStateProvider";
 
 import { DiscoverScreen } from "../DiscoverScreen";
+import { MarketDataProvider } from "@/state/MarketDataProvider";
+import type { MarketRepository } from "@/data/marketRepository";
+
+const idleRepository = {
+  loadWatchlist: async () => {
+    throw new Error("not used in this test");
+  },
+  loadSnapshot: async () => {
+    throw new Error("not used in this test");
+  },
+} as unknown as MarketRepository;
+
 
 const mockPush = jest.fn();
 
@@ -20,7 +32,9 @@ beforeEach(async () => {
 async function renderDiscover() {
   return render(
     <AppStateProvider>
+      <MarketDataProvider development initialDemoMode repository={idleRepository}>
       <DiscoverScreen />
+    </MarketDataProvider>
     </AppStateProvider>,
   );
 }

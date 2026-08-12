@@ -2,6 +2,18 @@ import { expect, it, jest } from "@jest/globals";
 import { fireEvent, render } from "@testing-library/react-native";
 
 import { AlertsScreen } from "../AlertsScreen";
+import { MarketDataProvider } from "@/state/MarketDataProvider";
+import type { MarketRepository } from "@/data/marketRepository";
+
+const idleRepository = {
+  loadWatchlist: async () => {
+    throw new Error("not used in this test");
+  },
+  loadSnapshot: async () => {
+    throw new Error("not used in this test");
+  },
+} as unknown as MarketRepository;
+
 
 const mockPush = jest.fn();
 
@@ -10,7 +22,9 @@ jest.mock("expo-router", () => ({
 }));
 
 it("filters four evidence-gated alert classes and opens their stock context", async () => {
-  const view = await render(<AlertsScreen />);
+  const view = await render(<MarketDataProvider development initialDemoMode repository={idleRepository}>
+      <AlertsScreen />
+    </MarketDataProvider>);
 
   expect(view.getByText("提醒中心")).toBeTruthy();
   expect(view.getByText("NVDA 接近量价确认区")).toBeTruthy();

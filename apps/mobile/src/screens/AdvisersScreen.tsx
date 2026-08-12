@@ -9,17 +9,20 @@ import {
   DashboardDetailSheet,
   type DetailSection,
 } from "@/components/dashboard/DashboardDetailSheet";
+import { AnalysisNotConnected } from "@/components/ui/AnalysisNotConnected";
 import { Screen } from "@/components/ui/Screen";
 import type { PlanSide, RiskPreference } from "@/domain/models";
 import { evaluateTradePlanSafety, selectTradePlan } from "@/domain/plan";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useAppState } from "@/state/AppStateProvider";
+import { useMarketDataMode } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 export function AdvisersScreen() {
   const params = useLocalSearchParams<{ symbol?: string | string[] }>();
   const router = useRouter();
   const { horizon, savePlan } = useAppState();
+  const { demoMode } = useMarketDataMode();
   const symbolParam = Array.isArray(params.symbol) ? params.symbol[0] : params.symbol;
   const symbol = (symbolParam ?? "NVDA").toUpperCase();
   const stock = fixtureRepository.getStock(symbol, horizon);
@@ -72,6 +75,14 @@ export function AdvisersScreen() {
       body: `证据与借券状态都不得晚于 ${formatAsOf(stock.forecast.predictedAt)}`,
     },
   ];
+
+  if (!demoMode) {
+    return (
+      <Screen hideGlobalHeader style={styles.screen}>
+        <AnalysisNotConnected surface="顾问会诊" />
+      </Screen>
+    );
+  }
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>

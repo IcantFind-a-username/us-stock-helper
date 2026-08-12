@@ -3,11 +3,13 @@ import { useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { AlertThreadCard } from "@/components/alerts/AlertThreadCard";
+import { AnalysisNotConnected } from "@/components/ui/AnalysisNotConnected";
 import {
   DashboardDetailSheet,
   type DetailSection,
 } from "@/components/dashboard/DashboardDetailSheet";
 import { Screen } from "@/components/ui/Screen";
+import { useMarketDataMode } from "@/state/MarketDataProvider";
 import type { AlertThread, Citation } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { colors, radius, spacing } from "@/theme/tokens";
@@ -22,6 +24,7 @@ type DetailState = {
 
 export function AlertsScreen() {
   const router = useRouter();
+  const { demoMode } = useMarketDataMode();
   const [severity, setSeverity] = useState<SeverityFilter>("all");
   const [detail, setDetail] = useState<DetailState>(null);
   const allAlerts = fixtureRepository.getAlerts();
@@ -55,6 +58,14 @@ export function AlertsScreen() {
       ],
       citations: alert.citations,
     });
+
+  if (!demoMode) {
+    return (
+      <Screen hideGlobalHeader style={styles.screen}>
+        <AnalysisNotConnected surface="提醒" />
+      </Screen>
+    );
+  }
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>

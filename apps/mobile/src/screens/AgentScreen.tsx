@@ -8,13 +8,16 @@ import {
   DashboardDetailSheet,
   type DetailSection,
 } from "@/components/dashboard/DashboardDetailSheet";
+import { AnalysisNotConnected } from "@/components/ui/AnalysisNotConnected";
 import { Screen } from "@/components/ui/Screen";
 import type { ConversationTurn } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
+import { useMarketDataMode } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 export function AgentScreen() {
   const router = useRouter();
+  const { demoMode } = useMarketDataMode();
   const initialTurns = fixtureRepository.getConversation();
   const citationIds = [...new Set(initialTurns.flatMap((turn) => turn.citationIds))];
   const citations = fixtureRepository.getCitations(citationIds);
@@ -76,6 +79,14 @@ export function AgentScreen() {
       body: "确定性演示数据；未连接实时行情、新闻服务或外部模型。",
     },
   ];
+
+  if (!demoMode) {
+    return (
+      <Screen hideGlobalHeader style={styles.screen}>
+        <AnalysisNotConnected surface="Agent 对话" />
+      </Screen>
+    );
+  }
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>

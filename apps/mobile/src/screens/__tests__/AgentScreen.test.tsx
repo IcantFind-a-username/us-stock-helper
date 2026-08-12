@@ -2,6 +2,18 @@ import { expect, it, jest } from "@jest/globals";
 import { fireEvent, render } from "@testing-library/react-native";
 
 import { AgentScreen } from "../AgentScreen";
+import { MarketDataProvider } from "@/state/MarketDataProvider";
+import type { MarketRepository } from "@/data/marketRepository";
+
+const idleRepository = {
+  loadWatchlist: async () => {
+    throw new Error("not used in this test");
+  },
+  loadSnapshot: async () => {
+    throw new Error("not used in this test");
+  },
+} as unknown as MarketRepository;
+
 
 const mockPush = jest.fn();
 
@@ -10,7 +22,9 @@ jest.mock("expo-router", () => ({
 }));
 
 it("keeps the objective-first response order and exposes safe local actions", async () => {
-  const view = await render(<AgentScreen />);
+  const view = await render(<MarketDataProvider development initialDemoMode repository={idleRepository}>
+      <AgentScreen />
+    </MarketDataProvider>);
 
   const titles = view
     .getAllByTestId("conversation-section-title")

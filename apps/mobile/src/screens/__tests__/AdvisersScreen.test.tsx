@@ -5,6 +5,18 @@ import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { AppStateProvider } from "@/state/AppStateProvider";
 
 import { AdvisersScreen } from "../AdvisersScreen";
+import { MarketDataProvider } from "@/state/MarketDataProvider";
+import type { MarketRepository } from "@/data/marketRepository";
+
+const idleRepository = {
+  loadWatchlist: async () => {
+    throw new Error("not used in this test");
+  },
+  loadSnapshot: async () => {
+    throw new Error("not used in this test");
+  },
+} as unknown as MarketRepository;
+
 
 jest.mock("expo-router", () => ({
   useLocalSearchParams: () => ({ symbol: "NVDA" }),
@@ -18,7 +30,9 @@ beforeEach(async () => {
 it("keeps the objective layer frozen while selecting deterministic long and short plans", async () => {
   const view = await render(
     <AppStateProvider>
+      <MarketDataProvider development initialDemoMode repository={idleRepository}>
       <AdvisersScreen />
+    </MarketDataProvider>
     </AppStateProvider>,
   );
 
