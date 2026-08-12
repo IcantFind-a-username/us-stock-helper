@@ -385,6 +385,42 @@ describe("schema-v2 stock snapshot validation", () => {
     expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
   });
 
+  it("names a version mismatch instead of calling an old gateway malformed", () => {
+    const value = stockSnapshotFixture();
+    value.schemaVersion = "2";
+    delete (value.completedCandles[0] as { receivedAt?: string }).receivedAt;
+
+    // An older gateway that predates receivedAt is not sending corrupt data;
+    // it is sending an older contract. Calling that "malformed" hides that the
+    // fix is to update the gateway.
+    expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow(
+      expect.objectContaining({ name: "GatewayContractError" }),
+    );
+  });
+
+  it("maps an outdated gateway contract to its own error kind", async () => {
+    const value = stockSnapshotFixture();
+    delete (value.completedCandles[0] as { receivedAt?: string }).receivedAt;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl: jest.fn(async () => jsonResponse(value)) as unknown as typeof fetch,
+      now: () => now,
+    });
+
+    await expect(client.getStockSnapshot("NVDA", "5m", 200)).rejects.toMatchObject({
+      kind: "contract",
+    });
+  });
+
+  it("rejects a snapshot schema version it does not implement", () => {
+    const value = stockSnapshotFixture();
+    value.schemaVersion = "3";
+
+    expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow(
+      /schemaVersion/i,
+    );
+  });
+
   it("accepts an unchecked perfection verdict as null", () => {
     const value = stockSnapshotFixture();
     // The server sends null when the bar 8/9 comparison was not performed;

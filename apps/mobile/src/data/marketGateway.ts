@@ -61,6 +61,7 @@ export class GatewayValidationError extends Error {
 }
 
 export type GatewayRequestErrorKind =
+  | "contract"
   | "offline"
   | "login-required"
   | "permission"
@@ -78,6 +79,19 @@ export class GatewayRequestError extends GatewayValidationError {
   }
 }
 
+/**
+ * The payload declares a schema version we implement but omits a field that
+ * version requires — an older gateway, not corrupt data. Kept apart from
+ * GatewayValidationError so the app can say "update the gateway" rather than
+ * "the data is broken".
+ */
+export class GatewayContractError extends GatewayValidationError {
+  constructor(field: string) {
+    super(`snapshot is missing ${field}; the gateway may be out of date`);
+    this.name = "GatewayContractError";
+  }
+}
+
 class GatewayHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -90,6 +104,11 @@ class GatewayHttpError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireContractField(record: Record<string, unknown>, key: string) {
+  if (record[key] === undefined) throw new GatewayContractError(key);
+  return record[key];
 }
 
 function requireString(record: Record<string, unknown>, key: string) {
@@ -497,6 +516,8 @@ export function decodeStockSnapshotEnvelope(
       throw new GatewayValidationError("completed candle quality status must be live");
     }
     requireExpectedMethod(item, "provider-completed-candle-v1", "completed candle");
+    requireContractField(item, "receivedAt");
+    requireContractField(item, "priceAdjustment");
     const receivedAt = parseTimestamp(requireString(item, "receivedAt"), "completed candle.receivedAt");
     if (
       receivedAt.getTime() < new Date(metadata.availableAt).getTime() ||
@@ -843,6 +864,9 @@ export function createMarketGatewayClient({
         "offline",
         "gateway request was aborted without a known cause",
       );
+    }
+    if (error instanceof GatewayContractError) {
+      return new GatewayRequestError("contract", error.message);
     }
     if (error instanceof GatewayValidationError) {
       return new GatewayRequestError("malformed", error.message);

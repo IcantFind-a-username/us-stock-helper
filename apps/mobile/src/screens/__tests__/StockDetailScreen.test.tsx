@@ -263,6 +263,19 @@ it("keeps a finished nine visible even when the current count is unavailable", a
   );
 });
 
+it("tells the user to update the gateway when its contract is outdated", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => {
+      throw new MarketDataError("contract", "snapshot is missing receivedAt");
+    }),
+  });
+
+  await waitFor(() =>
+    expect(view.getByText("行情不可用 · 网关版本过旧")).toBeTruthy(),
+  );
+  expect(view.getByText(/请更新本机网关服务后重试/)).toBeTruthy();
+});
+
 it("shows realized volatility and says when it cannot be measured", async () => {
   const view = await renderDetail({
     repository: repositoryWithSnapshot(async () => liveSnapshot()),

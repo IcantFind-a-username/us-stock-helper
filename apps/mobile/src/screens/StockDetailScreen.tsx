@@ -45,6 +45,9 @@ function StockPageState({
   onBack(): void;
 }) {
   const unavailable = market.status === "unavailable";
+  // An outdated gateway is not broken data; saying so points at the one action
+  // that actually fixes it.
+  const outdatedContract = market.error?.category === "contract";
   return (
     <Screen hideGlobalHeader style={styles.screen}>
       <Pressable
@@ -60,12 +63,16 @@ function StockPageState({
       <View style={styles.stateCard}>
         <Text style={styles.stateTitle}>
           {unavailable
-            ? `行情不可用 · ${market.error?.category ?? "offline"}`
+            ? `行情不可用 · ${
+                outdatedContract ? "网关版本过旧" : market.error?.category ?? "offline"
+              }`
             : "正在连接 moomoo 行情…"}
         </Text>
         <Text style={styles.stateBody}>
           {unavailable
-            ? "请检查 OpenD、网络或行情权限后重试。不会自动切换为演示数据。"
+            ? outdatedContract
+              ? "网关返回的字段少于本版 App 所需。请更新本机网关服务后重试；不会自动切换为演示数据。"
+              : "请检查 OpenD、网络或行情权限后重试。不会自动切换为演示数据。"
             : "正在读取实时只读快照。你可以返回自选列表稍后再试。"}
         </Text>
         {unavailable ? (

@@ -9,6 +9,7 @@ import type { MarketRuntimeConfig } from "@/config/runtimeConfig";
 
 export type MarketDataErrorCategory =
   | "configuration"
+  | "contract"
   | "login-required"
   | "malformed"
   | "offline"
