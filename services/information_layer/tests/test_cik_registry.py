@@ -7,6 +7,7 @@ from information_layer.cik_registry import (
     CIK_REGISTRY_VERSION,
     CikTickerRegistry,
     extract_cik,
+    extract_ciks,
 )
 
 
@@ -61,6 +62,42 @@ class CikRegistryTests(unittest.TestCase):
         self.assertEqual(registry.symbol_relevance_for("1652044"),
                          (("GOOG", 1.0), ("GOOGL", 1.0)))
         self.assertEqual(registry.symbol_relevance_for("9999999999"), ())
+
+
+class InsiderFilingAttributionTests(unittest.TestCase):
+    def test_a_form_4_resolves_to_the_issuer_not_the_insider(self) -> None:
+        # EDGAR titles a Form 4 with the *reporting person*. Taking that CIK
+        # attributes an insider transaction to a natural person, who has no
+        # ticker — so the signal is silently lost instead of reaching the
+        # stock it is about.
+        candidates = extract_ciks(
+            "4 - Cook Timothy D (0001214128) (Reporting)",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000081/x.htm",
+        )
+
+        self.assertIn("0001214128", candidates)
+        self.assertIn("0000320193", candidates)
+
+    def test_the_registry_itself_disambiguates_person_from_issuer(self) -> None:
+        registry = CikTickerRegistry.from_sec_payload(SEC_PAYLOAD)
+        candidates = extract_ciks(
+            "4 - Cook Timothy D (0001214128) (Reporting)",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000081/x.htm",
+        )
+
+        resolved = registry.resolve_first(candidates)
+
+        # A person's CIK never maps to a ticker, so the registry picks the
+        # issuer without needing to parse EDGAR's role labels.
+        self.assertEqual(resolved, ("0000320193", (("AAPL", 1.0),)))
+
+    def test_resolution_reports_nothing_when_no_candidate_is_listed(self) -> None:
+        registry = CikTickerRegistry.from_sec_payload(SEC_PAYLOAD)
+
+        self.assertEqual(
+            registry.resolve_first(("0001214128", "0009999999")), (None, ())
+        )
+        self.assertEqual(registry.resolve_first(()), (None, ()))
 
 
 class CikExtractionTests(unittest.TestCase):

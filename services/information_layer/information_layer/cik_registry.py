@@ -67,17 +67,48 @@ class CikTickerRegistry:
     def symbol_relevance_for(self, cik: str | int) -> tuple[tuple[str, float], ...]:
         return tuple((ticker, 1.0) for ticker in self.tickers_for(cik))
 
+    def resolve_first(
+        self, candidates: tuple[str, ...]
+    ) -> tuple[str | None, tuple[tuple[str, float], ...]]:
+        """Pick the first candidate CIK that is a listed issuer.
+
+        An insider's CIK is never in this registry, so looking a filing's
+        candidates up here separates the reporting person from the issuer
+        without parsing EDGAR's role labels — which vary by form and year.
+        """
+
+        for cik in candidates:
+            relevance = self.symbol_relevance_for(cik)
+            if relevance:
+                return _normalize(cik), relevance
+        return None, ()
+
 
 def extract_cik(title: str, url: str) -> str | None:
-    """Find the filer's CIK in an EDGAR entry, or report that there is none."""
+    """The single most likely filer CIK, title first."""
 
-    match = _TITLE_CIK.search(title or "")
-    if match:
-        return _normalize(match.group(1))
-    match = _URL_CIK.search(url or "")
-    if match:
-        return _normalize(match.group(1))
-    return None
+    candidates = extract_ciks(title, url)
+    return candidates[0] if candidates else None
+
+
+def extract_ciks(title: str, url: str) -> tuple[str, ...]:
+    """Every CIK an EDGAR entry mentions, in the order they should be tried.
+
+    A Form 4 is titled with the reporting person, whose CIK belongs to a human
+    being; the issuer's appears only in the archive path. Returning both lets
+    the registry decide which one is a listed company.
+    """
+
+    found: list[str] = []
+    for match in _TITLE_CIK.finditer(title or ""):
+        cik = _normalize(match.group(1))
+        if cik and cik not in found:
+            found.append(cik)
+    for match in _URL_CIK.finditer(url or ""):
+        cik = _normalize(match.group(1))
+        if cik and cik not in found:
+            found.append(cik)
+    return tuple(found)
 
 
 def _normalize(cik: str | int) -> str:

@@ -4,7 +4,7 @@ import re
 from typing import Iterable
 from urllib.parse import urlencode
 
-from ..cik_registry import CikTickerRegistry, extract_cik
+from ..cik_registry import CikTickerRegistry, extract_ciks
 from ..models import ClaimStatus
 from .generic import (
     FeedConfig,
@@ -92,15 +92,25 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         filer outside the registry gets no symbol at all rather than a guess.
         """
 
-        cik = extract_cik(entry.title, entry.canonical_url)
-        if cik is None or self.cik_registry is None:
-            return ()
-        return self.cik_registry.symbol_relevance_for(cik)
+        return self._resolve_filer(entry)[1]
+
+    def _resolve_filer(
+        self, entry: _ParsedEntry
+    ) -> tuple[str | None, tuple[tuple[str, float], ...]]:
+        candidates = extract_ciks(entry.title, entry.canonical_url)
+        if not candidates:
+            return None, ()
+        if self.cik_registry is None:
+            return candidates[0], ()
+        cik, relevance = self.cik_registry.resolve_first(candidates)
+        # With no listed issuer among the candidates, record the filer we saw
+        # so the filing is still traceable, but claim no symbol.
+        return (cik or candidates[0]), relevance
 
     def _attributes(self, entry: _ParsedEntry) -> tuple[tuple[str, str], ...]:
         values = list(super()._attributes(entry))
         values.append(("form_type", self.form_type))
-        cik = extract_cik(entry.title, entry.canonical_url)
+        cik, _ = self._resolve_filer(entry)
         if cik:
             values.append(("cik", cik))
         accession = self._accession(entry)

@@ -468,3 +468,33 @@ class SecSymbolAttributionTests(unittest.TestCase):
         item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
 
         self.assertEqual(item.symbol_relevance, ())
+
+
+SEC_FORM4_ATOM = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000099</id>
+    <title>4 - Cook Timothy D (0001214128) (Reporting)</title>
+    <summary>Statement of changes in beneficial ownership.</summary>
+    <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000099/filing-index.htm"/>
+    <updated>2026-07-25T13:58:00Z</updated>
+  </entry>
+</feed>
+"""
+
+
+class InsiderFilingAttributionTests(unittest.TestCase):
+    def test_a_form_4_reaches_the_issuer_not_the_reporting_person(self) -> None:
+        adapter = SecCurrentFilingsAdapter(
+            form_type="4",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(response(SEC_FORM4_ATOM)),
+            cik_registry=CikTickerRegistry.from_sec_payload(SEC_TICKERS),
+        )
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        # Insider transactions are one of the highest-value signals in this
+        # product; attributing them to a natural person loses them entirely.
+        self.assertEqual(item.symbol_relevance, (("AAPL", 1.0),))
+        self.assertIn(("cik", "0000320193"), item.attributes)
