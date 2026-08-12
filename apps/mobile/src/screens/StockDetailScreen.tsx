@@ -136,6 +136,7 @@ export function StockDetailScreen() {
           : ""
       }`
     : "九转 暂不可用";
+  const snapshotWarnings = liveStock?.warnings ?? [];
   const latestCandle = stock.candles.at(-1);
   const histogram = Array.isArray(stock.indicators.macd.histogram)
     ? (stock.indicators.macd.histogram.at(-1) ?? null)
@@ -222,6 +223,15 @@ export function StockDetailScreen() {
           {magicNineSummary} · 来源{" "}
           {stock.source.source} · 截止 {formatUtc(stock.source.asOf)}
         </Text>
+        {snapshotWarnings.length ? (
+          <View style={styles.warnings} testID="snapshot-warnings">
+            {snapshotWarnings.map((warning) => (
+              <Text key={warning} style={styles.warning}>
+                · {warning}
+              </Text>
+            ))}
+          </View>
+        ) : null}
       </View>
 
       <View accessibilityLabel="图表工具" style={styles.tools}>
@@ -376,6 +386,13 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "600",
     lineHeight: 14,
+  },
+  warnings: { gap: 2, marginTop: 2 },
+  warning: {
+    color: colors.amber,
+    fontSize: 9,
+    fontWeight: "600",
+    lineHeight: 13,
   },
   tools: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   tool: {

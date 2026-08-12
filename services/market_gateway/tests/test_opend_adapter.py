@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from us_stock_helper_market_gateway.errors import ErrorCode, GatewayError
 from us_stock_helper_market_gateway.opend_adapter import MoomooOpenDProvider
+from us_stock_helper_market_gateway.time_utils import iso_z
 
 
 NOW = datetime(2026, 7, 25, 15, 56, tzinfo=timezone.utc)
@@ -627,6 +628,35 @@ class MoomooOpenDProviderTests(unittest.TestCase):
         self.assertEqual(
             batch.items[1]["available_at"], "2026-07-25T16:00:00Z"
         )
+
+    def test_candle_separates_publication_time_from_gateway_receipt(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=fake_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        batch = provider.candles("US.NVDA", "5m", 200)
+
+        # available_at is when the exchange published the close; received_at is
+        # when this gateway actually held the row. Collapsing the two would let
+        # a backtest act on data before it existed anywhere.
+        self.assertEqual(batch.items[0]["available_at"], "2026-07-25T15:55:00Z")
+        self.assertEqual(batch.items[0]["received_at"], iso_z(NOW))
+        for item in batch.items:
+            self.assertLessEqual(item["available_at"], item["received_at"])
+
+    def test_candles_declare_their_price_adjustment_basis(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=fake_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        batch = provider.candles("US.NVDA", "5m", 200)
+
+        for item in batch.items:
+            self.assertEqual(item["price_adjustment"], "forward-adjusted")
 
     def test_candle_count_returns_the_latest_rows(self) -> None:
         provider = MoomooOpenDProvider(

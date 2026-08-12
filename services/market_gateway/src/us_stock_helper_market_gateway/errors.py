@@ -68,3 +68,17 @@ class GatewayError(Exception):
             "message": self.message,
             "retriable": self.retriable,
         }
+
+
+class PointInTimeViolation(GatewayError):
+    """Data that claims to exist after the moment being decided for.
+
+    Kept apart from ordinary malformed data because the handling differs: a
+    broken or absent feed may degrade one section of a snapshot to
+    "unavailable", while data from the future invalidates the snapshot's
+    point-in-time claim outright and must never be softened into an absence.
+    Its public representation is identical, so callers see no new error code.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorCode.MALFORMED_PROVIDER_DATA, message)

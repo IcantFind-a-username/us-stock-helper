@@ -435,6 +435,10 @@ export function decodeStockSnapshotEnvelope(
     throw new GatewayValidationError("quote quality status must be live");
   }
 
+  const priceAdjustment = value.priceAdjustment;
+  if (priceAdjustment !== "forward-adjusted" && priceAdjustment !== "unadjusted") {
+    throw new GatewayValidationError("snapshot must declare a known price adjustment basis");
+  }
   if (!Array.isArray(value.completedCandles)) {
     throw new GatewayValidationError("completedCandles must be an array");
   }
@@ -465,9 +469,21 @@ export function decodeStockSnapshotEnvelope(
       throw new GatewayValidationError("completed candle quality status must be live");
     }
     requireExpectedMethod(item, "provider-completed-candle-v1", "completed candle");
+    const receivedAt = parseTimestamp(requireString(item, "receivedAt"), "completed candle.receivedAt");
+    if (
+      receivedAt.getTime() < new Date(metadata.availableAt).getTime() ||
+      receivedAt.getTime() > cutoff.getTime()
+    ) {
+      throw new GatewayValidationError("completed candle receipt time is outside the decision cutoff");
+    }
+    if (item.priceAdjustment !== priceAdjustment) {
+      throw new GatewayValidationError("completed candle disagrees with the snapshot price adjustment");
+    }
     return {
       timestamp: timestamp.toISOString(),
       availableAt: metadata.availableAt,
+      receivedAt: receivedAt.toISOString(),
+      priceAdjustment,
       complete: true,
       open,
       high,
@@ -659,6 +675,7 @@ export function decodeStockSnapshotEnvelope(
     symbol,
     interval,
     decisionCutoff: cutoff.toISOString(),
+    priceAdjustment,
     quote,
     candles,
     participationBars,

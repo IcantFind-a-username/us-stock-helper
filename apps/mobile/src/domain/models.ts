@@ -109,11 +109,22 @@ export interface Candidate {
   citationIds: string[];
 }
 
+export type PriceAdjustment = "forward-adjusted" | "unadjusted";
+
 export interface Candle {
   /** Bar-close time. Indicators and patterns may only consume completed bars. */
   timestamp: string;
-  /** First instant this completed bar was available to the decision engine. */
+  /** When the exchange published this close, the earliest a replay may act. */
   availableAt: string;
+  /**
+   * When the gateway actually held this row; never before availableAt. Absent
+   * on demo candles, which never travelled through a provider. The snapshot
+   * decoder requires it for live data, where it is the honest bound on what
+   * could have been known.
+   */
+  receivedAt?: string;
+  /** Forward-adjusted prices are rewritten by later corporate actions. */
+  priceAdjustment?: PriceAdjustment;
   complete: boolean;
   open: number;
   high: number;
@@ -390,6 +401,7 @@ export interface LiveStockSnapshot extends ChartSnapshot {
   demoData: false;
   source: SnapshotSource & { source: "moomoo"; status: "live" };
   decisionCutoff: string;
+  priceAdjustment: PriceAdjustment;
   quote: LiveQuote;
   indicators: {
     ma5: LiveIndicatorValue;

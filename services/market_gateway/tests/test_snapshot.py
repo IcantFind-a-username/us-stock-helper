@@ -86,6 +86,8 @@ class SnapshotProvider:
                     "timeframe": "5m",
                     "timestamp": closed_at.isoformat(),
                     "available_at": closed_at.isoformat(),
+                    "received_at": NOW.isoformat(),
+                    "price_adjustment": "forward-adjusted",
                     "complete": True,
                     "open": close - 0.25,
                     "high": close + 0.5,
@@ -100,6 +102,8 @@ class SnapshotProvider:
                 "timeframe": "5m",
                 "timestamp": NOW.isoformat(),
                 "available_at": NOW.isoformat(),
+                "received_at": NOW.isoformat(),
+                "price_adjustment": "forward-adjusted",
                 "complete": False,
                 "open": 20.0,
                 "high": 21.0,
@@ -191,6 +195,50 @@ class StockSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(
             response["institutionalHoldings"][0]["qualityStatus"], "delayed"
+        )
+
+    def test_snapshot_discloses_that_prices_are_rewritten_by_corporate_actions(
+        self,
+    ) -> None:
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["priceAdjustment"], "forward-adjusted")
+        self.assertTrue(
+            any("复权" in warning or "adjust" in warning.lower() for warning in response["warnings"])
+        )
+        for candle in response["completedCandles"]:
+            self.assertEqual(candle["priceAdjustment"], "forward-adjusted")
+
+    def test_candles_carry_both_publication_and_receipt_times(self) -> None:
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        for candle in response["completedCandles"]:
+            self.assertLessEqual(candle["availableAt"], candle["receivedAt"])
+            self.assertLessEqual(candle["receivedAt"], response["decisionCutoff"])
+
+    def test_participation_names_the_reason_it_could_not_be_built(self) -> None:
+        self.provider.flow_result = ProviderBatch(
+            "moomoo", self.provider.flow_result.received_at, []
+        )
+
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertEqual(response["sourceStatus"], "live")
+        reasons = {bar["missingReason"] for bar in response["participationBars"]}
+        self.assertEqual(reasons, {"capital flow unavailable"})
+
+    def test_a_cutoff_violation_is_never_reported_as_missing_data(self) -> None:
+        self.provider.flow_result.items[10]["available_at"] = (
+            NOW + timedelta(hours=1)
+        ).isoformat()
+
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        # A flow row from the future is a temporal defect, not an absence: the
+        # snapshot must fail loudly rather than quietly claim "no data".
+        self.assertEqual(response["sourceStatus"], "unavailable")
+        self.assertEqual(
+            response["error"]["code"], ErrorCode.MALFORMED_PROVIDER_DATA.value
         )
 
     def test_magic_nine_reports_no_completed_setup_when_none_has_closed(self) -> None:
@@ -310,14 +358,11 @@ class StockSnapshotTests(unittest.TestCase):
                 10,
                 {**items[10], "timestamp": items[8]["timestamp"]},
             ),
-            "future": lambda items: items.__setitem__(
-                10,
-                {
-                    **items[10],
-                    "available_at": (NOW + timedelta(minutes=1)).isoformat(),
-                },
-            ),
         }
+        # A row available after the cutoff is deliberately absent here: it is a
+        # temporal violation, not a structural one, and
+        # test_a_cutoff_violation_is_never_reported_as_missing_data requires it
+        # to fail the whole snapshot instead of degrading this one section.
         for name, invalidate in cases.items():
             with self.subTest(name=name):
                 self.setUp()

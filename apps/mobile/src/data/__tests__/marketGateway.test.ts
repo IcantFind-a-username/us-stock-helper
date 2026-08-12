@@ -308,6 +308,39 @@ describe("schema-v2 stock snapshot validation", () => {
     expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
   });
 
+  it("carries the price adjustment basis and gateway receipt times", () => {
+    const snapshot = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
+
+    expect(snapshot.priceAdjustment).toBe("forward-adjusted");
+    for (const candle of snapshot.candles) {
+      expect(candle.priceAdjustment).toBe("forward-adjusted");
+      expect(candle.receivedAt).toBeDefined();
+      expect(Date.parse(candle.receivedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(candle.availableAt),
+      );
+    }
+  });
+
+  it.each([
+    ["a receipt time before publication", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.completedCandles[0]!.receivedAt = "2020-01-01T00:00:00.000Z";
+    }],
+    ["a receipt time after the decision cutoff", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.completedCandles[0]!.receivedAt = "2030-01-01T00:00:00.000Z";
+    }],
+    ["an undeclared adjustment basis", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.priceAdjustment = "unknown";
+    }],
+    ["a candle that disagrees with the snapshot basis", (value: ReturnType<typeof stockSnapshotFixture>) => {
+      value.completedCandles[0]!.priceAdjustment = "unadjusted";
+    }],
+  ])("rejects %s", (_label, mutate) => {
+    const value = stockSnapshotFixture();
+    mutate(value);
+
+    expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow();
+  });
+
   it("keeps a completed TD setup visible after counting restarts", () => {
     const value = stockSnapshotFixture();
     value.indicators.magicNine.lastCompleted = {

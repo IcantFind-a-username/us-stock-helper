@@ -51,6 +51,12 @@ def assemble_stock_snapshot(
     holdings = _holdings(holding_items, cutoff)
     indicators = _indicators(candles, cutoff, bars)
     provenance = _provenance(quote, candles, participation, holdings, indicators)
+    price_adjustment = _price_adjustment(candles)
+    if price_adjustment == "forward-adjusted":
+        warnings = [
+            "价格为前复权：除权除息会回溯改写这条历史序列，回测请以复权基准对齐。",
+            *warnings,
+        ]
     return {
         "schemaVersion": "2",
         "source": "moomoo",
@@ -58,6 +64,7 @@ def assemble_stock_snapshot(
         "symbol": symbol,
         "interval": interval,
         "decisionCutoff": iso_z(cutoff),
+        "priceAdjustment": price_adjustment,
         "quote": quote,
         "completedCandles": candles,
         "participationBars": participation,
@@ -105,6 +112,13 @@ def _candles(
             raise ValueError("candle timestamps are not strictly increasing")
         if closed_at > cutoff:
             raise ValueError("completed candle is after decision cutoff")
+        received_at = (
+            parse_aware(item["receivedAt"], "candle receivedAt")
+            if "receivedAt" in item
+            else available_at
+        )
+        if received_at < available_at or received_at > cutoff:
+            raise ValueError("candle receipt time is outside the decision cutoff")
         previous = closed_at
         candles.append(
             {
@@ -118,6 +132,8 @@ def _candles(
                 "source": "moomoo",
                 "asOf": iso_z(closed_at),
                 "availableAt": iso_z(available_at),
+                "receivedAt": iso_z(received_at),
+                "priceAdjustment": item.get("priceAdjustment", "unknown"),
                 "methodVersion": "provider-completed-candle-v1",
                 "qualityStatus": "live",
             }
@@ -153,10 +169,19 @@ def _participation(
     flow_items: list[dict[str, Any]],
     cutoff: datetime,
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    # A missing or unusable feed is an absence and degrades to "unavailable".
+    # A row that violates the decision cutoff is a temporal defect, and saying
+    # "no data" about it would hide exactly the failure worth knowing.
+    points = tuple(_flow_points(symbol, flow_items, cutoff))
+    if not points:
+        return _unavailable_participation(bars), [
+            "Capital-flow participation is unavailable for this snapshot."
+        ]
     try:
-        points = tuple(_flow_points(symbol, flow_items, cutoff))
         result = build_participation_bars(points, bars, cutoff)
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError) as error:
+        if "cutoff" in str(error):
+            raise
         return _unavailable_participation(bars), [
             "Capital-flow participation is unavailable for this snapshot."
         ]
@@ -304,6 +329,13 @@ def _indicators(
             "qualityStatus": "live" if magic else "unavailable",
         },
     }
+
+
+def _price_adjustment(candles: list[dict[str, Any]]) -> str:
+    bases = {candle["priceAdjustment"] for candle in candles}
+    if len(bases) > 1:
+        raise ValueError("candles mix price adjustment bases")
+    return bases.pop() if bases else "unknown"
 
 
 def _last_completed_setup(setup: TDSetupResult | None) -> dict[str, Any] | None:

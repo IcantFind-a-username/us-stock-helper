@@ -222,10 +222,18 @@ def _validate_candles(payload: dict[str, Any], cutoff: datetime) -> list[datetim
         )
         if previous is not None and closed_at <= previous:
             raise SmokeFailure("completed candles are out of order or duplicated")
-        if closed_at > cutoff or available_at > cutoff:
+        received_at = _timestamp(
+            candle.get("receivedAt"),
+            f"{label}.receivedAt",
+        )
+        if closed_at > cutoff or available_at > cutoff or received_at > cutoff:
             raise SmokeFailure(f"{label} is after the decision cutoff")
         if closed_at != as_of or closed_at > available_at:
             raise SmokeFailure(f"{label} timestamps are misaligned")
+        if received_at < available_at:
+            raise SmokeFailure(f"{label} was received before it was published")
+        if candle.get("priceAdjustment") != payload.get("priceAdjustment"):
+            raise SmokeFailure(f"{label} disagrees with the snapshot adjustment basis")
         if candle.get("source") != "moomoo":
             raise SmokeFailure(f"{label} has an unexpected source")
         if candle.get("methodVersion") != "provider-completed-candle-v1":
@@ -383,6 +391,9 @@ def validate_snapshot(
     cutoff = _timestamp(snapshot.get("decisionCutoff"), "decisionCutoff")
     if cutoff > (now or datetime.now(UTC)):
         raise SmokeFailure("decision cutoff is in the future")
+    adjustment = snapshot.get("priceAdjustment")
+    if adjustment not in {"forward-adjusted", "unadjusted"}:
+        raise SmokeFailure("snapshot does not declare a known price adjustment basis")
     _validate_quote(snapshot, cutoff)
     closes = _validate_candles(snapshot, cutoff)
     _validate_participation(snapshot, closes, cutoff)

@@ -4,7 +4,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from .errors import ErrorCode, GatewayError
+from .errors import ErrorCode, GatewayError, PointInTimeViolation
 from .models import ProviderBatch, QuoteProvider, SessionHealth
 from .snapshot import assemble_stock_snapshot
 from .symbols import from_moomoo_code, to_moomoo_code
@@ -231,8 +231,13 @@ class MarketGatewayService:
             self._validate_batch(quote_batch, completed_at)
             self._validate_batch(candle_batch, completed_at)
             self._validate_batch(holding_batch, completed_at)
+            # A stale, absent or malformed capital-flow feed degrades that one
+            # section to unavailable. Data from after the cutoff does not: it
+            # voids the snapshot's point-in-time claim and must surface.
             try:
                 flow_received = self._validate_batch(flow_batch, completed_at)
+            except PointInTimeViolation:
+                raise
             except GatewayError:
                 flow_received = None
             decision_cutoff = completed_at
@@ -252,6 +257,8 @@ class MarketGatewayService:
                     if flow_received is not None
                     else []
                 )
+            except PointInTimeViolation:
+                raise
             except GatewayError:
                 flow_items = []
             return assemble_stock_snapshot(
@@ -468,11 +475,23 @@ class MarketGatewayService:
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "Provider candle failed point-in-time validation",
                 )
+            received_at = (
+                parse_aware(item["received_at"], "received_at")
+                if "received_at" in item
+                else available_at
+            )
+            if received_at < available_at or received_at > now:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider candle receipt time failed point-in-time validation",
+                )
             previous = timestamp
             normalized.append(
                 {
                     "timestamp": iso_z(timestamp),
                     "availableAt": iso_z(available_at),
+                    "receivedAt": iso_z(received_at),
+                    "priceAdjustment": item.get("price_adjustment", "unknown"),
                     "complete": True,
                     "code": item.get("code"),
                     "timeframe": item.get("timeframe"),
@@ -521,10 +540,12 @@ class MarketGatewayService:
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "Provider capital-flow row does not match the requested symbol",
                 )
-            if (
-                timestamp > available_at
-                or available_at > now
-                or (previous is not None and timestamp <= previous)
+            if available_at > now:
+                raise PointInTimeViolation(
+                    "Provider capital-flow row is available after the decision cutoff"
+                )
+            if timestamp > available_at or (
+                previous is not None and timestamp <= previous
             ):
                 raise GatewayError(
                     ErrorCode.MALFORMED_PROVIDER_DATA,

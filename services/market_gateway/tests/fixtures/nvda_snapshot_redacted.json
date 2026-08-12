@@ -27,7 +27,9 @@
       "asOf": "2026-07-25T03:55:00Z",
       "availableAt": "2026-07-25T03:55:01Z",
       "methodVersion": "provider-completed-candle-v1",
-      "qualityStatus": "live"
+      "qualityStatus": "live",
+      "receivedAt": "2026-07-25T03:55:01Z",
+      "priceAdjustment": "forward-adjusted"
     },
     {
       "timestamp": "2026-07-25T04:00:00Z",
@@ -41,7 +43,9 @@
       "asOf": "2026-07-25T04:00:00Z",
       "availableAt": "2026-07-25T04:00:01Z",
       "methodVersion": "provider-completed-candle-v1",
-      "qualityStatus": "live"
+      "qualityStatus": "live",
+      "receivedAt": "2026-07-25T04:00:01Z",
+      "priceAdjustment": "forward-adjusted"
     }
   ],
   "participationBars": [
@@ -127,5 +131,6 @@
       "qualityStatus": "live"
     }
   ],
-  "warnings": []
+  "warnings": [],
+  "priceAdjustment": "forward-adjusted"
 }

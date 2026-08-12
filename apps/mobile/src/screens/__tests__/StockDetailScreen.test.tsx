@@ -231,6 +231,28 @@ it("shows unavailable Magic Nine honestly without a zero marker or sequence", as
   ).toBeNull();
 });
 
+it("shows the snapshot warnings instead of decoding them into nothing", async () => {
+  const payload = stockSnapshotFixture();
+  payload.warnings = [
+    "价格为前复权：除权除息会回溯改写这条历史序列，回测请以复权基准对齐。",
+    "Capital-flow participation is partially unavailable.",
+  ];
+  const snapshot = decodeStockSnapshotEnvelope(payload, {
+    now: new Date("2026-07-25T16:00:00.000Z"),
+  });
+
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => snapshot),
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("snapshot-warnings")).toHaveTextContent(/前复权/),
+  );
+  expect(view.getByTestId("snapshot-warnings")).toHaveTextContent(
+    /Capital-flow participation is partially unavailable/,
+  );
+});
+
 it("keeps a finished nine visible after the count restarts", async () => {
   const payload = stockSnapshotFixture();
   payload.indicators.magicNine.lastCompleted = {
