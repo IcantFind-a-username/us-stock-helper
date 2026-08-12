@@ -33,7 +33,7 @@ PYTHONPATH=services/adviser_layer \
   python3 -m unittest discover -s services/adviser_layer/tests -v
 PYTHONPATH=services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine \
   python3 -m unittest discover -s services/decision_engine/tests -v
-PYTHONPATH=services/market_gateway/src \
+PYTHONPATH=services/market_gateway/src:services/analysis_core \
   python3 -m unittest discover -s services/market_gateway/tests -v
 ```
 

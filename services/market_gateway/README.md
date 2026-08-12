@@ -9,7 +9,7 @@ brokerage context, order endpoint, or order-capable route.
 
 - `OpenQuoteContext` is the only OpenD context constructed.
 - The HTTP allowlist is exactly `GET /health`, `/watchlist`, `/quotes`,
-  `/candles`, `/capital-flow`, `/capital-distribution`, and
+  `/candles`, `/stock-snapshot`, `/capital-flow`, `/capital-distribution`, and
   `/institutional-holdings`; write methods fail closed.
 - A response can use `session: "healthy"` only when the OpenD health check and
   the just-received provider batch are fresh and identify `source: "moomoo"`.
@@ -64,8 +64,11 @@ This prevents an in-progress bar from being treated as known before it closes.
 
 No third-party package is required for the deterministic tests:
 
+The gateway assembles snapshots through `analysis_core`, so that package must
+be on the path too — without it four test modules fail to import.
+
 ```bash
-PYTHONPATH=services/market_gateway/src \
+PYTHONPATH=services/market_gateway/src:services/analysis_core \
   python3 -m unittest discover -s services/market_gateway/tests -v
 ```
 
@@ -76,7 +79,7 @@ instead of crashing. This workspace already has the official SDK isolated at
 `services/market_gateway/.venv`; it does not modify the system Python.
 
 ```bash
-PYTHONPATH=services/market_gateway/src \
+PYTHONPATH=services/market_gateway/src:services/analysis_core \
   services/market_gateway/.venv/bin/python \
   -m us_stock_helper_market_gateway
 ```
