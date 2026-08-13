@@ -169,7 +169,7 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   ).toHaveLength(1);
   expect(view.getByText("主力代理 60.0% · 散户代理 40.0%")).toBeTruthy();
   // A reason this app has no translation for still has to reach the reader.
-  expect(view.getByText(/1 根缺失 · capital flow unavailable/)).toBeTruthy();
+  expect(view.getByText(/1 根缺失 · 本次快照没有资金流数据/)).toBeTruthy();
   expect(view.getByText("机构持仓披露 · 延迟数据")).toBeTruthy();
   expect(view.getByText(/moomoo 延迟机构披露/)).toBeTruthy();
   expect(view.getByText("2026-Q1 · 12.50% · 100 家机构")).toBeTruthy();

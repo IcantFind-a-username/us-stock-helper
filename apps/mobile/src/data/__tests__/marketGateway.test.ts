@@ -1147,10 +1147,13 @@ describe("indicator series", () => {
     expect(snapshot.indicators.ma5.value).toBe(140.8);
   });
 
-  it("treats an unavailable series as missing instead of an empty line", () => {
+  it("treats an unavailable indicator as having no series to draw", () => {
+    // The series shares the indicator's quality: one the gateway could not
+    // measure has nothing to draw, and an empty line would read as a
+    // measurement of zero.
     const payload = stockSnapshotWithSeriesFixture();
-    payload.indicators.ma5.series!.qualityStatus = "unavailable";
-    payload.indicators.ma5.series!.values = [null, null];
+    payload.indicators.ma5.qualityStatus = "unavailable";
+    payload.indicators.ma5.value = null as unknown as number;
 
     const snapshot = decodeStockSnapshotEnvelope(payload, { now });
 
@@ -1159,32 +1162,49 @@ describe("indicator series", () => {
 
   it.each([
     ["short series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      value.indicators.ma5.series!.values = [140.8];
+      value.indicators.ma5.series = [140.8];
     }],
     ["long series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      value.indicators.ma5.series!.values = [140.2, 140.8, 141.4];
+      value.indicators.ma5.series = [140.2, 140.8, 141.4];
     }],
     ["non-numeric entry", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      (value.indicators.ma5.series!.values as unknown[])[1] = "140.8";
+      (value.indicators.ma5.series as unknown[])[1] = "140.8";
     }],
-    ["foreign method version", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      value.indicators.ma5.series!.methodVersion = "sma-10-v1";
-    }],
-    ["foreign source", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      value.indicators.ma5.series!.source = "moomoo";
-    }],
-    ["post-cutoff availability", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      value.indicators.ma5.series!.availableAt = "2026-07-25T16:00:00.000Z";
+    ["a series that is not an array", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      value.indicators.ma5.series = { values: [140.2, 140.8] } as never;
     }],
     ["ragged macd series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
       value.indicators.macd.series!.signal = [0.25];
     }],
   ])("rejects a series that cannot be drawn on the candles: %s", (_label, mutate) => {
+    // A series one bar out of step draws every point against the wrong
+    // candle, which looks plausible rather than broken.
     const payload = stockSnapshotWithSeriesFixture();
     mutate(payload);
 
-    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(
-      /series/,
-    );
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/series/);
   });
+});
+
+it("reads an indicator series the gateway sends as a bare array", () => {
+  // The gateway publishes the values alongside the indicator's own source,
+  // timestamps, method version and quality — the series has no separate
+  // provenance because it has none to have. Requiring a nested envelope meant
+  // the chart said "服务端未提供版本化序列" while the server was sending them.
+  const payload = stockSnapshotFixture();
+  const candles = payload.completedCandles.length;
+  payload.indicators.ma5 = {
+    ...payload.indicators.ma5,
+    series: Array.from({ length: candles }, (_unused, index) =>
+      index < 4 ? null : 100 + index,
+    ),
+  };
+
+  const snapshot = decodeStockSnapshotEnvelope(payload, { now, maxAgeMs: 60_000 });
+
+  expect(snapshot.indicators.ma5.series?.values).toHaveLength(candles);
+  expect(snapshot.indicators.ma5.series?.values[0]).toBeNull();
+  expect(snapshot.indicators.ma5.series?.methodVersion).toBe(
+    payload.indicators.ma5.methodVersion,
+  );
 });

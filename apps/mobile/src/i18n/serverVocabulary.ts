@@ -116,6 +116,7 @@ const SERVICE_SENTENCES: Record<string, string> = {
   "unsupported intraday cadence": "不支持的日内节奏",
   "mixed session flow points": "资金流数据跨越了不同交易时段",
   "incomplete minute coverage": "分钟级覆盖不完整",
+  "capital flow unavailable": "本次快照没有资金流数据",
   "zero activity denominator": "活动量分母为零",
   "no price variation in the observed window": "观察窗口内价格没有任何变化",
 };

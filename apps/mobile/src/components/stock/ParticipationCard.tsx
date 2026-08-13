@@ -16,6 +16,20 @@ function formatUtc(value: string) {
   return value.replace("T", " ").replace(".000Z", " UTC");
 }
 
+/** One line per distinct reason, with how many bars gave it. */
+function summariseMissing(missing: readonly ParticipationBar[]) {
+  const counts = new Map<string, number>();
+  for (const { missingReason } of missing) {
+    const label =
+      missingReason === null ? "未给出原因" : serviceTextLabel(missingReason);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const only = counts.size === 1;
+  return [...counts.entries()]
+    .map(([label, count]) => (only ? label : `${label}（${count} 根）`))
+    .join("；");
+}
+
 export function ParticipationCard({
   bars,
   holdings,
@@ -68,13 +82,11 @@ export function ParticipationCard({
       {/* The proxy caption lives in the screen's disclosure now: one card
           repeating it under every chart is what buried the numbers. */}
       {missing.length ? (
-        <Text style={styles.uncertainty}>
-          {missing.length} 根缺失 ·{" "}
-          {missing
-            .map(({ missingReason }) =>
-              missingReason === null ? "未给出原因" : serviceTextLabel(missingReason),
-            )
-            .join("；")}
+        // Grouped, because every bar in a snapshot without capital flow
+        // carries the same sentence: printing it per bar filled the screen
+        // with two hundred copies and buried the disclosure below it.
+        <Text style={styles.uncertainty} testID="participation-missing-summary">
+          {missing.length} 根缺失 · {summariseMissing(missing)}
         </Text>
       ) : null}
 

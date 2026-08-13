@@ -528,49 +528,83 @@ function decodeSeriesMetadata(
   return { record: value, metadata, qualityStatus };
 }
 
+/**
+ * The gateway publishes the values as a bare array beside the indicator's own
+ * source, timestamps, method version and quality. The series carries no
+ * provenance of its own because it has none to carry — it is the same
+ * measurement at every bar — so requiring a nested envelope only invented a
+ * second copy that could disagree with the first.
+ */
 function decodeIndicatorSeries(
   value: unknown,
   label: string,
+  parent: { asOf: string; availableAt: string },
   methodVersion: string,
-  cutoff: Date,
+  qualityStatus: string,
   candleCount: number,
 ): ChartIndicatorSeries | null {
   if (value === undefined || value === null) return null;
-  const { record, metadata, qualityStatus } = decodeSeriesMetadata(
-    value,
-    label,
-    methodVersion,
-    cutoff,
-  );
-  const values = decodeSeriesValues(record, "values", label, candleCount);
   if (qualityStatus !== "live") return null;
-  return { ...metadata, values, methodVersion, qualityStatus };
+  const values = decodeSeriesArray(value, label, candleCount);
+  return {
+    asOf: parent.asOf,
+    availableAt: parent.availableAt,
+    source: "analysis-core",
+    values,
+    methodVersion,
+    qualityStatus: "live",
+  };
+}
+
+function decodeSeriesArray(
+  value: unknown,
+  label: string,
+  candleCount: number,
+): (number | null)[] {
+  if (!Array.isArray(value)) {
+    throw new GatewayValidationError(`${label}.series must be an array`);
+  }
+  if (value.length !== candleCount) {
+    // A series one bar out of step draws every point against the wrong candle,
+    // which looks like a plausible chart rather than a broken one.
+    throw new GatewayValidationError(
+      `${label}.series does not line up with the completed candles`,
+    );
+  }
+  return value.map((entry) => {
+    if (entry === null) return null;
+    if (typeof entry !== "number" || !Number.isFinite(entry)) {
+      throw new GatewayValidationError(`${label}.series holds a non-numeric value`);
+    }
+    return entry;
+  });
 }
 
 function decodeMacdSeries(
   value: unknown,
-  cutoff: Date,
+  parent: { asOf: string; availableAt: string },
+  qualityStatus: string,
   candleCount: number,
 ): ChartMacdSeries | null {
   if (value === undefined || value === null) return null;
-  const label = "indicators.macd";
-  const { record, metadata, qualityStatus } = decodeSeriesMetadata(
-    value,
-    label,
-    "macd-12-26-9-v1",
-    cutoff,
-  );
-  const line = decodeSeriesValues(record, "line", label, candleCount);
-  const signal = decodeSeriesValues(record, "signal", label, candleCount);
-  const histogram = decodeSeriesValues(record, "histogram", label, candleCount);
   if (qualityStatus !== "live") return null;
+  const label = "indicators.macd";
+  if (!isRecord(value)) {
+    throw new GatewayValidationError(`${label}.series must be an object`);
+  }
   return {
-    ...metadata,
-    line,
-    signal,
-    histogram,
+    asOf: parent.asOf,
+    availableAt: parent.availableAt,
+    source: "analysis-core",
+    line: decodeSeriesArray(value.line, `${label}.series.line`, candleCount),
+    signal: decodeSeriesArray(value.signal, `${label}.series.signal`, candleCount),
+    histogram: decodeSeriesArray(
+      value.histogram,
+      `${label}.series.histogram`,
+      candleCount,
+    ),
     methodVersion: "macd-12-26-9-v1",
-    qualityStatus,
+    qualityStatus: "live",
   };
 }
 
@@ -602,8 +636,9 @@ function decodeIndicatorValue(
     series: decodeIndicatorSeries(
       value.series,
       `indicators.${key}`,
+      metadata,
       methodVersion,
-      cutoff,
+      qualityStatus,
       candleCount,
     ),
     methodVersion,
@@ -809,7 +844,12 @@ export function decodeStockSnapshotEnvelope(
     line: macdValues[0]!,
     signal: macdValues[1]!,
     histogram: macdValues[2]!,
-    series: decodeMacdSeries(macdRecord.series, cutoff, candles.length),
+    series: decodeMacdSeries(
+      macdRecord.series,
+      macdMetadata,
+      macdStatus,
+      candles.length,
+    ),
     methodVersion: requireExpectedMethod(macdRecord, "macd-12-26-9-v1", "indicators.macd"),
     qualityStatus: macdStatus,
   };
