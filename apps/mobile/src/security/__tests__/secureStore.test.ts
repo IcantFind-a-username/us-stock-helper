@@ -58,3 +58,19 @@ it("still reports an unreachable Keychain as its own condition", async () => {
     SecureStoreUnavailableError,
   );
 });
+
+it("does not crash the app when the native module is absent from the build", () => {
+  // Adding an Expo native module needs the native client rebuilt, which a
+  // phone in someone's pocket cannot do. A top-level import threw at module
+  // load and took the whole app down with it — worse than the honest refusal
+  // it replaced.
+  jest.isolateModules(() => {
+    jest.doMock("expo-secure-store", () => {
+      throw new Error("Cannot find native module 'ExpoSecureStore'");
+    });
+
+    const { resolveSecureStoreBackend: resolve } = require("../secureStore");
+
+    expect(() => resolve()).not.toThrow();
+  });
+});

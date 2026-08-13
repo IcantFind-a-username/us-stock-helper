@@ -1,5 +1,3 @@
-import * as SecureStore from "expo-secure-store";
-
 /**
  * The narrow secure-storage surface this app needs, kept as an interface so the
  * device token has exactly one door out of the process.
@@ -58,8 +56,39 @@ const unavailableBackend: SecureStoreBackend = {
   },
 };
 
+type ExpoSecureStore = {
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY: string;
+  getItemAsync(key: string): Promise<string | null>;
+  setItemAsync(
+    key: string,
+    value: string,
+    options: { keychainAccessible: string },
+  ): Promise<void>;
+  deleteItemAsync(key: string): Promise<void>;
+};
+
+/**
+ * Loaded on use rather than at import.
+ *
+ * Adding an Expo native module requires the native client to be rebuilt, and
+ * a phone already in someone's hand cannot do that. Importing at module scope
+ * threw during bundle evaluation and took the entire app down — strictly
+ * worse than the stated refusal it was meant to replace, because a reader
+ * who cannot pair can still read the market.
+ */
+function loadSecureStore(): ExpoSecureStore | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- a
+    // static import evaluates at bundle load, which is the crash this avoids.
+    return require("expo-secure-store") as ExpoSecureStore;
+  } catch {
+    return null;
+  }
+}
+
 const keychainBackend: SecureStoreBackend = {
   async readValue(key) {
+    const SecureStore = requireSecureStore();
     try {
       return await SecureStore.getItemAsync(key);
     } catch (error) {
@@ -67,15 +96,17 @@ const keychainBackend: SecureStoreBackend = {
     }
   },
   async writeValue(key, value, options) {
+    const SecureStore = requireSecureStore();
     try {
       await SecureStore.setItemAsync(key, value, {
-        keychainAccessible: accessibilityClass(options.accessibility),
+        keychainAccessible: accessibilityClass(SecureStore, options.accessibility),
       });
     } catch (error) {
       throw new SecureStoreUnavailableError(describe(error));
     }
   },
   async deleteValue(key) {
+    const SecureStore = requireSecureStore();
     try {
       await SecureStore.deleteItemAsync(key);
     } catch (error) {
@@ -84,7 +115,16 @@ const keychainBackend: SecureStoreBackend = {
   },
 };
 
-function accessibilityClass(value: SecureValueAccessibility) {
+function requireSecureStore(): ExpoSecureStore {
+  const module = loadSecureStore();
+  if (!module) throw new SecureStoreUnavailableError(missingModuleMessage);
+  return module;
+}
+
+function accessibilityClass(
+  SecureStore: ExpoSecureStore,
+  value: SecureValueAccessibility,
+) {
   // The only class excluded from both iCloud Keychain and encrypted device
   // backups, so a token written under it cannot be restored onto another
   // phone.
@@ -103,5 +143,5 @@ function describe(error: unknown) {
 }
 
 export function resolveSecureStoreBackend(): SecureStoreBackend {
-  return keychainBackend;
+  return loadSecureStore() ? keychainBackend : unavailableBackend;
 }
