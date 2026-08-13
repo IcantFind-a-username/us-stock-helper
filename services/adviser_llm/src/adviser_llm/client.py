@@ -96,6 +96,64 @@ def build_client(
     )
 
 
+# Opus 4.8 list prices, USD per million tokens. A cache read is a tenth of a
+# fresh read, which is the whole reason the framework prefix is held stable.
+_PRICE_PER_MTOK = {
+    "input": 5.00,
+    "output": 25.00,
+    "cache_write": 6.25,
+    "cache_read": 0.50,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class TokenUsage:
+    """What a call actually spent.
+
+    Read from the response rather than estimated: an estimate cannot tell the
+    operator whether the framework prefix is being cached, which is the
+    difference between five cents and twenty-two.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+    @classmethod
+    def from_response(cls, usage: object | None) -> "TokenUsage | None":
+        # Nothing measured is not the same claim as nothing spent.
+        if usage is None:
+            return None
+        return cls(
+            input_tokens=getattr(usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(usage, "output_tokens", 0) or 0,
+            cache_creation_input_tokens=getattr(
+                usage, "cache_creation_input_tokens", 0
+            )
+            or 0,
+            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+        )
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_creation_input_tokens=self.cache_creation_input_tokens
+            + other.cache_creation_input_tokens,
+            cache_read_input_tokens=self.cache_read_input_tokens
+            + other.cache_read_input_tokens,
+        )
+
+    def cost_usd(self) -> float:
+        return (
+            self.input_tokens / 1e6 * _PRICE_PER_MTOK["input"]
+            + self.output_tokens / 1e6 * _PRICE_PER_MTOK["output"]
+            + self.cache_creation_input_tokens / 1e6 * _PRICE_PER_MTOK["cache_write"]
+            + self.cache_read_input_tokens / 1e6 * _PRICE_PER_MTOK["cache_read"]
+        )
+
+
 def call_with_retry(
     operation: Callable[[], T],
     *,

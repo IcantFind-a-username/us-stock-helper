@@ -69,15 +69,11 @@ def _price(usage) -> float:
     )
 
 
-def _report(label: str, outcome) -> float:
+def _report(label: str, outcome) -> None:
     if not outcome.available:
         print(f"{label}: unavailable — {outcome.unavailable_reason}")
-        return 0.0
-    value = outcome.require()
-    usage = getattr(value, "usage", None)
-    cost = _price(usage) if usage is not None else 0.0
+        return
     print(f"\n=== {label} ===")
-    return cost
 
 
 def main() -> int:
@@ -91,10 +87,8 @@ def main() -> int:
     packet = _packet(as_of)
     service = AdviserLlm.from_environment()
 
-    total = 0.0
-
     reading = service.interpret_news(packet)
-    total += _report("news reading", reading)
+    _report("news reading", reading)
     if reading.available:
         traced = reading.require()
         print(repr(traced)[:1200])
@@ -102,12 +96,22 @@ def main() -> int:
     council = service.convene_council(
         packet, baseline_score=61.0, baseline_direction="bullish"
     )
-    total += _report("council", council)
+    _report("council", council)
     if council.available:
         print(repr(council.require())[:2000])
 
-    print(f"\ntwo calls cost about ${total:.4f}")
-    print("the stable framework prefix caches; a repeat run prices lower")
+    usage = service.usage
+    if usage is None:
+        print("\nno usage was reported; nothing to price")
+        return 0
+    print(
+        f"\n输入 {usage.input_tokens}  输出 {usage.output_tokens}  "
+        f"缓存写入 {usage.cache_creation_input_tokens}  "
+        f"缓存读取 {usage.cache_read_input_tokens}"
+    )
+    print(f"这两次调用实测花费 ${usage.cost_usd():.4f}")
+    if usage.cache_read_input_tokens == 0:
+        print("首次调用写入缓存；再跑一次就能看到缓存后的价格")
     return 0
 
 

@@ -9,7 +9,7 @@ from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar
 from pydantic import ValidationError
 from us_stock_helper_core import HardGate
 
-from .client import AdviserLlmConfig, build_client, call_with_retry
+from .client import AdviserLlmConfig, TokenUsage, build_client, call_with_retry
 from .errors import AdviserLlmError, LlmUnavailableError, MissingCredentialError
 from .evidence import EvidencePacket
 from .frameworks import select_frameworks
@@ -72,6 +72,10 @@ class AdviserLlm:
         self._client = client
         self._config = config or AdviserLlmConfig()
         self._sleep = sleep
+        # What this service has spent since it was built. None until a call
+        # reports usage: nothing measured and nothing spent are different
+        # claims, and only one of them is ever true.
+        self.usage: TokenUsage | None = None
         self._unavailable_reason: str | None = None
 
     @classmethod
@@ -119,8 +123,21 @@ class AdviserLlm:
             )
         )
 
+    def _record_usage(self, message: object) -> None:
+        """Accumulate what the turn spent.
+
+        A briefing makes more than one call, and the operator needs the total
+        rather than the last one — read from the response so the number is a
+        measurement rather than an estimate.
+        """
+        measured = TokenUsage.from_response(getattr(message, "usage", None))
+        if measured is None:
+            return
+        self.usage = (self.usage or TokenUsage()) + measured
+
     def _read_news(self, packet: EvidencePacket) -> TracedInterpretation:
         config = self._config
+
         message = call_with_retry(
             lambda: self._client.messages.parse(
                 model=config.model,
@@ -138,6 +155,7 @@ class AdviserLlm:
             sleep=self._sleep,
             description="单条新闻解读",
         )
+        self._record_usage(message)
         return trace_interpretation(self._require_parsed(message), packet)
 
     def _run_council(
@@ -180,6 +198,7 @@ class AdviserLlm:
             sleep=self._sleep,
             description="顾问委员会",
         )
+        self._record_usage(message)
         brief = trace_brief(self._require_parsed(message), packet)
         return apply_hard_gate(
             brief,
