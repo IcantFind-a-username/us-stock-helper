@@ -83,7 +83,10 @@ export function AgentScreen() {
   if (!demoMode) {
     return (
       <Screen hideGlobalHeader style={styles.screen}>
-        <AnalysisNotConnected surface="Agent 对话" />
+        <AnalysisNotConnected
+          missing="缺的是大模型凭据：顾问层要读环境变量 ANTHROPIC_API_KEY，目前没有配置，分析服务也还没有暴露对话路由。配好并接上之后这里才会有对话，而不是先给一个能说话的空壳。"
+          surface="Agent 对话"
+        />
       </Screen>
     );
   }

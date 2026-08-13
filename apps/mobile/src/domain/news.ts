@@ -71,17 +71,45 @@ const minute = 60_000;
 const hour = 60 * minute;
 const day = 24 * hour;
 
+/**
+ * What any list of reports needs before it can be ordered.
+ *
+ * `receivedAt` is optional because not every producer reports it: the decision
+ * service cites a report by publication time only. An absent receipt is left
+ * absent rather than defaulted to the publication time, which would be a claim
+ * about when the app held the report that nobody actually made.
+ */
+export type RecencyKey = {
+  id: string;
+  availableAt: string;
+  receivedAt?: string;
+};
+
+/**
+ * The one recency rule both news surfaces obey.
+ *
+ * Evidence markers are positional, so an unstable order silently renumbers the
+ * reports a conclusion points at. Equal timestamps therefore still have to
+ * produce one fixed order, which is what the id fallback is for.
+ */
+export function compareByRecency(left: RecencyKey, right: RecencyKey): number {
+  const published =
+    Date.parse(right.availableAt) - Date.parse(left.availableAt);
+  if (published !== 0) return published;
+  // A row that never reported its receipt must not outrank one that did, so an
+  // absent receipt sorts as the oldest possible arrival rather than as "now".
+  const leftReceived = left.receivedAt ? Date.parse(left.receivedAt) : -Infinity;
+  const rightReceived = right.receivedAt
+    ? Date.parse(right.receivedAt)
+    : -Infinity;
+  if (leftReceived !== rightReceived) {
+    return rightReceived > leftReceived ? 1 : -1;
+  }
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
 export function orderStoriesByRecency(stories: NewsStory[]): NewsStory[] {
-  return [...stories].sort((left, right) => {
-    const published =
-      Date.parse(right.availableAt) - Date.parse(left.availableAt);
-    if (published !== 0) return published;
-    const received = Date.parse(right.receivedAt) - Date.parse(left.receivedAt);
-    if (received !== 0) return received;
-    // Equal timestamps must still produce one order, or the list reshuffles
-    // itself between renders and the evidence numbering stops meaning anything.
-    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
-  });
+  return [...stories].sort(compareByRecency);
 }
 
 /**

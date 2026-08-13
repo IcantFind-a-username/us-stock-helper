@@ -3,17 +3,33 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 
 import { AppStateProvider } from "@/state/AppStateProvider";
+import { MarketDataProvider } from "@/state/MarketDataProvider";
+import type { MarketRepository } from "@/data/marketRepository";
 
 import { JournalScreen } from "../JournalScreen";
+
+const idleRepository = {
+  loadWatchlist: async () => {
+    throw new Error("not used in these tests");
+  },
+  loadSnapshot: async () => {
+    throw new Error("not used in these tests");
+  },
+} as unknown as MarketRepository;
 
 beforeEach(async () => {
   await AsyncStorage.clear();
 });
 
-async function renderJournal() {
+async function renderJournal(demoMode = false) {
   const view = await render(
     <AppStateProvider>
-      <JournalScreen />
+      <MarketDataProvider
+        development
+        initialDemoMode={demoMode}
+        repository={idleRepository}>
+        <JournalScreen />
+      </MarketDataProvider>
     </AppStateProvider>,
   );
   await waitFor(() => expect(view.getByText("交易复盘")).toBeTruthy());
@@ -48,4 +64,19 @@ it("keeps user execution history isolated and persists a validated local entry",
 
   const persisted = await AsyncStorage.getItem("us-stock-helper/journal-entries");
   expect(persisted).toContain('"symbol":"NVDA"');
+});
+
+it("does not call the reader's own trade log demo data when demo mode is off", async () => {
+  const view = await renderJournal(false);
+
+  // The journal holds facts the reader typed in. They are real in every mode,
+  // and the badge used to claim otherwise on a build with demo mode disabled.
+  expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
+  expect(view.getByText("本地日志 · 客观性隔离")).toBeTruthy();
+});
+
+it("still marks the demo build so seeded numbers are never mistaken for real", async () => {
+  const view = await renderJournal(true);
+
+  expect(view.getByText("演示数据 · 非实时行情")).toBeTruthy();
 });

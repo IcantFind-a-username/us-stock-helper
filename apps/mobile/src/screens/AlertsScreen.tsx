@@ -62,7 +62,10 @@ export function AlertsScreen() {
   if (!demoMode) {
     return (
       <Screen hideGlobalHeader style={styles.screen}>
-        <AnalysisNotConnected surface="提醒" />
+        <AnalysisNotConnected
+          missing="缺的是提醒服务本身：分析接口只在你打开某只股票时按需回答一次，服务端没有常驻扫描，也没有生成或推送提醒的路由。个股页的结论与引用已经是真实数据。"
+          surface="提醒"
+        />
       </Screen>
     );
   }

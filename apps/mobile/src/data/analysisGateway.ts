@@ -264,6 +264,13 @@ export function decodeDecisionEnvelope(
   if (status === "live" && score === null) {
     throw new DecisionValidationError("a live decision must carry a score");
   }
+  if (status === "unavailable" && score !== null) {
+    // The two states are rendered differently, so a payload claiming both
+    // reads as a live score on one screen and as unavailable on another.
+    throw new DecisionValidationError(
+      "an unavailable decision must not carry a score",
+    );
+  }
   if (!Array.isArray(value.notes) || !Array.isArray(value.citations)) {
     throw new DecisionValidationError("notes and citations must be arrays");
   }

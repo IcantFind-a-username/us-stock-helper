@@ -11,7 +11,10 @@ import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { DashboardSectionHeader } from "@/components/dashboard/DashboardSectionHeader";
 import { MarketRegimeHero } from "@/components/dashboard/MarketRegimeHero";
 import { PriorityAlertCard } from "@/components/dashboard/PriorityAlertCard";
-import { WatchlistStrip } from "@/components/dashboard/WatchlistStrip";
+import {
+  visibleWatchlistQuotes,
+  WatchlistPanel,
+} from "@/components/dashboard/WatchlistPanel";
 import {
   StockSearchSheet,
   type StockSearchOption,
@@ -24,6 +27,7 @@ import { useAppState } from "@/state/AppStateProvider";
 import {
   useMarketDataMode,
   useMarketWatchlist,
+  useWatchlistDecisions,
 } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
@@ -41,6 +45,15 @@ export function DashboardScreen() {
   const snapshot = fixtureRepository.getDashboard(horizon);
   const [detail, setDetail] = useState<DetailState>(null);
   const [searchVisible, setSearchVisible] = useState(false);
+  const [watchlistExpanded, setWatchlistExpanded] = useState(false);
+  const watchlistQuotes = marketWatchlist.data?.quotes ?? [];
+  // Only the rows on screen are scored: the service answers one symbol per
+  // request, so scoring a hidden row would spend a request nobody is reading.
+  const scoredQuotes = visibleWatchlistQuotes(watchlistQuotes, watchlistExpanded);
+  const decisions = useWatchlistDecisions(
+    scoredQuotes.map((quote) => quote.symbol),
+    horizon,
+  );
 
   const openDetail = (
     title: string,
@@ -74,7 +87,6 @@ export function DashboardScreen() {
   const openStock = (symbol: string) =>
     router.push({ pathname: "/stocks/[symbol]", params: { symbol } });
 
-  const watchlistQuotes = marketWatchlist.data?.quotes ?? [];
   const searchOptions: StockSearchOption[] = watchlistQuotes.map((quote) => {
     let company = quote.symbol;
     try {
@@ -178,12 +190,33 @@ export function DashboardScreen() {
             </Pressable>
           ) : null}
         </View>
-        <WatchlistStrip
-          accessibilityLabel={watchlistAccessibilityLabel}
-          onOpenSource={openWatchlistSource}
-          onPress={openStock}
-          quotes={watchlistQuotes}
-        />
+        {watchlistQuotes.length === 0 ? (
+          <View style={styles.emptyCard} testID="watchlist-empty">
+            <Text style={styles.watchlistTitle}>我的关注</Text>
+            <Text style={styles.emptyTitle}>
+              {marketWatchlist.status === "demo"
+                ? "演示自选为空"
+                : "moomoo 自选为空"}
+            </Text>
+            <Text style={styles.emptyHint}>
+              {marketWatchlist.status === "demo"
+                ? "演示模式没有提供任何自选标的。"
+                : "moomoo 账户里没有自选标的。在 moomoo 中添加后刷新。"}
+            </Text>
+          </View>
+        ) : (
+          <WatchlistPanel
+            accessibilityLabel={watchlistAccessibilityLabel}
+            decisions={decisions}
+            expanded={watchlistExpanded}
+            onOpenSource={openWatchlistSource}
+            onPress={openStock}
+            onToggleExpanded={() =>
+              setWatchlistExpanded((expanded) => !expanded)
+            }
+            quotes={watchlistQuotes}
+          />
+        )}
       </View>
     );
 
@@ -236,7 +269,7 @@ export function DashboardScreen() {
             市场分析尚未接入真实数据
           </Text>
           <Text style={styles.analysisPlaceholderHint}>
-            市场结论、优先提醒与候选列表只在演示模式展示确定性演示内容；真实分析上线前不显示任何推断结论。
+            市场结论、优先提醒与候选列表只在演示模式展示确定性演示内容；真实分析上线前不显示任何推断结论。下方自选里的个股评分来自真实分析服务，取不到时会写明原因。
           </Text>
         </View>
       )}
@@ -321,6 +354,16 @@ const styles = StyleSheet.create({
   analysisPlaceholderTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
   analysisPlaceholderHint: { color: colors.muted, fontSize: 10, lineHeight: 15 },
   watchlistState: { gap: spacing.xs },
+  emptyCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  emptyTitle: { color: colors.ink, fontSize: 11, fontWeight: "800" },
+  emptyHint: { color: colors.muted, fontSize: 10, lineHeight: 15 },
   watchlistTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
   watchlistStatusRow: {
     alignItems: "center",

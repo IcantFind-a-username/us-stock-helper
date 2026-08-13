@@ -28,6 +28,7 @@ import {
 } from "@/data/marketRepository";
 import type {
   Decision,
+  DecisionScore,
   DemoChartSnapshot,
   Horizon,
   LiveStockSnapshot,
@@ -65,6 +66,7 @@ type MarketDataContextValue = {
   development: boolean;
   demoWatchlist: WatchlistQuote[];
   retryDelaysMs: readonly number[];
+  decisionConcurrency: number;
 };
 
 type MarketDataProviderProps = PropsWithChildren<{
@@ -75,9 +77,15 @@ type MarketDataProviderProps = PropsWithChildren<{
   demoWatchlist?: WatchlistQuote[];
   retryDelaysMs?: readonly number[];
   deviceToken?: string | null;
+  decisionConcurrency?: number;
 }>;
 
 const defaultRetryDelaysMs = [1_000, 2_000, 4_000, 8_000, 30_000] as const;
+/**
+ * The analysis service answers one symbol per request, so a long watchlist is
+ * a long queue. This is how many of those requests may be open at once.
+ */
+const defaultDecisionConcurrency = 4;
 const MarketDataContext = createContext<MarketDataContextValue | null>(null);
 
 function unavailableRepository(error: unknown) {
@@ -115,9 +123,15 @@ export function MarketDataProvider({
   demoWatchlist = [],
   retryDelaysMs = defaultRetryDelaysMs,
   deviceToken = null,
+  decisionConcurrency = defaultDecisionConcurrency,
 }: MarketDataProviderProps) {
   if (initialDemoMode && !development) {
     throw new Error("demo mode is developer-only");
+  }
+  if (!Number.isInteger(decisionConcurrency) || decisionConcurrency < 1) {
+    // Zero workers would leave every row on "loading" forever, which reads as
+    // a slow network rather than as the misconfiguration it is.
+    throw new Error("decisionConcurrency must be a positive integer");
   }
 
   const defaultRepository = useMemo(() => {
@@ -166,8 +180,10 @@ export function MarketDataProvider({
       development,
       demoWatchlist,
       retryDelaysMs,
+      decisionConcurrency,
     }),
     [
+      decisionConcurrency,
       defaultAnalysis,
       defaultRepository,
       demoMode,
@@ -468,6 +484,168 @@ export function useDecision(
       return { data, verifiedAt: data.decisionCutoff };
     },
   });
+}
+
+export type WatchlistDecisionStatus =
+  | "loading"
+  | "scored"
+  | "unscored"
+  | "unavailable"
+  | "demo";
+
+export type WatchlistDecisionState = {
+  status: WatchlistDecisionStatus;
+  /** null whenever the chain answered without a score, or did not answer. */
+  score: DecisionScore | null;
+  error: MarketDataError | null;
+  /** The chain's own words about what it could not see. */
+  notes: string[];
+};
+
+const loadingDecision: WatchlistDecisionState = {
+  status: "loading",
+  score: null,
+  error: null,
+  notes: [],
+};
+
+/**
+ * Demo mode has no decision counterpart on purpose: a fixture verdict beside a
+ * fixture quote would be indistinguishable from a real one, so the row says it
+ * has no score instead of inventing one.
+ */
+const demoDecision: WatchlistDecisionState = {
+  status: "demo",
+  score: null,
+  error: null,
+  notes: [],
+};
+
+const noDecisions: Record<string, WatchlistDecisionState> = {};
+
+/**
+ * Scores a list of symbols for a list screen.
+ *
+ * The service answers one symbol per request, so a 46-symbol watchlist is 46
+ * requests: they run a few at a time, and each symbol keeps its own state so a
+ * row can say "still asking", "the chain declined to score" or "the request
+ * failed" rather than render an empty cell that reads as a score of nothing.
+ */
+export function useWatchlistDecisions(
+  symbols: readonly string[],
+  horizon: Horizon,
+): Record<string, WatchlistDecisionState> {
+  const { analysis, decisionConcurrency, demoMode } = useMarketDataContext();
+  // A verdict belongs to one horizon, and never to demo data. Crossing either
+  // boundary invalidates everything collected so far.
+  const scope = `${demoMode ? "demo" : "live"}|${horizon}`;
+  // The caller rebuilds this array on every render, so the joined symbols —
+  // not the array identity — decide when the request set actually changed.
+  const symbolsKey = [
+    ...new Set(
+      symbols
+        .map((symbol) => symbol.trim().toUpperCase())
+        .filter((symbol) => symbol !== ""),
+    ),
+  ].join(",");
+  const [answers, setAnswers] = useState<{
+    scope: string;
+    bySymbol: Record<string, WatchlistDecisionState>;
+  }>({ scope, bySymbol: noDecisions });
+  const scopeRef = useRef(scope);
+  const requestsRef = useRef(new Map<string, "pending" | "settled">());
+
+  useEffect(() => {
+    const requests = requestsRef.current;
+    // Ticker symbols carry no comma, so the key splits back into exactly the
+    // list that produced it.
+    const targets = symbolsKey === "" ? [] : symbolsKey.split(",");
+    if (scopeRef.current !== scope) {
+      scopeRef.current = scope;
+      requests.clear();
+    }
+    if (demoMode) return;
+
+    const queue = targets.filter((symbol) => !requests.has(symbol));
+    if (queue.length === 0) return;
+    queue.forEach((symbol) => requests.set(symbol, "pending"));
+
+    let cancelled = false;
+    const controller = new AbortController();
+    const settle = (symbol: string, entry: WatchlistDecisionState) => {
+      requests.set(symbol, "settled");
+      // Answers from an abandoned scope cannot arrive here: the effect that
+      // asked for them was cancelled, so the scope is always the current one.
+      setAnswers((current) =>
+        current.scope === scope
+          ? { scope, bySymbol: { ...current.bySymbol, [symbol]: entry } }
+          : { scope, bySymbol: { [symbol]: entry } },
+      );
+    };
+
+    const work = async (): Promise<void> => {
+      while (!cancelled) {
+        const symbol = queue.shift();
+        if (symbol === undefined) return;
+        try {
+          const decision = await analysis.getDecision(
+            symbol,
+            horizon,
+            controller.signal,
+          );
+          if (cancelled) return;
+          settle(symbol, {
+            status: decision.score === null ? "unscored" : "scored",
+            score: decision.score,
+            error: null,
+            notes: decision.notes,
+          });
+        } catch (error) {
+          if (
+            cancelled ||
+            (error instanceof Error && error.name === "AbortError")
+          ) {
+            return;
+          }
+          settle(symbol, {
+            status: "unavailable",
+            score: null,
+            error: toMarketError(error),
+            notes: [],
+          });
+        }
+      }
+    };
+
+    const workers = Math.min(decisionConcurrency, queue.length);
+    for (let worker = 0; worker < workers; worker += 1) {
+      void work();
+    }
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      // An aborted request produced no answer, so it must not be remembered as
+      // asked; otherwise its row would sit on "loading" with nobody asking.
+      requests.forEach((state, symbol) => {
+        if (state === "pending") requests.delete(symbol);
+      });
+    };
+  }, [analysis, decisionConcurrency, demoMode, horizon, scope, symbolsKey]);
+
+  // A symbol without an answer yet is pending. That is derived here instead of
+  // being written into state, so "loading" can never outlive the request that
+  // justified it.
+  return useMemo(() => {
+    const answered = answers.scope === scope ? answers.bySymbol : noDecisions;
+    const targets = symbolsKey === "" ? [] : symbolsKey.split(",");
+    const bySymbol: Record<string, WatchlistDecisionState> = {};
+    for (const symbol of targets) {
+      bySymbol[symbol] =
+        answered[symbol] ?? (demoMode ? demoDecision : loadingDecision);
+    }
+    return bySymbol;
+  }, [answers, demoMode, scope, symbolsKey]);
 }
 
 export function useMarketWatchlist(): MarketDataState<

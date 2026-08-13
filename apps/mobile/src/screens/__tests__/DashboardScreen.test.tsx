@@ -74,7 +74,7 @@ it("shows the short-first conclusion, objective dashboard context, and accessibl
   expect(view.getByText("谨慎偏多")).toBeTruthy();
   expect(view.getByText("新闻与社交情绪改善，但市场广度和期限结构仍要求确认。")).toBeTruthy();
   expect(view.getByLabelText("自选行情，演示")).toBeTruthy();
-  expect(view.getByTestId("watchlist-grid")).toBeTruthy();
+  expect(view.getByTestId("watchlist-list")).toBeTruthy();
 
   const evidenceAction = view.getByRole("button", { name: "查看完整依据" });
   expect(StyleSheet.flatten(evidenceAction.props.style).minHeight).toBeGreaterThanOrEqual(44);
@@ -144,7 +144,7 @@ it("renders the priority alert and watchlist as compact dashboard surfaces", asy
   expect(view.queryByText("顾问有限调整 +2 · 不能独立触发")).toBeNull();
   expect(view.queryByText("收盘跌破 136.40")).toBeNull();
 
-  expect(view.getByTestId("watchlist-grid")).toBeTruthy();
+  expect(view.getByTestId("watchlist-list")).toBeTruthy();
   expect(view.queryByTestId("watchlist-scroll")).toBeNull();
   expect(view.getAllByTestId("watchlist-quote")).toHaveLength(3);
 
@@ -325,7 +325,7 @@ it("shows one actionable unavailable state with the error category", async () =>
     expect(view.getByText("行情不可用 · permission")).toBeTruthy(),
   );
   expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
-  expect(view.queryByTestId("watchlist-grid")).toBeNull();
+  expect(view.queryByTestId("watchlist-list")).toBeNull();
   expect(view.queryByTestId("watchlist-quote")).toBeNull();
   expect(view.getByText("市场分析尚未接入真实数据")).toBeTruthy();
   expect(view.queryByText("谨慎偏多")).toBeNull();
@@ -341,7 +341,7 @@ it("shows login-required without rendering fallback rows", async () => {
     expect(view.getByText("行情不可用 · login-required")).toBeTruthy(),
   );
   expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
-  expect(view.queryByTestId("watchlist-grid")).toBeNull();
+  expect(view.queryByTestId("watchlist-list")).toBeNull();
 });
 
 it("shows the explicit demo switch only to developers", async () => {

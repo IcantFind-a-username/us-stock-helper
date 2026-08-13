@@ -401,3 +401,13 @@ describe("analysis client transport", () => {
     }
   });
 });
+
+it("rejects an unavailable decision that still carries a score", () => {
+  // The two states mean different things and the screens render them
+  // differently: leaving this open let one payload read as a live 72.5 on the
+  // dashboard and as "暂不可用" on the stock page.
+  const value = decisionFixture();
+  value.status = "unavailable";
+
+  expect(() => decodeDecisionEnvelope(value, { now })).toThrow();
+});

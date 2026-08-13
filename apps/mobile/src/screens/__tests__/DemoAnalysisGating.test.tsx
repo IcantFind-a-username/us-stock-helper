@@ -5,7 +5,11 @@ import type { ReactElement } from "react";
 
 import { AppStateProvider } from "@/state/AppStateProvider";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
-import type { MarketRepository } from "@/data/marketRepository";
+import {
+  createMarketRepository,
+  MarketDataError,
+  type MarketRepository,
+} from "@/data/marketRepository";
 
 import { AdvisersScreen } from "../AdvisersScreen";
 import { AgentScreen } from "../AgentScreen";
@@ -25,14 +29,16 @@ beforeEach(async () => {
   mockPush.mockClear();
 });
 
-const idleRepository = {
+// A real repository over sources that refuse: the discover screen now reads
+// the watchlist, so a bare source object would fail on repository-only methods.
+const idleRepository: MarketRepository = createMarketRepository({
   loadWatchlist: async () => {
-    throw new Error("not used in these tests");
+    throw new MarketDataError("configuration", "not used in these tests");
   },
   loadSnapshot: async () => {
-    throw new Error("not used in these tests");
+    throw new MarketDataError("configuration", "not used in these tests");
   },
-} as unknown as MarketRepository;
+});
 
 async function renderScreen(screen: ReactElement, demoMode: boolean) {
   return render(
@@ -73,5 +79,28 @@ describe.each(SCREENS)("$name 屏幕的演示门控", ({ element, demoText }) =>
 
     await waitFor(() => expect(view.getAllByText(demoText).length).toBeGreaterThan(0));
     expect(view.queryByTestId("analysis-not-connected")).toBeNull();
+  });
+});
+
+// Each of these screens is blocked on something different. They shared one
+// sentence before, and that sentence blamed an analysis service that has since
+// shipped — so the guard is that the reasons stay distinct and concrete.
+const BLOCKERS: { name: string; element: ReactElement; reason: RegExp }[] = [
+  { name: "发现", element: <DiscoverScreen />, reason: /全市场扫描服务/ },
+  { name: "提醒", element: <AlertsScreen />, reason: /提醒服务本身/ },
+  { name: "顾问", element: <AdvisersScreen />, reason: /ANTHROPIC_API_KEY/ },
+  { name: "Agent", element: <AgentScreen />, reason: /ANTHROPIC_API_KEY/ },
+];
+
+describe.each(BLOCKERS)("$name 占位文案", ({ element, reason }) => {
+  it("说明真正缺的是什么，而不是笼统地说分析没上线", async () => {
+    const view = await renderScreen(element, false);
+
+    await waitFor(() =>
+      expect(view.getByTestId("analysis-not-connected")).toHaveTextContent(
+        reason,
+      ),
+    );
+    expect(view.queryByText(/真实分析服务上线前/)).toBeNull();
   });
 });

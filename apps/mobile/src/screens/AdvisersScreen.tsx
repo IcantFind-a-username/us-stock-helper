@@ -80,7 +80,10 @@ export function AdvisersScreen() {
   if (!demoMode) {
     return (
       <Screen hideGlobalHeader style={styles.screen}>
-        <AnalysisNotConnected surface="顾问会诊" />
+        <AnalysisNotConnected
+          missing="缺的是大模型凭据：顾问层要读环境变量 ANTHROPIC_API_KEY，目前没有配置，分析服务也还没有暴露逐位顾问的路由。个股结论里的顾问调整项因此固定为 0，不是顾问看空。"
+          surface="顾问会诊"
+        />
       </Screen>
     );
   }

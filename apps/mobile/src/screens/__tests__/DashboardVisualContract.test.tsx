@@ -49,7 +49,7 @@ it("renders the approved compact hierarchy and hides research detail by default"
 
   expect(view.getByTestId("dashboard-header")).toBeTruthy();
   expect(view.getByTestId("priority-alert-card")).toBeTruthy();
-  expect(view.getByTestId("watchlist-grid")).toBeTruthy();
+  expect(view.getByTestId("watchlist-list")).toBeTruthy();
   expect(view.getByTestId("candidate-list")).toBeTruthy();
   expect(view.getAllByText("演示数据 · 非实时行情")).toHaveLength(1);
 

@@ -173,9 +173,10 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.getByText("2026-Q1 · 12.50% · 100 家机构")).toBeTruthy();
   expect(view.getByText(/报告期 2026-03-31 00:00:00 UTC/)).toBeTruthy();
 
-  expect(view.getAllByText("尚未接入真实分析")).toHaveLength(3);
+  expect(view.getByText(/未接入基本面数据源/)).toBeTruthy();
+  expect(view.getByText(/未接入宏观与地缘数据源/)).toBeTruthy();
   expect(view.queryByText("预测分析")).toBeNull();
-  const adviser = view.getByRole("button", { name: "顾问分析尚未接入真实分析" });
+  const adviser = view.getByRole("button", { name: "顾问分析等待大模型凭据" });
   expect(adviser.props.accessibilityState).toEqual({ disabled: true });
   expect(view.getByText("仅分析与建议 · 不连接券商 · 不会自动下单")).toBeTruthy();
 
@@ -632,4 +633,67 @@ it("cancels an in-flight decision request when the page leaves", async () => {
   await view.unmount();
 
   expect(signals[0]?.aborted).toBe(true);
+});
+
+it("reaches the news surface from the stock page and shows the cited reports", async () => {
+  const view = await renderDetail();
+
+  await waitFor(() => expect(view.getByTestId("decision-news")).toBeTruthy());
+
+  expect(view.getByText("新闻与解读 · NVDA")).toBeTruthy();
+  expect(
+    view.getByText("NVIDIA raises full-year revenue guidance"),
+  ).toBeTruthy();
+  expect(view.getByRole("link", { name: "打开来源：Reuters" })).toBeTruthy();
+  expect(view.getByTestId("decision-news-marker-c1")).toHaveTextContent("①");
+});
+
+it("says the news evidence failed to load rather than showing a quiet market", async () => {
+  const view = await renderDetail({
+    analysis: analysisWith(async () => {
+      throw new AnalysisRequestError("offline", "no route to the service");
+    }),
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("decision-news-unavailable")).toBeTruthy(),
+  );
+  expect(view.queryByTestId("decision-news-empty")).toBeNull();
+});
+
+it("keeps the demo stock page free of a news surface it cannot fill", async () => {
+  const view = await renderDetail({ demoMode: true });
+
+  await waitFor(() => expect(view.getAllByText("演示数据 · 非实时行情")).toHaveLength(1));
+  expect(view.queryByTestId("decision-news")).toBeNull();
+});
+
+it("names what each still-dark card is waiting on", async () => {
+  const view = await renderDetail();
+
+  await waitFor(() => expect(view.getByTestId("decision-news")).toBeTruthy());
+
+  // "尚未接入真实分析" was wrong on all three: the analysis service answers,
+  // and each of these is short a specific input instead.
+  expect(view.queryByText("尚未接入真实分析")).toBeNull();
+  expect(view.getByText(/未接入基本面数据源/)).toBeTruthy();
+  expect(view.getByText(/未接入宏观与地缘数据源/)).toBeTruthy();
+  expect(
+    view.getByRole("button", { name: /顾问分析/ }),
+  ).toHaveTextContent(/ANTHROPIC_API_KEY/);
+});
+
+it("keeps the analysis and its news when only the quote feed is down", async () => {
+  // Quotes and analysis come from independent services. Returning early on a
+  // market failure discards a live analysis, and this screen is the only
+  // route to any news at all — so one moomoo hiccup empties the whole app.
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => {
+      throw new MarketDataError("offline", "gateway offline");
+    }),
+    analysis: analysisWith(async () => liveDecision()),
+  });
+
+  await waitFor(() => expect(view.queryByTestId("decision-card")).not.toBeNull());
+  expect(view.queryByTestId("decision-news")).not.toBeNull();
 });

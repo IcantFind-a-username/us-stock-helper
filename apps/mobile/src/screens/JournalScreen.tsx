@@ -10,10 +10,12 @@ import { Screen } from "@/components/ui/Screen";
 import { summarizeJournal } from "@/domain/journal";
 import type { JournalEntry } from "@/domain/models";
 import { useAppState } from "@/state/AppStateProvider";
+import { useMarketDataMode } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 export function JournalScreen() {
   const { addJournalEntry, journalEntries, savedPlans } = useAppState();
+  const { demoMode } = useMarketDataMode();
   const [showForm, setShowForm] = useState(false);
   const summary = summarizeJournal(journalEntries);
 
@@ -33,7 +35,13 @@ export function JournalScreen() {
     <Screen hideGlobalHeader style={styles.screen}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.demoLabel}>演示数据 · 非实时行情</Text>
+          {/* The entries below are facts the reader typed in, so they are real
+              whatever the data mode is. The badge tracks demo mode rather than
+              being pinned on, because on a real build it was labelling the
+              reader's own trade history as fake. */}
+          {demoMode ? (
+            <Text style={styles.demoLabel}>演示数据 · 非实时行情</Text>
+          ) : null}
           <Text style={styles.eyebrow}>本地日志 · 客观性隔离</Text>
           <Text style={styles.title}>交易复盘</Text>
         </View>

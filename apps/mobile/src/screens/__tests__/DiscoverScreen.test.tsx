@@ -6,16 +6,23 @@ import { AppStateProvider } from "@/state/AppStateProvider";
 
 import { DiscoverScreen } from "../DiscoverScreen";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
-import type { MarketRepository } from "@/data/marketRepository";
+import {
+  createMarketRepository,
+  MarketDataError,
+  type MarketRepository,
+} from "@/data/marketRepository";
+import type { WatchlistQuote } from "@/domain/models";
 
-const idleRepository = {
+// A real repository over sources that refuse: screens now read the watchlist,
+// so a bare source object would fail on the methods only a repository has.
+const idleRepository: MarketRepository = createMarketRepository({
   loadWatchlist: async () => {
-    throw new Error("not used in this test");
+    throw new MarketDataError("configuration", "not used in this test");
   },
   loadSnapshot: async () => {
-    throw new Error("not used in this test");
+    throw new MarketDataError("configuration", "not used in this test");
   },
-} as unknown as MarketRepository;
+});
 
 
 const mockPush = jest.fn();
@@ -70,4 +77,90 @@ it("filters horizon candidates and preserves evidence-gated stock navigation", a
     pathname: "/stocks/[symbol]",
     params: { symbol: "NVDA" },
   });
+});
+
+
+function quote(symbol: string, changePercent: number): WatchlistQuote {
+  return {
+    symbol,
+    price: 100 + changePercent,
+    changePercent,
+    direction: changePercent >= 0 ? "bullish" : "bearish",
+    summary: `${symbol} 摘要`,
+  };
+}
+
+function watchlistRepository(quotes: WatchlistQuote[]) {
+  return createMarketRepository({
+    loadSnapshot: async () => {
+      throw new MarketDataError("configuration", "not used in this test");
+    },
+    loadWatchlist: async () => ({
+      source: "moomoo" as const,
+      asOf: "2026-08-13T15:59:48.000Z",
+      quotes,
+    }),
+  });
+}
+
+async function renderRealDiscover(repository = watchlistRepository([])) {
+  return render(
+    <AppStateProvider>
+      <MarketDataProvider development repository={repository} retryDelaysMs={[]}>
+        <DiscoverScreen />
+      </MarketDataProvider>
+    </AppStateProvider>,
+  );
+}
+
+it("scans the real watchlist by size of move and opens the stock behind a row", async () => {
+  const view = await renderRealDiscover(
+    watchlistRepository([
+      quote("AAPL", 0.4),
+      quote("TSLA", -5.2),
+      quote("NVDA", 2.1),
+    ]),
+  );
+
+  await waitFor(() => expect(view.getByTestId("market-scan")).toBeTruthy());
+
+  const rows = view.getAllByTestId(/^market-scan-row-/);
+  expect(rows.map((row) => row.props.testID)).toEqual([
+    "market-scan-row-TSLA",
+    "market-scan-row-NVDA",
+    "market-scan-row-AAPL",
+  ]);
+
+  await fireEvent.press(view.getByRole("button", { name: "打开 TSLA 个股分析" }));
+  expect(mockPush).toHaveBeenLastCalledWith({
+    pathname: "/stocks/[symbol]",
+    params: { symbol: "TSLA" },
+  });
+});
+
+it("keeps the unbuilt candidate ranking honest while showing the real scan", async () => {
+  const view = await renderRealDiscover(watchlistRepository([quote("NVDA", 2.1)]));
+
+  await waitFor(() => expect(view.getByTestId("market-scan")).toBeTruthy());
+
+  expect(view.getByTestId("analysis-not-connected")).toHaveTextContent(/全市场/);
+  expect(view.queryByText("NVDA · NVIDIA")).toBeNull();
+  expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
+});
+
+it("says the quotes are unavailable rather than showing an empty scan", async () => {
+  const failing = createMarketRepository({
+    loadSnapshot: async () => {
+      throw new MarketDataError("configuration", "not used in this test");
+    },
+    loadWatchlist: async () => {
+      throw new MarketDataError("offline", "no route to the gateway");
+    },
+  });
+  const view = await renderRealDiscover(failing);
+
+  await waitFor(() =>
+    expect(view.getByTestId("market-scan-unavailable")).toBeTruthy(),
+  );
+  expect(view.queryByTestId("market-scan-empty")).toBeNull();
 });

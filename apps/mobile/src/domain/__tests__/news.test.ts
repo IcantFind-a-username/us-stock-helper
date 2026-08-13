@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 
 import {
+  compareByRecency,
   evidenceMarker,
   formatAbsoluteUtc,
   formatRelativeTime,
@@ -78,6 +79,40 @@ describe("news ordering", () => {
     orderStoriesByRecency(stories);
 
     expect(stories.map((item) => item.id)).toEqual(["old", "new"]);
+  });
+});
+
+describe("the shared recency rule", () => {
+  it("orders an item that carries no receipt time by publication alone", () => {
+    const ordered = [
+      { id: "old", availableAt: "2026-08-13T12:00:00.000Z" },
+      { id: "new", availableAt: "2026-08-13T13:27:00.000Z" },
+    ].sort(compareByRecency);
+
+    expect(ordered.map((item) => item.id)).toEqual(["new", "old"]);
+  });
+
+  it("still breaks a publication tie by id when no receipt time exists", () => {
+    const timestamp = "2026-08-13T13:00:00.000Z";
+    const ordered = [
+      { id: "b", availableAt: timestamp },
+      { id: "a", availableAt: timestamp },
+    ].sort(compareByRecency);
+
+    expect(ordered.map((item) => item.id)).toEqual(["a", "b"]);
+  });
+
+  it("treats a missing receipt time as no evidence of a later arrival", () => {
+    const timestamp = "2026-08-13T13:00:00.000Z";
+
+    // A row that never reported its receipt must not outrank one that did, or
+    // an absent fact would be scoring as if it were a fresh one.
+    expect(
+      compareByRecency(
+        { id: "a", availableAt: timestamp },
+        { id: "b", availableAt: timestamp, receivedAt: "2026-08-13T13:04:00.000Z" },
+      ),
+    ).toBeGreaterThan(0);
   });
 });
 

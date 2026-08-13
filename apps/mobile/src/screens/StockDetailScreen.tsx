@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { PriceChart } from "@/components/chart/PriceChart";
+import { DecisionNewsSection } from "@/components/news/DecisionNewsSection";
 import { DecisionCard } from "@/components/stock/DecisionCard";
 import { IndicatorStrip } from "@/components/stock/IndicatorStrip";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
@@ -31,11 +32,25 @@ function formatUtc(value: string) {
   return value.replace("T", " ").replace(".000Z", " UTC");
 }
 
-function DisabledAnalysisCard({ title }: { title: string }) {
+/**
+ * A card the chain cannot fill yet, labelled with the input it is short of.
+ *
+ * The label used to read "尚未接入真实分析" on every one of these, which stopped
+ * being true once the analysis service shipped: the chain does answer, it just
+ * has no source for these particular factors and says so in its own
+ * `unavailableFactors` list.
+ */
+function DisabledAnalysisCard({
+  title,
+  missing,
+}: {
+  title: string;
+  missing: string;
+}) {
   return (
     <View style={styles.disabledCard}>
       <Text style={styles.disabledTitle}>{title}</Text>
-      <Text style={styles.disabledText}>尚未接入真实分析</Text>
+      <Text style={styles.disabledText}>{missing}</Text>
     </View>
   );
 }
@@ -145,11 +160,27 @@ export function StockDetailScreen() {
   });
 
   if (!stock) {
+    // Quotes and analysis come from independent services, and this screen is
+    // the only route to any news. Returning here on a market failure would
+    // throw away a live analysis and empty the app over a moomoo hiccup, so
+    // the quote surface reports its own outage and the rest still renders.
     return (
-      <StockPageState
-        market={market as MarketDataState<ChartSnapshot>}
-        onBack={() => router.back()}
-      />
+      <View style={styles.screen} testID="stock-detail">
+        <StockPageState
+          market={market as MarketDataState<ChartSnapshot>}
+          onBack={() => router.back()}
+        />
+        {decision.data ? (
+          <>
+            <DecisionCard decision={decision.data} />
+            <DecisionNewsSection
+              decision={decision.data}
+              errorCategory={null}
+              symbol={symbol}
+            />
+          </>
+        ) : null}
+      </View>
     );
   }
 
@@ -338,14 +369,41 @@ export function StockDetailScreen() {
       ) : null}
 
       {stock.demoData ? (
-        stock.forecast ? null : <DisabledAnalysisCard title="预测分析" />
+        stock.forecast ? null : (
+          <DisabledAnalysisCard
+            missing="演示快照没有附带预测区间。"
+            title="预测分析"
+          />
+        )
       ) : decision.data ? (
         <DecisionCard decision={decision.data} />
       ) : (
         <DecisionState decision={decision} />
       )}
-      <DisabledAnalysisCard title="基本面与形态" />
-      <DisabledAnalysisCard title="市场环境" />
+      {/* The news surface hangs off the decision because the decision is what
+          carries reports: the analysis service answers per symbol and returns
+          the evidence it stood on, and there is no symbol-free news route a
+          separate tab could have read. Demo mode has no decision at all, so it
+          gets no news section rather than a fixture-filled one. */}
+      {stock.demoData ? null : (
+        <DecisionNewsSection
+          decision={decision.data}
+          errorCategory={
+            decision.status === "unavailable"
+              ? decision.error?.category ?? "offline"
+              : null
+          }
+          symbol={symbol}
+        />
+      )}
+      <DisabledAnalysisCard
+        missing="服务端未接入基本面数据源，评分已把它列入未接入因子。"
+        title="基本面与形态"
+      />
+      <DisabledAnalysisCard
+        missing="服务端未接入宏观与地缘数据源，评分已把它列入未接入因子。"
+        title="市场环境"
+      />
 
       <Pressable
         accessibilityLabel="查看完整图表"
@@ -363,13 +421,15 @@ export function StockDetailScreen() {
         <Text style={styles.secondaryText}>查看大图</Text>
       </Pressable>
       <Pressable
-        accessibilityLabel="顾问分析尚未接入真实分析"
+        accessibilityLabel="顾问分析等待大模型凭据"
         accessibilityRole="button"
         accessibilityState={{ disabled: true }}
         disabled
         style={styles.disabledButton}>
         <Text style={styles.disabledButtonTitle}>顾问分析</Text>
-        <Text style={styles.disabledButtonText}>尚未接入真实分析</Text>
+        <Text style={styles.disabledButtonText}>
+          等待 ANTHROPIC_API_KEY · 顾问层没有凭据，上面结论里的顾问调整固定为 0
+        </Text>
       </Pressable>
       <Text style={styles.boundary}>
         仅分析与建议 · 不连接券商 · 不会自动下单
