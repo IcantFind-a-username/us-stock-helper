@@ -339,3 +339,18 @@ it("never reaches for the Keychain on a build that does not pair", async () => {
     expect(result.current.session.status).not.toBe("checking"),
   );
 });
+
+it("reads the pairing decision from the runtime config when no prop is given", async () => {
+  // The real layout renders <DeviceSessionProvider /> with no props, so the
+  // prop is undefined and the answer comes from the runtime config. Every
+  // test here passed one, which is why nothing walked the path a phone walks
+  // — and that path resolved a native module it had no use for and crashed.
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "http://192.168.0.59:8770";
+  process.env.EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN = "d".repeat(32);
+
+  const { result } = await renderSession({});
+
+  await waitFor(() =>
+    expect(result.current.session.status).not.toBe("checking"),
+  );
+});

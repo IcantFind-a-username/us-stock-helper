@@ -136,11 +136,6 @@ export function DeviceSessionProvider({
   // Keychain, so reaching for it there can only fail — and on a phone whose
   // native client predates the dependency, that failure took down an app
   // that had no reason to care whether it was installed.
-  const store = useMemo(() => {
-    if (credentialStore) return credentialStore;
-    if (pairingRequired === false) return null;
-    return createDeviceCredentialStore(resolveSecureStoreBackend());
-  }, [credentialStore, pairingRequired]);
   const runtimeConfig = useMemo(() => {
     if (pairingClient && pairingRequired !== undefined) return null;
     try {
@@ -149,6 +144,19 @@ export function DeviceSessionProvider({
       return null;
     }
   }, [pairingClient, pairingRequired]);
+  // The prop is only supplied by tests; a real build leaves it undefined and
+  // the answer comes from the runtime config, so the decision has to be made
+  // after that is read rather than from the prop alone.
+  const pairs = pairingRequired ?? runtimeConfig?.pairingRequired ?? true;
+  const store = useMemo(() => {
+    if (credentialStore) return credentialStore;
+    // Resolving the backend loads a native module. A build whose credential
+    // comes from a development LAN token never pairs, so the Keychain has
+    // nothing to hold for it — and on a phone whose native client predates
+    // the dependency, asking for it anyway took the whole app down.
+    if (!pairs) return null;
+    return createDeviceCredentialStore(resolveSecureStoreBackend());
+  }, [credentialStore, pairs]);
   const client = useMemo(() => {
     if (pairingClient) return { client: pairingClient, reason: null };
     if (!runtimeConfig?.apiUrl) {
