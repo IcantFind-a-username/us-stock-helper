@@ -131,12 +131,16 @@ export function DeviceSessionProvider({
   pairingClient,
   pairingRequired,
 }: DeviceSessionProviderProps) {
-  const store = useMemo(
-    () =>
-      credentialStore ??
-      createDeviceCredentialStore(resolveSecureStoreBackend()),
-    [credentialStore],
-  );
+  // Resolving the backend loads a native module. A build whose credential
+  // comes from a development LAN token never pairs and has no use for the
+  // Keychain, so reaching for it there can only fail — and on a phone whose
+  // native client predates the dependency, that failure took down an app
+  // that had no reason to care whether it was installed.
+  const store = useMemo(() => {
+    if (credentialStore) return credentialStore;
+    if (pairingRequired === false) return null;
+    return createDeviceCredentialStore(resolveSecureStoreBackend());
+  }, [credentialStore, pairingRequired]);
   const runtimeConfig = useMemo(() => {
     if (pairingClient && pairingRequired !== undefined) return null;
     try {
@@ -166,6 +170,12 @@ export function DeviceSessionProvider({
 
   useEffect(() => {
     let active = true;
+    if (!store) {
+      // Nothing to read: this build never pairs, so there is no credential
+      // and no Keychain to ask about one.
+      setRecord(unpairedRecord(null));
+      return;
+    }
     void store
       .read()
       .then((result) => {
@@ -197,6 +207,12 @@ export function DeviceSessionProvider({
         setRecord(unpairedRecord(failure(client.reason ?? "not-configured")));
         return;
       }
+      if (!store) {
+        // A build with nowhere to keep the token must not report a pairing it
+        // cannot survive a relaunch with.
+        setRecord(unpairedRecord(failure("secure-store-unavailable")));
+        return;
+      }
       setRecord((current) => ({ ...current, status: "pairing", failure: null }));
       try {
         const credential = await client.client.pair({ code });
@@ -213,12 +229,12 @@ export function DeviceSessionProvider({
   );
 
   const forgetDevice = useCallback(async () => {
-    await store.clear().catch(() => undefined);
+    await store?.clear().catch(() => undefined);
     setRecord(unpairedRecord(null));
   }, [store]);
 
   const reportRevoked = useCallback(async () => {
-    await store.clear().catch(() => undefined);
+    await store?.clear().catch(() => undefined);
     setRecord({
       status: "revoked",
       deviceId: null,

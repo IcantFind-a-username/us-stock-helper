@@ -54,13 +54,18 @@ function rejectingClient(error: PairingError): PairingClient {
 async function renderSession({
   backend,
   pairingClient,
+  pairingRequired,
 }: {
-  backend: SecureStoreBackend;
+  backend?: SecureStoreBackend;
   pairingClient?: PairingClient;
+  pairingRequired?: boolean;
 }) {
   const wrapper = ({ children }: PropsWithChildren) => (
     <DeviceSessionProvider
-      credentialStore={createDeviceCredentialStore(backend)}
+      {...(backend
+        ? { credentialStore: createDeviceCredentialStore(backend) }
+        : {})}
+      {...(pairingRequired === undefined ? {} : { pairingRequired })}
       {...(pairingClient ? { pairingClient } : {})}>
       {children}
     </DeviceSessionProvider>
@@ -316,5 +321,21 @@ it("clears a stored credential the server has revoked", async () => {
 it("refuses to be used outside its provider rather than defaulting to unpaired", async () => {
   await expect(renderHook(() => useDeviceSession())).rejects.toThrow(
     "useDeviceSession must be used within DeviceSessionProvider",
+  );
+});
+
+it("never reaches for the Keychain on a build that does not pair", async () => {
+  // Resolving the backend loads a native module, and a build whose credential
+  // comes from a development LAN token has no use for it. Touching it anyway
+  // took down an app that had no reason to care whether it was installed.
+  const { result } = await renderSession({
+    pairingClient: acceptingClient(),
+    pairingRequired: false,
+  });
+
+  // The point is that it settles at all: resolving the Keychain here threw
+  // before any status could be reached.
+  await waitFor(() =>
+    expect(result.current.session.status).not.toBe("checking"),
   );
 });
