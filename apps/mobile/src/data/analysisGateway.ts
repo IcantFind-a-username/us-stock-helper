@@ -33,14 +33,29 @@ export class DecisionValidationError extends Error {
   }
 }
 
+/**
+ * The analysis service's error vocabulary, kept distinct all the way to the
+ * screen.
+ *
+ * `analysis-failed` is the one that matters most and the one that used to be
+ * missing: the service answering "the decision chain could not be evaluated"
+ * is a statement about the chain, not about the bytes it sent, and reporting
+ * it as a malformed payload sent the reader hunting for corrupt data that was
+ * never there.
+ */
 export type AnalysisRequestErrorKind =
-  | "configuration"
-  | "contract"
+  | "analysis-failed"
+  | "auth-required"
+  | "auth-unavailable"
+  | "client-not-allowed"
+  | "invalid-request"
   | "login-required"
-  | "malformed"
   | "offline"
   | "permission"
-  | "timeout";
+  | "route-unsupported"
+  | "timeout"
+  | "unspecified"
+  | "validation";
 
 export class AnalysisRequestError extends DecisionValidationError {
   constructor(
@@ -317,19 +332,30 @@ function normalizeUsSymbol(code: string) {
 }
 
 const kindByErrorCode: Record<string, AnalysisRequestErrorKind> = {
-  INVALID_ARGUMENT: "contract",
-  PATH_NOT_ALLOWED: "contract",
-  METHOD_NOT_ALLOWED: "contract",
+  INVALID_ARGUMENT: "invalid-request",
+  // A path and a method this service will not serve are the same fact to the
+  // reader: this build is asking for something the server does not offer.
+  PATH_NOT_ALLOWED: "route-unsupported",
+  METHOD_NOT_ALLOWED: "route-unsupported",
+  CLIENT_NOT_ALLOWED: "client-not-allowed",
   LOGIN_REQUIRED: "login-required",
-  AUTH_REQUIRED: "login-required",
+  // The device gate refusing this phone's token and the brokerage session
+  // being logged out are unrelated problems with unrelated fixes.
+  AUTH_REQUIRED: "auth-required",
+  AUTH_UNAVAILABLE: "auth-unavailable",
   PERMISSION_DENIED: "permission",
-  ANALYSIS_FAILED: "malformed",
+  ANALYSIS_FAILED: "analysis-failed",
 };
 
-function kindForPayload(payload: unknown): AnalysisRequestErrorKind {
+/**
+ * The kind a failed response names, or null when it names nothing this app
+ * recognizes — the caller then falls back to the HTTP status rather than
+ * guessing here.
+ */
+function kindForPayload(payload: unknown): AnalysisRequestErrorKind | null {
   const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
   const code = error && typeof error.code === "string" ? error.code : null;
-  return (code ? kindByErrorCode[code] : undefined) ?? "malformed";
+  return (code ? kindByErrorCode[code] : undefined) ?? null;
 }
 
 export type AnalysisSource = {
@@ -447,8 +473,13 @@ export function createAnalysisClient({
   function toAnalysisRequestError(error: unknown): AnalysisRequestError {
     if (error instanceof AnalysisRequestError) return error;
     if (error instanceof AnalysisHttpError) {
+      // The named code wins over the status: this service answers 401 only for
+      // an unusable device token, and 403 for a network it will not talk to,
+      // neither of which is the brokerage login the old mapping implied.
+      const named = kindForPayload(error.payload);
+      if (named) return new AnalysisRequestError(named, error.message);
       if (error.status === 401) {
-        return new AnalysisRequestError("login-required", error.message);
+        return new AnalysisRequestError("auth-required", error.message);
       }
       if (error.status === 403) {
         return new AnalysisRequestError("permission", error.message);
@@ -456,7 +487,13 @@ export function createAnalysisClient({
       if (error.status === 408 || error.status === 504) {
         return new AnalysisRequestError("timeout", error.message);
       }
-      return new AnalysisRequestError(kindForPayload(error.payload), error.message);
+      // A body that would not parse is this app's reading problem; a body that
+      // parsed and named a code nothing here knows is the service's own
+      // vocabulary moving on. The reader is told which of the two happened.
+      if (error.payload === null) {
+        return new AnalysisRequestError("validation", error.message);
+      }
+      return new AnalysisRequestError("unspecified", error.message);
     }
     if (error instanceof Error && error.name === "AbortError") {
       return new AnalysisRequestError(
@@ -465,7 +502,9 @@ export function createAnalysisClient({
       );
     }
     if (error instanceof DecisionValidationError) {
-      return new AnalysisRequestError("malformed", error.message);
+      // This app refusing the answer is not the service declining to produce
+      // one; only the latter is `analysis-failed`.
+      return new AnalysisRequestError("validation", error.message);
     }
     return new AnalysisRequestError("offline", "the analysis service is unavailable");
   }

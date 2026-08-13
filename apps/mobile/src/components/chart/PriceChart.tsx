@@ -7,16 +7,10 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import Svg, {
-  G,
-  Line,
-  Path,
-  Rect,
-  Text as SvgText,
-} from "react-native-svg";
 
 import {
   toDemoChartSnapshot,
+  type ChartMacdIndicator,
   type ChartSnapshot,
   type StockSnapshot,
 } from "@/domain/models";
@@ -24,10 +18,21 @@ import {
   buildChartGeometry,
   findNearestByX,
   resolveChartWidth,
+  type ChartOverlaySeries,
+  type ChartPanelKey,
 } from "@/domain/chart";
+import {
+  chartStatusLabel,
+  intervalLabel,
+  serviceTextLabel,
+} from "@/i18n/serverVocabulary";
 import { colors, radius, spacing } from "@/theme/tokens";
 
+import { ChartCanvas, type MagicNineMarker } from "./ChartCanvas";
+import { chartPalette } from "./chartPalette";
 import { ChartLegend } from "./ChartLegend";
+import { ChartReadout } from "./ChartReadout";
+import { MagicNineMeter } from "./MagicNineMeter";
 
 type PriceChartProps = {
   stock: ChartSnapshot | StockSnapshot;
@@ -37,7 +42,29 @@ type PriceChartProps = {
   showMagicNine?: boolean;
   showMovingAverage?: boolean;
   showParticipation?: boolean;
+  showMacd?: boolean;
+  showRsi?: boolean;
 };
+
+/**
+ * Reads the periods out of the method version rather than printing constants.
+ *
+ * "MACD(12,26,9)" is only true while the server computes it that way, so the
+ * label comes from the version string it published; a version with no periods
+ * in it gets no parenthesis instead of an invented one.
+ */
+function parameterLabel(methodVersion: string) {
+  const periods = methodVersion.replace(/-v\d+$/, "").match(/\d+/g);
+  return periods?.length ? `(${periods.join(",")})` : "";
+}
+
+function macdPanelLabel(macd: ChartMacdIndicator) {
+  const parameters = parameterLabel(macd.methodVersion);
+  if (macd.line === null || macd.signal === null) {
+    return `MACD${parameters} 暂不可用`;
+  }
+  return `MACD${parameters} DIF ${macd.line.toFixed(2)} DEA ${macd.signal.toFixed(2)}`;
+}
 
 export const PriceChart = memo(function PriceChart({
   stock,
@@ -47,10 +74,14 @@ export const PriceChart = memo(function PriceChart({
   showMagicNine = true,
   showMovingAverage = true,
   showParticipation = true,
+  showMacd = true,
+  showRsi = true,
 }: PriceChartProps) {
   const { width: viewportWidth } = useWindowDimensions();
   const chartWidth = resolveChartWidth(viewportWidth);
-  const height = compact ? 235 : 310;
+  // The chart is the subject of this screen, so it takes the height a phone
+  // can spare rather than sharing it with prose.
+  const height = compact ? 380 : 460;
   const snapshot = useMemo(
     () => ("quote" in stock ? stock : toDemoChartSnapshot(stock)),
     [stock],
@@ -63,42 +94,177 @@ export const PriceChart = memo(function PriceChart({
         ? "stale"
         : "live");
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(null);
-  const chartForecast = useMemo(
-    () =>
-      snapshot.forecast && !showForecast
-        ? { ...snapshot.forecast, points: [] }
-        : snapshot.forecast,
-    [showForecast, snapshot.forecast],
-  );
+  const hasForecast = showForecast && snapshot.forecast !== null;
+
+  const panels = useMemo(() => {
+    const requested: ChartPanelKey[] = ["volume"];
+    if (showMacd) requested.push("macd");
+    if (showRsi) requested.push("rsi");
+    if (showParticipation) requested.push("participation");
+    return requested;
+  }, [showMacd, showParticipation, showRsi]);
+
+  const overlays = useMemo<ChartOverlaySeries[]>(() => {
+    const ma5 = snapshot.indicators.ma5.series;
+    // The line is only ever the server's own series: nothing here reads a
+    // close and averages it.
+    return showMovingAverage && ma5
+      ? [{ key: "ma5", label: "MA5", values: ma5.values }]
+      : [];
+  }, [showMovingAverage, snapshot.indicators.ma5.series]);
+
   const geometry = useMemo(
     () =>
-      buildChartGeometry(
-        snapshot.candles,
-        chartForecast,
-        snapshot.participationBars,
-        snapshot.source.decisionCutoff,
-        chartWidth,
+      buildChartGeometry({
+        candles: snapshot.candles,
+        forecast: hasForecast ? snapshot.forecast : null,
+        participationBars: snapshot.participationBars,
+        decisionCutoff: snapshot.source.decisionCutoff,
+        width: chartWidth,
         height,
-      ),
+        panels,
+        overlays,
+        macdSeries: showMacd ? snapshot.indicators.macd.series : null,
+        rsiSeries: showRsi ? snapshot.indicators.rsi.series : null,
+      }),
     [
-      chartForecast,
       chartWidth,
+      hasForecast,
       height,
+      overlays,
+      panels,
+      showMacd,
+      showRsi,
       snapshot.candles,
+      snapshot.forecast,
+      snapshot.indicators.macd.series,
+      snapshot.indicators.rsi.series,
       snapshot.participationBars,
       snapshot.source.decisionCutoff,
     ],
   );
-  const hasForecast = showForecast && snapshot.forecast !== null;
-  const hasMagicNine =
-    showMagicNine && snapshot.magicNine.qualityStatus !== "unavailable";
-  const lastCandle = geometry.candles.at(-1);
+
+  const magicNineAvailable = snapshot.magicNine.qualityStatus !== "unavailable";
+  const markers = useMemo<MagicNineMarker[]>(() => {
+    if (!showMagicNine) return [];
+    const markerFor = (
+      sourceIndex: number,
+      key: string,
+      testID: string,
+      label: string,
+    ) => {
+      // The server names the bar by its index in the snapshot's own candle
+      // list. If the point-in-time window dropped that bar there is nothing
+      // honest to point at, so nothing is drawn.
+      const candle = geometry.candles.find(
+        (entry) => entry.sourceIndex === sourceIndex,
+      );
+      return candle
+        ? [
+            {
+              key,
+              testID,
+              x: candle.x,
+              y: Math.max(candle.wickTop - 11, geometry.panels.price.top + 7),
+              label,
+            },
+          ]
+        : [];
+    };
+    const current =
+      magicNineAvailable && snapshot.magicNine.confirmedAtIndex !== null
+        ? markerFor(
+            snapshot.magicNine.confirmedAtIndex,
+            "magic-nine-current",
+            "magic-nine-marker",
+            String(snapshot.magicNine.count),
+          )
+        : [];
+    const completed = snapshot.magicNine.lastCompleted
+      ? markerFor(
+          snapshot.magicNine.lastCompleted.confirmedAtIndex,
+          "magic-nine-completed",
+          "magic-nine-completed-marker",
+          "9",
+        )
+      : [];
+    return [...completed, ...current];
+  }, [
+    geometry.candles,
+    geometry.panels.price.top,
+    magicNineAvailable,
+    showMagicNine,
+    snapshot.magicNine.confirmedAtIndex,
+    snapshot.magicNine.count,
+    snapshot.magicNine.lastCompleted,
+  ]);
+
+  const missingNotes = useMemo(() => {
+    const unpublished: string[] = [];
+    const uncovered: string[] = [];
+    const classify = (
+      label: string,
+      enabled: boolean,
+      published: boolean,
+      drawn: boolean,
+    ) => {
+      if (!enabled) return;
+      if (!published) unpublished.push(label);
+      else if (!drawn) uncovered.push(label);
+    };
+    classify(
+      "MA5",
+      showMovingAverage,
+      snapshot.indicators.ma5.series !== null,
+      geometry.overlays.some(({ key }) => key === "ma5"),
+    );
+    classify(
+      "MACD",
+      showMacd,
+      snapshot.indicators.macd.series !== null,
+      geometry.macd?.available === true,
+    );
+    classify(
+      "RSI",
+      showRsi,
+      snapshot.indicators.rsi.series !== null,
+      geometry.rsi?.available === true,
+    );
+    return [
+      ...(unpublished.length
+        ? [`${unpublished.join(" / ")} 曲线缺失 · 服务端未提供版本化序列`]
+        : []),
+      ...(uncovered.length
+        ? [`${uncovered.join(" / ")} 曲线缺失 · 服务端序列尚未覆盖已绘制的 K 线`]
+        : []),
+    ];
+  }, [
+    geometry.macd?.available,
+    geometry.overlays,
+    geometry.rsi?.available,
+    showMacd,
+    showMovingAverage,
+    showRsi,
+    snapshot.indicators.ma5.series,
+    snapshot.indicators.macd.series,
+    snapshot.indicators.rsi.series,
+  ]);
+
   const selectedCandle = selectedTimestamp
     ? snapshot.candles.find(({ timestamp }) => timestamp === selectedTimestamp)
     : undefined;
-  const selectedParticipation = showParticipation && selectedTimestamp
-    ? geometry.participation.find(({ timestamp }) => timestamp === selectedTimestamp)
-    : undefined;
+  const selectedParticipation =
+    showParticipation && selectedTimestamp
+      ? geometry.participation.find(
+          ({ timestamp }) => timestamp === selectedTimestamp,
+        )
+      : undefined;
+  const selectedX = selectedTimestamp
+    ? (geometry.candles.find(
+        ({ timestamp }) => timestamp === selectedTimestamp,
+      )?.x ?? null)
+    : null;
+
   const participationSummary = showParticipation
     ? `，${geometry.participation.filter(({ available }) => available).length} 根有订单规模活动占比`
     : "";
@@ -113,7 +279,7 @@ export const PriceChart = memo(function PriceChart({
               selectedParticipation.coverage !== null &&
               selectedParticipation.source !== null
                 ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}%，散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}%，覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%，来源 ${selectedParticipation.source}`
-                : `活动占比缺失，${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`}，${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"}，原因 ${selectedParticipation?.missingReason ?? "活动占比不可用"}`
+                : `活动占比缺失，${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`}，${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"}，原因 ${selectedParticipation?.missingReason ? serviceTextLabel(selectedParticipation.missingReason) : "活动占比不可用"}`
             }；非真实机构身份`
           : ""
       }`
@@ -128,38 +294,26 @@ export const PriceChart = memo(function PriceChart({
   };
 
   return (
-    <View
-      style={[styles.card, compact ? styles.compactCard : null]}
-      testID="stock-chart-card">
+    <View style={styles.card} testID="stock-chart-card">
       <View style={styles.header}>
-        <View>
-          <Text style={styles.eyebrow}>
-            {snapshot.interval} · {resolvedStatus.toUpperCase()}
-          </Text>
-          <Text style={styles.title}>
-            {hasForecast ? "价格 · 成交量 · 概率预测" : "价格 · 成交量"}
-          </Text>
-        </View>
+        <Text style={styles.eyebrow}>
+          {intervalLabel(snapshot.interval)} · {chartStatusLabel(resolvedStatus)}
+        </Text>
         {hasForecast ? (
-          <View style={styles.probability}>
-            <Text style={styles.probabilityValue}>
-              {Math.round(snapshot.forecast!.probability.up * 100)}%
-            </Text>
-            <Text style={styles.probabilityLabel}>上涨概率</Text>
-          </View>
+          <Text style={styles.probability}>
+            上涨概率 {Math.round(snapshot.forecast!.probability.up * 100)}%
+          </Text>
         ) : null}
       </View>
 
-      <ChartLegend
-        showForecast={hasForecast}
-        showMovingAverage={showMovingAverage && geometry.ma5Path !== ""}
-        showParticipation={showParticipation}
-      />
-      {showMovingAverage && geometry.ma5Path === "" ? (
-        <Text style={styles.ma5Unavailable}>
-          MA5 图线暂不可用 · 服务端未提供版本化序列
-        </Text>
-      ) : null}
+      <View style={styles.toolbar}>
+        {showMagicNine ? <MagicNineMeter magicNine={snapshot.magicNine} /> : null}
+        <ChartLegend
+          overlays={geometry.overlays.map(({ key, label }) => ({ key, label }))}
+          showForecast={hasForecast}
+          showParticipation={showParticipation}
+        />
+      </View>
 
       <Pressable
         accessibilityLabel={summary}
@@ -171,251 +325,37 @@ export const PriceChart = memo(function PriceChart({
           { minHeight: height },
           pressed && styles.chartPressed,
         ]}>
-        <Svg
-          accessibilityElementsHidden
-          accessible={false}
+        <ChartCanvas
+          geometry={geometry}
           height={height}
-          importantForAccessibility="no-hide-descendants"
-          viewBox={`0 0 ${chartWidth} ${height}`}
-          width="100%">
-          {geometry.priceTicks.map((tick) => (
-            <G key={tick.label}>
-              <Line
-                stroke={colors.navyLine}
-                strokeDasharray="3 5"
-                strokeWidth={0.7}
-                x1={8}
-                x2={chartWidth - 38}
-                y1={tick.y}
-                y2={tick.y}
-              />
-              <SvgText
-                fill={colors.navyMuted}
-                fontSize={9}
-                textAnchor="end"
-                x={chartWidth - 4}
-                y={tick.y + 3}>
-                {tick.label}
-              </SvgText>
-            </G>
-          ))}
-
-          {hasForecast && geometry.band80 ? (
-            <Path d={geometry.band80} fill={colors.blueBright} fillOpacity={0.1} />
-          ) : null}
-          {hasForecast && geometry.band50 ? (
-            <Path d={geometry.band50} fill={colors.blue} fillOpacity={0.18} />
-          ) : null}
-          {hasForecast && geometry.medianPath ? (
-            <Path
-              d={geometry.medianPath}
-              fill="none"
-              stroke={colors.purple}
-              strokeDasharray="5 4"
-              strokeWidth={1.6}
-            />
-          ) : null}
-          {showMovingAverage && geometry.ma5Path ? (
-            <Path
-              d={geometry.ma5Path}
-              fill="none"
-              stroke={colors.amber}
-              strokeWidth={1.35}
-            />
-          ) : null}
-
-          {hasForecast ? (
-            <>
-              <Line
-                stroke={colors.blueBright}
-                strokeDasharray="4 4"
-                strokeOpacity={0.7}
-                x1={geometry.boundaryX}
-                x2={geometry.boundaryX}
-                y1={10}
-                y2={geometry.priceBottom}
-              />
-              <SvgText
-                fill={colors.navyMuted}
-                fontSize={8}
-                textAnchor="middle"
-                x={geometry.boundaryX}
-                y={geometry.priceBottom + 11}>
-                现在 / 预测起点
-              </SvgText>
-            </>
-          ) : null}
-
-          {geometry.candles.map((candle) => {
-            const candleColor =
-              candle.direction === "up" ? colors.green : colors.red;
-            return (
-              <G key={candle.timestamp}>
-                <Line
-                  stroke={candleColor}
-                  strokeWidth={1}
-                  x1={candle.x}
-                  x2={candle.x}
-                  y1={candle.wickTop}
-                  y2={candle.wickBottom}
-                />
-                <Rect
-                  fill={candleColor}
-                  height={candle.bodyHeight}
-                  rx={0.6}
-                  width={candle.bodyWidth}
-                  x={candle.x - candle.bodyWidth / 2}
-                  y={candle.bodyTop}
-                />
-                <Rect
-                  fill={candleColor}
-                  fillOpacity={0.45}
-                  height={candle.volumeHeight}
-                  width={candle.bodyWidth}
-                  x={candle.volumeX}
-                  y={candle.volumeY}
-                />
-              </G>
-            );
-          })}
-
-          {showParticipation
-            ? geometry.participation.map((bar) =>
-                bar.available ? (
-                  <G key={bar.timestamp} testID="participation-available">
-                    <Rect
-                      fill={colors.blue}
-                      height={bar.mainHeight}
-                      testID="participation-main"
-                      width={bar.width}
-                      x={bar.x - bar.width / 2}
-                      y={bar.top}
-                    />
-                    <Rect
-                      fill={colors.navyMuted}
-                      height={bar.retailHeight}
-                      testID="participation-retail"
-                      width={bar.width}
-                      x={bar.x - bar.width / 2}
-                      y={bar.top + bar.mainHeight}
-                    />
-                  </G>
-                ) : (
-                  <Rect
-                    fill="none"
-                    height={bar.height}
-                    key={bar.timestamp}
-                    stroke={colors.navyMuted}
-                    strokeDasharray="2 2"
-                    strokeWidth={0.9}
-                    testID="participation-missing"
-                    width={bar.width}
-                    x={bar.x - bar.width / 2}
-                    y={bar.top}
-                  />
-                ),
-              )
-            : null}
-
-          {hasMagicNine && lastCandle ? (
-            <G testID="magic-nine-marker">
-              <Rect
-                fill={colors.amber}
-                height={17}
-                rx={8.5}
-                width={17}
-                x={lastCandle.x - 8.5}
-                y={Math.max(lastCandle.wickTop - 24, 2)}
-              />
-              <SvgText
-                fill={colors.navy}
-                fontSize={9}
-                fontWeight="800"
-                textAnchor="middle"
-                x={lastCandle.x}
-                y={Math.max(lastCandle.wickTop - 12, 14)}>
-                {snapshot.magicNine.count}
-              </SvgText>
-            </G>
-          ) : null}
-
-          <Line
-            stroke={colors.navyLine}
-            strokeWidth={0.8}
-            x1={8}
-            x2={chartWidth - 38}
-            y1={geometry.volumeTop}
-            y2={geometry.volumeTop}
-          />
-        </Svg>
+          macdLabel={macdPanelLabel(snapshot.indicators.macd)}
+          markers={markers}
+          rsiLabel={
+            snapshot.indicators.rsi.value === null
+              ? `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} 暂不可用`
+              : `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} ${snapshot.indicators.rsi.value.toFixed(1)}`
+          }
+          selectedX={selectedX}
+          showForecast={hasForecast}
+          showParticipation={showParticipation}
+          width={chartWidth}
+        />
       </Pressable>
 
-      <View
-        accessibilityLabel={detailLabel ?? undefined}
-        accessibilityLiveRegion="polite"
-        accessible={detailLabel !== null}
-        style={styles.detail}
-        testID="chart-detail-strip">
-        {selectedCandle && detailLabel ? (
-          <>
-            <Text style={styles.detailPrimary}>
-              {selectedCandle.timestamp} · O {selectedCandle.open.toFixed(2)} · H{" "}
-              {selectedCandle.high.toFixed(2)} · L {selectedCandle.low.toFixed(2)} · C{" "}
-              {selectedCandle.close.toFixed(2)} · V {selectedCandle.volume}
-            </Text>
-            {showParticipation ? (
-              <>
-                <Text
-                  ellipsizeMode="tail"
-                  numberOfLines={2}
-                  style={styles.detailSecondary}
-                  testID="participation-detail-text">
-                  {selectedParticipation?.available &&
-                  selectedParticipation.mainShare !== null &&
-                  selectedParticipation.retailShare !== null &&
-                  selectedParticipation.coverage !== null &&
-                  selectedParticipation.source !== null
-                    ? `主力代理 ${(selectedParticipation.mainShare * 100).toFixed(2)}% · 散户代理 ${(selectedParticipation.retailShare * 100).toFixed(2)}% · 覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}% · ${selectedParticipation.source}`
-                    : `活动占比缺失 · ${selectedParticipation?.coverage === null || selectedParticipation === undefined ? "覆盖率不可用" : `覆盖率 ${(selectedParticipation.coverage * 100).toFixed(2)}%`} · ${selectedParticipation?.source ? `来源 ${selectedParticipation.source}` : "来源不可用"} · ${selectedParticipation?.missingReason ?? "活动占比不可用"}`}
-                </Text>
-                <Text style={styles.identity}>订单规模活动代理 · 非真实机构身份</Text>
-              </>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <Text style={styles.detailPrimary}>轻点或长按图表查看精确 K 线数据</Text>
-            <Text style={styles.detailSecondary}>
-              {showParticipation
-                ? "将显示 OHLCV、活动占比、覆盖率与来源"
-                : "将显示 OHLCV"}
-            </Text>
-            {showParticipation ? (
-              <Text style={styles.identity}>订单规模活动代理 · 非真实机构身份</Text>
-            ) : null}
-          </>
-        )}
-      </View>
+      <ChartReadout
+        candle={selectedCandle}
+        detailLabel={detailLabel}
+        participation={selectedParticipation}
+        showParticipation={showParticipation}
+      />
 
-      {showMagicNine || hasForecast ? (
-        <View style={styles.footer}>
-          {showMagicNine ? (
-            <Text style={styles.nine}>
-              {snapshot.magicNine.qualityStatus === "unavailable"
-                ? "九转 暂不可用"
-                : `九转 ${snapshot.magicNine.count} · ${
-                    snapshot.magicNine.completed ? "序列完成" : "尚未完成"
-                  }`}
+      {missingNotes.length ? (
+        <View style={styles.missing} testID="chart-series-missing">
+          {missingNotes.map((note) => (
+            <Text key={note} style={styles.missingText}>
+              {note}
             </Text>
-          ) : (
-            <View />
-          )}
-          {hasForecast ? (
-            <Text style={styles.calibration}>
-              50% / 80% 区间 · 校准误差{" "}
-              {(snapshot.forecast!.calibrationError * 100).toFixed(1)}%
-            </Text>
-          ) : null}
+          ))}
         </View>
       ) : null}
     </View>
@@ -424,103 +364,45 @@ export const PriceChart = memo(function PriceChart({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: colors.navy,
-    borderColor: colors.navyLine,
+    // One source of truth for the chart's surface, so the palette cannot drift
+    // back to a dark card sitting on a light page.
+    backgroundColor: chartPalette.surface,
+    borderColor: chartPalette.border,
     borderRadius: radius.lg,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.sm,
     overflow: "hidden",
-    padding: spacing.md,
-  },
-  compactCard: {
-    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
   },
   header: {
-    alignItems: "flex-start",
+    alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
+    paddingHorizontal: spacing.xs,
   },
   eyebrow: {
-    color: colors.navyEyebrow,
+    color: colors.muted,
     fontSize: 9,
     fontWeight: "800",
     letterSpacing: 0.6,
   },
-  title: {
-    color: colors.card,
-    fontSize: 14,
-    fontWeight: "800",
-    marginTop: 2,
-  },
   probability: {
-    alignItems: "flex-end",
-  },
-  probabilityValue: {
     color: colors.green,
-    fontSize: 17,
+    fontSize: 10,
     fontVariant: ["tabular-nums"],
     fontWeight: "900",
   },
-  probabilityLabel: {
-    color: colors.navyMuted,
-    fontSize: 9,
-    fontWeight: "700",
-  },
-  ma5Unavailable: {
-    color: colors.navyMuted,
-    fontSize: 9,
-    fontWeight: "700",
-  },
-  footer: {
+  toolbar: {
     alignItems: "center",
+    columnGap: spacing.md,
     flexDirection: "row",
-    justifyContent: "space-between",
+    flexWrap: "wrap",
+    paddingHorizontal: spacing.xs,
+    rowGap: spacing.xs,
   },
-  nine: {
-    color: colors.amber,
-    fontSize: 10,
-    fontWeight: "800",
-  },
-  calibration: {
-    color: colors.navyMuted,
-    fontSize: 9,
-    fontWeight: "600",
-  },
-  chartPress: {
-    justifyContent: "center",
-  },
-  chartPressed: {
-    opacity: 0.88,
-  },
-  detail: {
-    backgroundColor: colors.navyRaised,
-    borderColor: colors.navyLine,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    gap: spacing.xs,
-    justifyContent: "center",
-    minHeight: 86,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-  },
-  detailPrimary: {
-    color: colors.card,
-    fontSize: 10,
-    fontVariant: ["tabular-nums"],
-    fontWeight: "700",
-    lineHeight: 15,
-  },
-  detailSecondary: {
-    color: colors.navyMuted,
-    fontSize: 9,
-    fontVariant: ["tabular-nums"],
-    fontWeight: "600",
-    lineHeight: 14,
-  },
-  identity: {
-    color: colors.navyEyebrow,
-    fontSize: 9,
-    fontWeight: "700",
-    lineHeight: 13,
-  },
+  chartPress: { justifyContent: "center" },
+  chartPressed: { opacity: 0.88 },
+  missing: { gap: 2, paddingHorizontal: spacing.xs },
+  missingText: { color: colors.muted, fontSize: 9, fontWeight: "700" },
 });

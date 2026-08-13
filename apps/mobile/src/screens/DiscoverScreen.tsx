@@ -19,6 +19,7 @@ import {
 import type { MarketWatchlist } from "@/data/marketRepository";
 import type { Candidate, Citation, PlanSide, WatchlistQuote } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
 import { useAppState } from "@/state/AppStateProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
@@ -213,13 +214,17 @@ function MarketScan({
   );
 
   if (watchlist.status === "unavailable") {
+    const failure = describeMarketError(watchlist.error?.category ?? "offline");
     return (
       <View style={styles.scanCard} testID="market-scan-unavailable">
         <Text style={styles.scanTitle}>
-          {`自选行情不可用 · ${watchlist.error?.category ?? "offline"}`}
+          {`自选行情不可用 · ${failure.label}`}
         </Text>
         <Text style={styles.scanBody}>
-          取数失败不是「今天没有异动」。检查网络或行情权限后重试。
+          取数失败不是「今天没有异动」。
+        </Text>
+        <Text style={styles.scanBody} testID="market-scan-unavailable-body">
+          {failure.body}
         </Text>
         <Pressable
           accessibilityLabel="重试行情"

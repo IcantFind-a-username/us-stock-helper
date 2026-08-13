@@ -2,6 +2,7 @@ import { SymbolView } from "expo-symbols";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { ChartSnapshot } from "@/domain/models";
+import { chartStatusLabel, intervalLabel } from "@/i18n/serverVocabulary";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 const backSymbol = {
@@ -33,11 +34,7 @@ export function StockHeader({
       : stock.source.status === "stale"
         ? "stale"
         : "live");
-  const sourceLabel = {
-    demo: "演示数据",
-    live: "实时只读",
-    stale: "缓存数据",
-  }[resolvedStatus];
+  const sourceLabel = chartStatusLabel(resolvedStatus);
 
   return (
     <View style={styles.wrap}>
@@ -85,7 +82,9 @@ export function StockHeader({
           </Text>
         </View>
         <View style={styles.meta}>
-          <Text style={styles.interval}>{stock.interval}</Text>
+          <Text style={styles.interval}>
+            {intervalLabel(stock.interval)}
+          </Text>
           <Text style={styles.asOf}>截止 {formatUtc(stock.quote.asOf)}</Text>
         </View>
       </View>

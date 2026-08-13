@@ -3,6 +3,9 @@ import { expect, it, jest } from "@jest/globals";
 import {
   createGatewayMarketRepository,
   createMarketRepository,
+  isRetryableMarketError,
+  MarketDataError,
+  type MarketDataErrorCategory,
 } from "../marketRepository";
 
 function jsonResponse(value: unknown, status = 200) {
@@ -76,7 +79,8 @@ async function requestWatchlist(
 }
 
 it.each([
-  ["HTTP 401", async () => jsonResponse({}, 401), "login-required"],
+  // A 401 with no code names the device token, not the brokerage session.
+  ["HTTP 401", async () => jsonResponse({}, 401), "auth-required"],
   ["HTTP 403", async () => jsonResponse({}, 403), "permission"],
   [
     "offline transport",
@@ -136,4 +140,30 @@ it("returns only a strict live watchlist from the production repository", async 
     asOf,
     quotes: [{ symbol: "NVDA", price: 142.25 }],
   });
+});
+
+/**
+ * Retrying is a claim that waiting will help. Making it about a missing SDK or
+ * a revoked pairing keeps the screen looking busy while it is actually waiting
+ * for a person, and that person never learns they are the blocker.
+ */
+it.each<[MarketDataErrorCategory, boolean]>([
+  ["offline", true],
+  ["timeout", true],
+  ["stale", true],
+  // A quota resets on its own, and the caller backs off between attempts.
+  ["rate-limited", true],
+  ["malformed", false],
+  ["analysis-failed", false],
+  ["sdk-unavailable", false],
+  ["auth-required", false],
+  ["login-required", false],
+  ["permission", false],
+  ["contract", false],
+  ["validation", false],
+  ["unspecified", false],
+])("retries %s: %s", (category, retryable) => {
+  expect(
+    isRetryableMarketError(new MarketDataError(category, category)),
+  ).toBe(retryable);
 });

@@ -7,8 +7,10 @@ import {
   formatAbsoluteUtc,
   formatRelativeTime,
 } from "@/domain/news";
+import type { MarketDataErrorCategory } from "@/data/marketRepository";
 import type { Decision, DecisionCitation } from "@/domain/models";
 import { useNow } from "@/hooks/use-now";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
 import { radius, spacing } from "@/theme/tokens";
 
 import { NewsInterpretationCard } from "./NewsInterpretationCard";
@@ -34,7 +36,7 @@ type DecisionNewsSectionProps = {
   /** null while the analysis request is unfinished or has failed. */
   decision: Decision | null;
   /** Set only when the request failed, which is a different fact from "no news". */
-  errorCategory: string | null;
+  errorCategory: MarketDataErrorCategory | null;
 };
 
 function absolute(value: string) {
@@ -88,12 +90,15 @@ export function DecisionNewsSection({
               style={[styles.notice, { backgroundColor: palette.noticeSurface }]}
               testID="decision-news-unavailable">
               <Text style={[styles.noticeTitle, { color: palette.ink }]}>
-                {`新闻证据不可用 · ${errorCategory}`}
+                {`新闻证据不可用 · ${describeMarketError(errorCategory).label}`}
               </Text>
               <Text style={[styles.noticeBody, { color: palette.muted }]}>
                 {/* A failed request tells us nothing about the market, so it
                     must never be shown as a quiet news day. */}
-                这是取数失败，不是「今天没有消息」。恢复连接后重试即可。
+                这是取数失败，不是「今天没有消息」。
+              </Text>
+              <Text style={[styles.noticeBody, { color: palette.muted }]}>
+                {describeMarketError(errorCategory).body}
               </Text>
             </View>
           )

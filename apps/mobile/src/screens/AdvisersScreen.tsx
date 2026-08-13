@@ -250,7 +250,7 @@ export function AdvisersScreen() {
         <Text style={styles.saveText}>{saved ? "已保存到复盘" : "保存分析方案"}</Text>
       </Pressable>
       <Text style={styles.safety}>
-        仅分析与建议，不连接券商，不会自动下单。
+        仅供分析与建议，不连接券商，不会自动下单。
       </Text>
       <DashboardDetailSheet
         citations={fixtureRepository.getCitations(selectedPlan.citationIds)}

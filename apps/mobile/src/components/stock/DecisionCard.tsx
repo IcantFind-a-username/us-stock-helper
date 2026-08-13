@@ -1,6 +1,14 @@
 import { StyleSheet, Text, View } from "react-native";
 
 import type { Decision } from "@/domain/models";
+import {
+  factorLabel,
+  gateLabel,
+  planActionLabel,
+  scenarioLabel,
+  scoreDirectionLabel,
+  serviceTextLabel,
+} from "@/i18n/serverVocabulary";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 /**
@@ -8,6 +16,12 @@ import { colors, radius, spacing } from "@/theme/tokens";
  *
  * The service states what it could not see; showing the score without its
  * coverage would hand the reader a number that looks like a full picture.
+ *
+ * Everything the service says arrives in English or in its own identifiers,
+ * and every one of them passes through @/i18n/serverVocabulary on the way to a
+ * Text node. A gate this app has no name for is still printed, unreadable and
+ * all: the reader has to learn the conclusion was gated even when the reason
+ * is new.
  */
 export function DecisionCard({ decision }: { decision: Decision }) {
   if (decision.status === "unavailable" || !decision.score) {
@@ -17,7 +31,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
         <Text style={styles.unavailable}>暂不可用</Text>
         {decision.notes.map((note) => (
           <Text key={note} style={styles.note}>
-            · {note}
+            · {serviceTextLabel(note)}
           </Text>
         ))}
       </View>
@@ -37,13 +51,14 @@ export function DecisionCard({ decision }: { decision: Decision }) {
         {score.value.toFixed(1)}
         <Text style={styles.direction}>
           {"  "}
-          {score.direction === "bullish"
-            ? "偏多"
-            : score.direction === "bearish"
-              ? "偏空"
-              : "中性"}
+          {scoreDirectionLabel(score.direction)}
         </Text>
       </Text>
+      {/* A blocked conclusion must not look like an ordinary one. The gate used
+          to reach the screen only through the risk plan's warnings, and a
+          decision with no measurable volatility has no risk plan — so a score
+          the engine had refused to act on was displayed exactly like a clean
+          one. */}
       {!score.actionable ? (
         <View style={styles.blocked} testID="decision-blocked">
           <Text style={styles.blockedTitle}>不可行动</Text>
@@ -60,19 +75,21 @@ export function DecisionCard({ decision }: { decision: Decision }) {
       ) : null}
       {score.unavailableFactors.length ? (
         <Text style={styles.missing} testID="decision-missing-factors">
-          未接入因子：{score.unavailableFactors.join("、")}
+          未接入因子：{score.unavailableFactors.map(factorLabel).join("、")}
         </Text>
       ) : null}
       {decision.forecast ? (
         <View style={styles.scenarios} testID="decision-scenarios">
           {decision.forecast.cases.map((item) => (
             <Text key={item.kind} style={styles.scenario}>
-              {item.kind === "bear" ? "下行" : item.kind === "bull" ? "上行" : "基准"}{" "}
+              {scenarioLabel(item.kind)}{" "}
               {(item.probability * 100).toFixed(0)}% ·{" "}
               {item.priceLow.toFixed(2)}–{item.priceHigh.toFixed(2)}
             </Text>
           ))}
-          <Text style={styles.note}>{decision.forecast.disclaimer}</Text>
+          <Text style={styles.note}>
+            {serviceTextLabel(decision.forecast.disclaimer)}
+          </Text>
         </View>
       ) : (
         <Text style={styles.missing} testID="decision-no-forecast">
@@ -82,47 +99,24 @@ export function DecisionCard({ decision }: { decision: Decision }) {
       {decision.riskPlan ? (
         <View style={styles.plan} testID="decision-plan">
           <Text style={styles.planLine}>
-            建议 {planLabel(decision.riskPlan.action)} · 仓位上限{" "}
+            建议 {planActionLabel(decision.riskPlan.action)} · 仓位上限{" "}
             {decision.riskPlan.maxPositionPercent.toFixed(0)}% · 杠杆上限{" "}
             {decision.riskPlan.leverage.toFixed(2)}×
           </Text>
           {decision.riskPlan.warnings.map((warning) => (
             <Text key={warning} style={styles.warning}>
-              · {warning}
+              · {serviceTextLabel(warning)}
             </Text>
           ))}
         </View>
       ) : null}
       {decision.notes.map((note) => (
         <Text key={note} style={styles.note}>
-          · {note}
+          · {serviceTextLabel(note)}
         </Text>
       ))}
     </View>
   );
-}
-
-/**
- * A blocked conclusion must not look like an ordinary one.
- *
- * The gate used to reach the screen only through the risk plan's warnings,
- * and a decision with no measurable volatility has no risk plan — so a score
- * the engine had refused to act on was displayed exactly like a clean one.
- */
-function gateLabel(gate: string) {
-  return (
-    {
-      stale_data: "数据陈旧",
-      insufficient_evidence: "证据不足",
-      conflicting_evidence: "证据冲突",
-      unverified_rumor: "未证实传闻",
-      borrow_unavailable: "无券可借",
-    }[gate] ?? gate
-  );
-}
-
-function planLabel(action: string) {
-  return { long: "做多", short: "做空", watch: "观望", avoid: "回避" }[action] ?? action;
 }
 
 const styles = StyleSheet.create({

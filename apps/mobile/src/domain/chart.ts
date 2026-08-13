@@ -6,6 +6,8 @@ import type {
 
 export type CandleGeometry = {
   timestamp: string;
+  /** Index in the snapshot's own candle list, which is how the server names bars. */
+  sourceIndex: number;
   x: number;
   bodyWidth: number;
   bodyTop: number;
@@ -33,8 +35,11 @@ export type ParticipationGeometry = {
   width: number;
   top: number;
   height: number;
-  mainHeight: number;
-  retailHeight: number;
+  /** The even-split line the marks are read against. */
+  midY: number;
+  markY: number;
+  markHeight: number;
+  dominant: "main" | "retail" | "even" | null;
   available: boolean;
   mainShare: number | null;
   retailShare: number | null;
@@ -43,40 +48,228 @@ export type ParticipationGeometry = {
   missingReason: string | null;
 };
 
+export type ChartPanelKey = "volume" | "macd" | "rsi" | "participation";
+
+export type PanelBounds = { top: number; bottom: number };
+
+export type ChartPanels = {
+  price: PanelBounds;
+  volume: PanelBounds | null;
+  macd: PanelBounds | null;
+  rsi: PanelBounds | null;
+  participation: PanelBounds | null;
+  /** Baseline the time labels sit on, below every panel. */
+  axisY: number;
+};
+
+/**
+ * A series the server published, one value per candle in the same order.
+ *
+ * `null` means the method had no value for that bar — a warm-up window, not a
+ * zero — so the line breaks there instead of being interpolated across it.
+ */
+export type ChartOverlaySeries = {
+  key: string;
+  label: string;
+  values: (number | null)[];
+};
+
+export type ChartSeriesPoint = {
+  /** Index into the point-in-time candles the geometry kept. */
+  index: number;
+  x: number;
+  y: number;
+  value: number;
+};
+
+export type ChartOverlayGeometry = {
+  key: string;
+  label: string;
+  path: string;
+  points: ChartSeriesPoint[];
+};
+
+export type ChartMacdSeriesInput = {
+  line: (number | null)[];
+  signal: (number | null)[];
+  histogram: (number | null)[];
+};
+
+export type ChartMacdGeometry = PanelBounds & {
+  available: boolean;
+  zeroY: number;
+  bars: { x: number; width: number; y: number; height: number; positive: boolean }[];
+  linePath: string;
+  signalPath: string;
+};
+
+export type ChartRsiSeriesInput = { values: (number | null)[] };
+
+export type ChartRsiGeometry = PanelBounds & {
+  available: boolean;
+  path: string;
+  points: ChartSeriesPoint[];
+  references: { value: number; y: number }[];
+};
+
+export type ChartAxisLabel = {
+  x: number;
+  label: string;
+  timestamp: string;
+};
+
+export type ChartGeometryInput = {
+  candles: Candle[];
+  forecast: ForecastSnapshot | null;
+  participationBars: ParticipationBar[];
+  decisionCutoff: string;
+  width: number;
+  height: number;
+  panels?: readonly ChartPanelKey[];
+  overlays?: readonly ChartOverlaySeries[];
+  macdSeries?: ChartMacdSeriesInput | null;
+  rsiSeries?: ChartRsiSeriesInput | null;
+};
+
 export type ChartGeometry = {
   candles: CandleGeometry[];
   forecastPoints: ForecastGeometry[];
   participation: ParticipationGeometry[];
+  overlays: ChartOverlayGeometry[];
+  macd: ChartMacdGeometry | null;
+  rsi: ChartRsiGeometry | null;
+  timeAxis: ChartAxisLabel[];
+  sessionBreaks: ChartAxisLabel[];
+  panels: ChartPanels;
+  /** Distance between two neighbouring bars; the axis is ordinal, not clock. */
+  step: number;
+  plotLeft: number;
+  plotRight: number;
   boundaryX: number;
   band50: string;
   band80: string;
   medianPath: string;
-  ma5Path: string;
   priceMin: number;
   priceMax: number;
   priceTicks: { label: string; y: number }[];
-  priceBottom: number;
-  volumeTop: number;
 };
 
-const emptyGeometry = (width: number, height: number): ChartGeometry => ({
-  candles: [],
-  forecastPoints: [],
-  participation: [],
-  boundaryX: width * 0.66,
-  band50: "",
-  band80: "",
-  medianPath: "",
-  ma5Path: "",
-  priceMin: 0,
-  priceMax: 1,
-  priceTicks: [],
-  priceBottom: height * 0.78,
-  volumeTop: height * 0.82,
-});
+const inset = { left: 8, right: 44, top: 14 } as const;
+const axisHeight = 18;
+const panelGap = 8;
+const panelOrder: readonly ChartPanelKey[] = [
+  "volume",
+  "macd",
+  "rsi",
+  "participation",
+];
+const panelWeight: Record<ChartPanelKey, number> = {
+  volume: 0.15,
+  macd: 0.17,
+  rsi: 0.17,
+  participation: 0.09,
+};
+const panelMinimum: Record<ChartPanelKey, number> = {
+  volume: 26,
+  macd: 34,
+  rsi: 34,
+  participation: 18,
+};
+const dayMs = 86_400_000;
+
+const twoDigits = (value: number) => String(value).padStart(2, "0");
+
+const clockLabel = (timestamp: number) => {
+  const time = new Date(timestamp);
+  return `${twoDigits(time.getUTCHours())}:${twoDigits(time.getUTCMinutes())}`;
+};
+
+const dateLabel = (timestamp: number) => {
+  const time = new Date(timestamp);
+  return `${twoDigits(time.getUTCMonth() + 1)}-${twoDigits(time.getUTCDate())}`;
+};
+
+const utcDay = (timestamp: number) => Math.floor(timestamp / dayMs);
+
+function layoutPanels(height: number, requested: readonly ChartPanelKey[]): ChartPanels {
+  const active = panelOrder.filter((key) => requested.includes(key));
+  const axisY = Math.max(height - axisHeight, inset.top + 1);
+  const usable = Math.max(axisY - inset.top - panelGap * active.length, 1);
+  const raw = active.map((key) =>
+    Math.max(panelMinimum[key], height * panelWeight[key]),
+  );
+  const rawTotal = raw.reduce((total, value) => total + value, 0);
+  // The price panel is the subject of the chart, so the stack never squeezes it
+  // below a third of the frame; the rest scale down together instead.
+  const subtotalCap = usable * 0.62;
+  const scale = rawTotal > subtotalCap ? subtotalCap / rawTotal : 1;
+  const heights = raw.map((value) => value * scale);
+  const priceHeight = usable - heights.reduce((total, value) => total + value, 0);
+
+  const bounds: Partial<Record<ChartPanelKey, PanelBounds>> = {};
+  let cursor = inset.top + priceHeight;
+  const price: PanelBounds = { top: inset.top, bottom: cursor };
+  active.forEach((key, index) => {
+    const top = cursor + panelGap;
+    const bottom = top + heights[index]!;
+    bounds[key] = { top, bottom };
+    cursor = bottom;
+  });
+
+  return {
+    price,
+    volume: bounds.volume ?? null,
+    macd: bounds.macd ?? null,
+    rsi: bounds.rsi ?? null,
+    participation: bounds.participation ?? null,
+    axisY,
+  };
+}
+
+const emptyGeometry = (
+  width: number,
+  height: number,
+  requested: readonly ChartPanelKey[],
+): ChartGeometry => {
+  const plotLeft = inset.left;
+  const plotRight = Math.max(width - inset.right, plotLeft + 1);
+  return {
+    candles: [],
+    forecastPoints: [],
+    participation: [],
+    overlays: [],
+    macd: null,
+    rsi: null,
+    timeAxis: [],
+    sessionBreaks: [],
+    panels: layoutPanels(height, requested),
+    step: plotRight - plotLeft,
+    plotLeft,
+    plotRight,
+    boundaryX: plotLeft,
+    band50: "",
+    band80: "",
+    medianPath: "",
+    priceMin: 0,
+    priceMax: 1,
+    priceTicks: [],
+  };
+};
 
 const linePath = (points: { x: number; y: number }[]) =>
   points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+
+/** Joins runs of drawable points, starting a new subpath at every gap. */
+const segmentedPath = (points: ChartSeriesPoint[]) => {
+  let path = "";
+  let previousIndex: number | null = null;
+  points.forEach((point) => {
+    const command = previousIndex !== null && point.index === previousIndex + 1 ? "L" : "M";
+    path += `${path === "" ? "" : " "}${command} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    previousIndex = point.index;
+  });
+  return path;
+};
 
 const bandPath = (
   points: ForecastGeometry[],
@@ -106,19 +299,35 @@ export function findNearestByX<T extends { x: number }>(
   );
 }
 
-export function buildChartGeometry(
-  candles: Candle[],
-  forecast: ForecastSnapshot | null,
-  participationBars: ParticipationBar[],
-  decisionCutoff: string,
-  width: number,
-  height: number,
-): ChartGeometry {
+const finiteAt = (values: readonly (number | null)[] | undefined, index: number) => {
+  const value = values?.[index];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+};
+
+export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
+  const {
+    candles,
+    forecast,
+    participationBars,
+    decisionCutoff,
+    width,
+    height,
+    panels: requestedPanels = ["volume"],
+    overlays: overlayInputs = [],
+    macdSeries = null,
+    rsiSeries = null,
+  } = input;
+
   const decisionTime = Date.parse(decisionCutoff);
   const hasValidCutoff = Number.isFinite(decisionTime);
-  const pointInTimeCandles = hasValidCutoff
+  // Every series the server sent is indexed against the candle list it came
+  // with, so the source index travels with the bar through the point-in-time
+  // filter and the 200-bar window. Re-indexing after the fact would silently
+  // shift an indicator onto the wrong candle.
+  const pointInTime = hasValidCutoff
     ? candles
-        .filter((candle) => {
+        .map((candle, sourceIndex) => ({ candle, sourceIndex }))
+        .filter(({ candle }) => {
           const availableAt = Date.parse(candle.availableAt);
           return (
             candle.complete &&
@@ -126,25 +335,40 @@ export function buildChartGeometry(
             availableAt <= decisionTime
           );
         })
-        .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
+        .sort(
+          (left, right) =>
+            Date.parse(left.candle.timestamp) - Date.parse(right.candle.timestamp),
+        )
         .slice(-200)
     : [];
+  const pointInTimeCandles = pointInTime.map(({ candle }) => candle);
   const forecastPoints = forecast?.points ?? [];
 
   if (!pointInTimeCandles.length && !forecastPoints.length) {
-    return emptyGeometry(width, height);
+    return emptyGeometry(width, height, requestedPanels);
   }
 
-  const inset = { left: 8, right: 42, top: 14 };
-  const priceBottom = height * 0.67;
-  const volumeTop = height * 0.73;
-  const participationHeight = 16;
-  const participationTop = height - participationHeight - 4;
-  const volumeBottom = participationTop - 8;
-  const boundaryX = inset.left + (width - inset.left - inset.right) * 0.68;
+  const panels = layoutPanels(height, requestedPanels);
+  const plotLeft = inset.left;
+  const plotRight = Math.max(width - inset.right, plotLeft + 1);
+  // Ordinal axis: one slot per bar, closed sessions included nowhere. A time
+  // axis would price the overnight gap into blank pixels the reader cannot use.
+  const slots = pointInTimeCandles.length + forecastPoints.length;
+  const step = (plotRight - plotLeft) / Math.max(slots, 1);
+  const slotX = (slot: number) => plotLeft + step * (slot + 0.5);
+  const bodyWidth = Math.max(1, Math.min(9, step * 0.62));
+
+  const overlayValues = overlayInputs.map((overlay) => ({
+    overlay,
+    picked: pointInTime.map(({ sourceIndex }) => finiteAt(overlay.values, sourceIndex)),
+  }));
+
   const allPrices = [
     ...pointInTimeCandles.flatMap(({ high, low }) => [high, low]),
     ...forecastPoints.flatMap(({ upper80, lower80 }) => [upper80, lower80]),
+    ...overlayValues.flatMap(({ picked }) =>
+      picked.filter((value): value is number => value !== null),
+    ),
   ];
   const rawMin = Math.min(...allPrices);
   const rawMax = Math.max(...allPrices);
@@ -153,19 +377,21 @@ export function buildChartGeometry(
   const priceMax = rawMax + rawRange * 0.04;
   const priceRange = priceMax - priceMin;
   const mapY = (price: number) =>
-    inset.top + ((priceMax - price) / priceRange) * (priceBottom - inset.top);
+    panels.price.top +
+    ((priceMax - price) / priceRange) * (panels.price.bottom - panels.price.top);
 
-  const candleSpan = Math.max(boundaryX - inset.left - 7, 1);
-  const candleStep = candleSpan / Math.max(pointInTimeCandles.length, 1);
-  const bodyWidth = Math.max(2.5, Math.min(7, candleStep * 0.58));
+  const volumePanel = panels.volume;
   const maxVolume = Math.max(...pointInTimeCandles.map(({ volume }) => volume), 1);
-  const candleGeometry = pointInTimeCandles.map((candle, index): CandleGeometry => {
-    const x = inset.left + candleStep * (index + 0.5);
+  const candleGeometry = pointInTime.map(({ candle, sourceIndex }, index): CandleGeometry => {
+    const x = slotX(index);
     const openY = mapY(candle.open);
     const closeY = mapY(candle.close);
-    const volumeHeight = ((volumeBottom - volumeTop) * candle.volume) / maxVolume;
+    const volumeHeight = volumePanel
+      ? ((volumePanel.bottom - volumePanel.top) * candle.volume) / maxVolume
+      : 0;
     return {
       timestamp: candle.timestamp,
+      sourceIndex,
       x,
       bodyWidth,
       bodyTop: Math.min(openY, closeY),
@@ -174,76 +400,177 @@ export function buildChartGeometry(
       wickBottom: mapY(candle.low),
       direction: candle.close >= candle.open ? "up" : "down",
       volumeX: x - bodyWidth / 2,
-      volumeY: volumeBottom - volumeHeight,
+      volumeY: volumePanel ? volumePanel.bottom - volumeHeight : 0,
       volumeHeight,
     };
   });
+
+  const overlays = overlayValues
+    .map(({ overlay, picked }): ChartOverlayGeometry => {
+      const points = picked.flatMap((value, index) =>
+        value === null
+          ? []
+          : [{ index, x: candleGeometry[index]!.x, y: mapY(value), value }],
+      );
+      return {
+        key: overlay.key,
+        label: overlay.label,
+        path: segmentedPath(points),
+        points,
+      };
+    })
+    .filter(({ points }) => points.length > 0);
+
   const participationByTimestamp = new Map(
     participationBars.map((bar) => [bar.closedAt, bar]),
   );
-  const participation = candleGeometry.map(
-    (candle): ParticipationGeometry => {
-      const bar = participationByTimestamp.get(candle.timestamp);
-      const availableAt = bar ? Date.parse(bar.availableAt) : Number.NaN;
-      const activityTotal =
-        bar?.mainActivity != null && bar.retailActivity != null
-          ? bar.mainActivity + bar.retailActivity
-          : Number.NaN;
-      const hasShares =
-        Number.isFinite(availableAt) &&
-        availableAt <= decisionTime &&
-        bar?.qualityStatus === "live" &&
-        bar.mainShare !== null &&
-        bar.retailShare !== null &&
-        Number.isFinite(bar.mainShare) &&
-        Number.isFinite(bar.retailShare) &&
-        bar.mainShare >= 0 &&
-        bar.retailShare >= 0 &&
-        bar.mainShare + bar.retailShare === 1 &&
-        bar.coverage === 1 &&
-        bar.mainActivity !== null &&
-        bar.retailActivity !== null &&
-        bar.mainActivity >= 0 &&
-        bar.retailActivity >= 0 &&
-        Number.isFinite(activityTotal) &&
-        activityTotal > 0 &&
-        bar.mainShare === bar.mainActivity / activityTotal &&
-        bar.retailShare === 1 - bar.mainShare;
-      const available = hasShares;
-      const approvedMissing =
-        Number.isFinite(availableAt) &&
-        availableAt <= decisionTime &&
-        bar?.qualityStatus === "unavailable";
-      return {
-        timestamp: candle.timestamp,
-        x: candle.x,
-        width: candle.bodyWidth,
-        top: participationTop,
-        height: participationHeight,
-        mainHeight: available ? participationHeight * bar.mainShare! : 0,
-        retailHeight: available ? participationHeight * bar.retailShare! : 0,
-        available,
-        mainShare: available ? bar.mainShare : null,
-        retailShare: available ? bar.retailShare : null,
-        coverage: available || approvedMissing ? bar.coverage : null,
-        source: available || approvedMissing ? bar.source : null,
-        missingReason: available
-          ? null
-          : approvedMissing
-            ? bar.missingReason
-            : bar
-              ? "决策截止时不可用"
-              : "活动占比不可用",
-      };
-    },
-  );
-  // MA5 must come from a versioned server series; the client never derives
-  // indicator paths from its own candle closes.
-  const ma5Path = "";
+  const participationPanel = panels.participation;
+  const participation = participationPanel
+    ? candleGeometry.map((candle): ParticipationGeometry => {
+        const bar = participationByTimestamp.get(candle.timestamp);
+        const availableAt = bar ? Date.parse(bar.availableAt) : Number.NaN;
+        const activityTotal =
+          bar?.mainActivity != null && bar.retailActivity != null
+            ? bar.mainActivity + bar.retailActivity
+            : Number.NaN;
+        const available =
+          Number.isFinite(availableAt) &&
+          availableAt <= decisionTime &&
+          bar?.qualityStatus === "live" &&
+          bar.mainShare !== null &&
+          bar.retailShare !== null &&
+          Number.isFinite(bar.mainShare) &&
+          Number.isFinite(bar.retailShare) &&
+          bar.mainShare >= 0 &&
+          bar.retailShare >= 0 &&
+          bar.mainShare + bar.retailShare === 1 &&
+          bar.coverage === 1 &&
+          bar.mainActivity !== null &&
+          bar.retailActivity !== null &&
+          bar.mainActivity >= 0 &&
+          bar.retailActivity >= 0 &&
+          Number.isFinite(activityTotal) &&
+          activityTotal > 0 &&
+          bar.mainShare === bar.mainActivity / activityTotal &&
+          bar.retailShare === 1 - bar.mainShare;
+        const approvedMissing =
+          Number.isFinite(availableAt) &&
+          availableAt <= decisionTime &&
+          bar?.qualityStatus === "unavailable";
+        const panelHeight = participationPanel.bottom - participationPanel.top;
+        const midY = participationPanel.top + panelHeight / 2;
+        // Read against an even split rather than stacked to full height: the
+        // question is which side is doing the trading, and by how much.
+        const lean = available ? bar.mainShare! - 0.5 : 0;
+        const markHeight = Math.abs(lean) * panelHeight;
+        return {
+          timestamp: candle.timestamp,
+          x: candle.x,
+          width: candle.bodyWidth,
+          top: participationPanel.top,
+          height: panelHeight,
+          midY,
+          markY: lean >= 0 ? midY - markHeight : midY,
+          markHeight,
+          dominant: !available ? null : lean > 0 ? "main" : lean < 0 ? "retail" : "even",
+          available,
+          mainShare: available ? bar.mainShare : null,
+          retailShare: available ? bar.retailShare : null,
+          coverage: available || approvedMissing ? bar.coverage : null,
+          source: available || approvedMissing ? bar.source : null,
+          missingReason: available
+            ? null
+            : approvedMissing
+              ? bar.missingReason
+              : bar
+                ? "决策截止时不可用"
+                : "活动占比不可用",
+        };
+      })
+    : [];
 
-  const forecastSpan = Math.max(width - inset.right - boundaryX, 1);
+  const macdPanel = panels.macd;
+  const macd: ChartMacdGeometry | null = macdPanel
+    ? (() => {
+        const picked = pointInTime.map(({ sourceIndex }) => ({
+          line: finiteAt(macdSeries?.line, sourceIndex),
+          signal: finiteAt(macdSeries?.signal, sourceIndex),
+          histogram: finiteAt(macdSeries?.histogram, sourceIndex),
+        }));
+        const magnitudes = picked.flatMap(({ line, signal, histogram }) =>
+          [line, signal, histogram].filter(
+            (value): value is number => value !== null,
+          ),
+        );
+        const panelHeight = macdPanel.bottom - macdPanel.top;
+        const zeroY = macdPanel.top + panelHeight / 2;
+        const bound = Math.max(...magnitudes.map(Math.abs), Number.EPSILON);
+        const mapMacdY = (value: number) =>
+          zeroY - (value / bound) * (panelHeight / 2 - 2);
+        const bars = picked.flatMap(({ histogram }, index) => {
+          if (histogram === null) return [];
+          const y = mapMacdY(histogram);
+          const size = Math.max(Math.abs(zeroY - y), 0.6);
+          return [
+            {
+              x: candleGeometry[index]!.x,
+              width: bodyWidth,
+              y: histogram >= 0 ? zeroY - size : zeroY,
+              height: size,
+              positive: histogram >= 0,
+            },
+          ];
+        });
+        const seriesPoints = (key: "line" | "signal") =>
+          picked.flatMap((entry, index) =>
+            entry[key] === null
+              ? []
+              : [
+                  {
+                    index,
+                    x: candleGeometry[index]!.x,
+                    y: mapMacdY(entry[key]!),
+                    value: entry[key]!,
+                  },
+                ],
+          );
+        return {
+          ...macdPanel,
+          available: magnitudes.length > 0,
+          zeroY,
+          bars,
+          linePath: segmentedPath(seriesPoints("line")),
+          signalPath: segmentedPath(seriesPoints("signal")),
+        };
+      })()
+    : null;
+
+  const rsiPanel = panels.rsi;
+  const rsi: ChartRsiGeometry | null = rsiPanel
+    ? (() => {
+        const panelHeight = rsiPanel.bottom - rsiPanel.top;
+        // RSI is defined on a fixed 0–100 scale, so the reference lines are the
+        // indicator's own definition, not something read off the data.
+        const mapRsiY = (value: number) =>
+          rsiPanel.top + ((100 - value) / 100) * panelHeight;
+        const points = pointInTime.flatMap(({ sourceIndex }, index) => {
+          const value = finiteAt(rsiSeries?.values, sourceIndex);
+          return value === null
+            ? []
+            : [{ index, x: candleGeometry[index]!.x, y: mapRsiY(value), value }];
+        });
+        return {
+          ...rsiPanel,
+          available: points.length > 0,
+          path: segmentedPath(points),
+          points,
+          references: [70, 50, 30].map((value) => ({ value, y: mapRsiY(value) })),
+        };
+      })()
+    : null;
+
   const forecastGeometry = forecastPoints.map((point, index): ForecastGeometry => {
-    const x = boundaryX + (forecastSpan * (index + 1)) / (forecastPoints.length + 0.35);
+    const x = slotX(pointInTimeCandles.length + index);
     return {
       x,
       medianY: mapY(point.median),
@@ -259,23 +586,65 @@ export function buildChartGeometry(
     const value = priceMax - priceRange * ratio;
     return {
       label: value.toFixed(value >= 100 ? 0 : 1),
-      y: inset.top + (priceBottom - inset.top) * ratio,
+      y: panels.price.top + (panels.price.bottom - panels.price.top) * ratio,
     };
   });
+
+  const times = pointInTimeCandles.map(({ timestamp }) => Date.parse(timestamp));
+  const deltas = times.slice(1).map((time, index) => time - times[index]!).sort((a, b) => a - b);
+  const medianDelta = deltas.length ? deltas[Math.floor(deltas.length / 2)]! : null;
+  const intraday = medianDelta === null || medianDelta < dayMs;
+  const labelBudget = Math.max(2, Math.min(5, Math.floor((plotRight - plotLeft) / 76)));
+  const labelIndices =
+    times.length <= labelBudget
+      ? times.map((_, index) => index)
+      : Array.from(
+          new Set(
+            Array.from({ length: labelBudget }, (_, index) =>
+              Math.round((index * (times.length - 1)) / (labelBudget - 1)),
+            ),
+          ),
+        );
+  const timeAxis: ChartAxisLabel[] = labelIndices.map((index) => ({
+    x: candleGeometry[index]!.x,
+    // Ordinal spacing, real clock: the reader still has to know which bar is
+    // which hour, they just should not pay plot width for the closed session.
+    label: intraday ? clockLabel(times[index]!) : dateLabel(times[index]!),
+    timestamp: pointInTimeCandles[index]!.timestamp,
+  }));
+  const sessionBreaks: ChartAxisLabel[] = intraday
+    ? times.flatMap((time, index) =>
+        index > 0 && utcDay(time) !== utcDay(times[index - 1]!)
+          ? [
+              {
+                x: candleGeometry[index]!.x - step / 2,
+                label: dateLabel(time),
+                timestamp: pointInTimeCandles[index]!.timestamp,
+              },
+            ]
+          : [],
+      )
+    : [];
 
   return {
     candles: candleGeometry,
     forecastPoints: forecastGeometry,
     participation,
-    boundaryX,
+    overlays,
+    macd,
+    rsi,
+    timeAxis,
+    sessionBreaks,
+    panels,
+    step,
+    plotLeft,
+    plotRight,
+    boundaryX: plotLeft + step * pointInTimeCandles.length,
     band50: bandPath(forecastGeometry, "upper50Y", "lower50Y"),
     band80: bandPath(forecastGeometry, "upper80Y", "lower80Y"),
     medianPath: linePath(forecastGeometry.map((point) => ({ x: point.x, y: point.medianY }))),
-    ma5Path,
     priceMin,
     priceMax,
     priceTicks,
-    priceBottom,
-    volumeTop,
   };
 }

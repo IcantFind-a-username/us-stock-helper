@@ -2,6 +2,7 @@ import { Pressable, StyleSheet, Text, View, type TextStyle } from "react-native"
 
 import { DashboardSectionHeader } from "@/components/dashboard/DashboardSectionHeader";
 import type { WatchlistQuote } from "@/domain/models";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
 import type { WatchlistDecisionState } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
@@ -68,11 +69,15 @@ function scoreCell(state: WatchlistDecisionState | undefined): ScoreCell {
     };
   }
   if (state.status === "unavailable") {
-    const category = state.error?.category ?? "offline";
+    // The row has one short column for this, so the reader gets the four-word
+    // name of the failure here and the whole sentence when the row is spoken
+    // or opened. What it must never be again is the wire category: "malformed"
+    // in a Chinese list told the reader nothing at all.
+    const copy = describeMarketError(state.error?.category ?? "offline");
     return {
       value: "—",
-      meta: `不可用 · ${category}`,
-      spoken: `评分不可用 · ${category}`,
+      meta: `不可用 · ${copy.label}`,
+      spoken: `评分不可用 · ${copy.title}`,
       tone: styles.scoreMissing,
     };
   }

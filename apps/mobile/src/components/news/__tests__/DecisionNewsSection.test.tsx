@@ -148,9 +148,13 @@ describe("the news evidence carried by a real decision", () => {
   it("reports the transport failure rather than an empty market", async () => {
     const view = await renderSection({ decision: null, errorCategory: "offline" });
 
-    expect(view.getByTestId("decision-news-unavailable")).toHaveTextContent(
-      /offline/,
-    );
+    const notice = view.getByTestId("decision-news-unavailable");
+    expect(notice).toHaveTextContent(/新闻证据不可用 · 连不上/);
+    // Naming the failure is half of it; the reader also has to be told this is
+    // not a quiet news day, and what would make it work.
+    expect(notice).toHaveTextContent(/不是「今天没有消息」/);
+    expect(notice).toHaveTextContent(/OpenD/);
+    expect(notice).not.toHaveTextContent(/offline/);
     expect(view.queryByTestId("decision-news-empty")).toBeNull();
   });
 

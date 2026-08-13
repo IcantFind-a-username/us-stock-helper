@@ -3,8 +3,9 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { PriceChart } from "@/components/chart/PriceChart";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
-import { IndicatorStrip } from "@/components/stock/IndicatorStrip";
+import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
+import { Disclosure } from "@/components/ui/Disclosure";
 import { Screen } from "@/components/ui/Screen";
 import {
   toDemoChartSnapshot,
@@ -12,6 +13,7 @@ import {
   type LiveStockSnapshot,
 } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
 import { useAppState } from "@/state/AppStateProvider";
 import {
   type MarketDataState,
@@ -31,6 +33,9 @@ function ChartPageState({
   onBack(): void;
 }) {
   const unavailable = market.status === "unavailable";
+  // The same explanation the stock page gives, because it is the same failure:
+  // a reader who reached the big chart is owed no less than one who did not.
+  const failure = describeMarketError(market.error?.category ?? "offline");
   return (
     <Screen hideGlobalHeader style={styles.screen}>
       <Pressable
@@ -43,13 +48,11 @@ function ChartPageState({
       <View style={styles.stateCard}>
         <Text style={styles.stateTitle}>
           {unavailable
-            ? `行情不可用 · ${market.error?.category ?? "offline"}`
+            ? `行情不可用 · ${failure.label}`
             : "正在连接 moomoo 行情…"}
         </Text>
-        <Text style={styles.stateBody}>
-          {unavailable
-            ? "请检查 OpenD、网络或行情权限后重试。不会自动切换为演示数据。"
-            : "正在读取实时只读快照。"}
+        <Text style={styles.stateBody} testID="chart-state-body">
+          {unavailable ? failure.body : "正在读取实时只读快照。"}
         </Text>
         {unavailable ? (
           <Pressable
@@ -142,34 +145,32 @@ export function FullChartScreen() {
       ) : null}
 
       <PriceChart dataStatus={dataStatus} stock={stock} />
-      <View style={styles.maCard}>
-        <Text style={styles.maTitle}>
-          MA5{" "}
-          {stock.indicators.ma5.value === null
-            ? "暂不可用"
-            : stock.indicators.ma5.value.toFixed(2)}
-        </Text>
-        <Text style={styles.maMeta}>
+      <View style={styles.factCard}>
+        <IndicatorFactRow
+          ma5={stock.indicators.ma5}
+          macd={stock.indicators.macd}
+          realizedVolatility={liveStock?.indicators.volatility.value}
+          rsi={stock.indicators.rsi}
+        />
+        <Text style={styles.factMeta}>
           {stock.indicators.ma5.methodVersion} · 截止{" "}
           {formatUtc(stock.indicators.ma5.asOf)}
         </Text>
       </View>
-      <IndicatorStrip
-        macd={stock.indicators.macd}
-        rsi={stock.indicators.rsi}
-      />
+      <Disclosure title="图表口径与免责">
+        <Text style={styles.noteBody}>
+          横轴按 K 线序号排列，休市时段不占宽度；时间标签是该根 K 线的真实收盘时间（UTC）。
+        </Text>
+        <Text style={styles.noteBody}>
+          仅展示已完成 K 线与服务端发布的版本化指标序列，手机端不推算任何指标。活动占比不代表真实机构账户身份；延迟持仓披露独立展示。
+        </Text>
+      </Disclosure>
       <ParticipationCard
         bars={stock.participationBars}
         holdings={liveStock?.institutionalHoldings ?? []}
       />
-      <View style={styles.note}>
-        <Text style={styles.noteTitle}>图上保持克制</Text>
-        <Text style={styles.noteBody}>
-          仅展示已完成 K 线、真实指标和逐 K 线对齐的订单规模活动代理。活动占比不代表真实机构账户身份；延迟持仓披露独立展示。
-        </Text>
-      </View>
       <Text style={styles.boundary}>
-        仅分析与建议 · 不连接券商 · 不会自动下单
+        仅供分析与建议 · 不连接券商 · 不会自动下单
       </Text>
     </Screen>
   );
@@ -218,7 +219,7 @@ const styles = StyleSheet.create({
     minWidth: 56,
   },
   refreshText: { color: colors.blue, fontSize: 10, fontWeight: "900" },
-  maCard: {
+  factCard: {
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderRadius: radius.md,
@@ -226,15 +227,7 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     padding: spacing.md,
   },
-  maTitle: { color: colors.ink, fontSize: 12, fontWeight: "900" },
-  maMeta: { color: colors.muted, fontSize: 9, fontWeight: "600" },
-  note: {
-    backgroundColor: colors.card,
-    borderRadius: radius.md,
-    gap: 3,
-    padding: spacing.md,
-  },
-  noteTitle: { color: colors.ink, fontSize: 11, fontWeight: "900" },
+  factMeta: { color: colors.muted, fontSize: 9, fontWeight: "600" },
   noteBody: { color: colors.muted, fontSize: 10, lineHeight: 15 },
   boundary: {
     color: colors.muted,

@@ -375,8 +375,39 @@ export interface LiveQuote extends ChartQuote {
   qualityStatus: "live";
 }
 
+/**
+ * A drawable indicator series, one value per completed candle in the same
+ * order, published by the analysis service under its own method version.
+ *
+ * The app never derives one of these from candle closes: an indicator drawn
+ * from client-side arithmetic would carry no version, no cutoff, and no way to
+ * tell a warm-up gap from a real value. `null` marks a bar the method had no
+ * value for, so the line breaks there instead of being invented across it.
+ */
+export interface ChartIndicatorSeries {
+  values: (number | null)[];
+  source: string;
+  asOf: string;
+  availableAt: string;
+  methodVersion: string;
+  qualityStatus: DataStatus;
+}
+
+export interface ChartMacdSeries {
+  line: (number | null)[];
+  signal: (number | null)[];
+  histogram: (number | null)[];
+  source: string;
+  asOf: string;
+  availableAt: string;
+  methodVersion: string;
+  qualityStatus: DataStatus;
+}
+
 export interface ChartIndicatorValue {
   value: number | null;
+  /** null when the server published only the latest value and no series. */
+  series: ChartIndicatorSeries | null;
   source: string;
   asOf: string;
   availableAt: string;
@@ -399,6 +430,8 @@ export interface ChartMacdIndicator {
   line: number | null;
   signal: number | null;
   histogram: number | number[] | null;
+  /** null when the server published only the latest values and no series. */
+  series: ChartMacdSeries | null;
   source: string;
   asOf: string;
   availableAt: string;
@@ -534,13 +567,21 @@ export function toDemoChartSnapshot(stock: StockSnapshot): DemoChartSnapshot {
     candles: stock.candles,
     participationBars: [],
     indicators: {
-      ma5: { ...fixtureMetadata, value: null },
-      rsi: { ...fixtureMetadata, value: stock.indicators.rsi.value },
+      // The demo fixture carries latest values only. Synthesising a series here
+      // would be the app drawing an indicator it computed itself, so the chart
+      // says the series is missing instead.
+      ma5: { ...fixtureMetadata, value: null, series: null },
+      rsi: {
+        ...fixtureMetadata,
+        value: stock.indicators.rsi.value,
+        series: null,
+      },
       macd: {
         ...fixtureMetadata,
         line: stock.indicators.macd.dif,
         signal: stock.indicators.macd.dea,
         histogram: stock.indicators.macd.histogram,
+        series: null,
       },
     },
     magicNine: {

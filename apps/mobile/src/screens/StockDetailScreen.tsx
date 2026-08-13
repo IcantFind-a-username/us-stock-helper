@@ -5,10 +5,11 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { PriceChart } from "@/components/chart/PriceChart";
 import { DecisionNewsSection } from "@/components/news/DecisionNewsSection";
 import { DecisionCard } from "@/components/stock/DecisionCard";
-import { IndicatorStrip } from "@/components/stock/IndicatorStrip";
+import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { StockHeader } from "@/components/stock/StockHeader";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
+import { Disclosure } from "@/components/ui/Disclosure";
 import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
 import { Screen } from "@/components/ui/Screen";
 import {
@@ -18,6 +19,8 @@ import {
   type LiveStockSnapshot,
 } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { serviceTextLabel, snapshotSourceLabel } from "@/i18n/serverVocabulary";
 import { useAppState } from "@/state/AppStateProvider";
 import {
   type MarketDataState,
@@ -26,7 +29,13 @@ import {
 } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
-type VisibleTool = "ma5" | "magicNine" | "participation" | "forecast";
+type VisibleTool =
+  | "ma5"
+  | "magicNine"
+  | "macd"
+  | "rsi"
+  | "participation"
+  | "forecast";
 
 function formatUtc(value: string) {
   return value.replace("T", " ").replace(".000Z", " UTC");
@@ -57,14 +66,16 @@ function DisabledAnalysisCard({
 
 function DecisionState({ decision }: { decision: MarketDataState<Decision> }) {
   const unavailable = decision.status === "unavailable";
+  const failure = describeMarketError(decision.error?.category ?? "offline");
   return (
     <View style={styles.decisionState} testID="decision-state">
       <Text style={styles.eyebrow}>综合结论</Text>
       <Text style={styles.decisionStateText}>
-        {unavailable
-          ? `分析不可用 · ${decision.error?.category ?? "offline"}`
-          : "正在读取分析…"}
+        {unavailable ? `分析不可用 · ${failure.label}` : "正在读取分析…"}
       </Text>
+      {unavailable ? (
+        <Text style={styles.decisionStateBody}>{failure.body}</Text>
+      ) : null}
       {unavailable ? (
         <Pressable
           accessibilityLabel="重试分析"
@@ -89,9 +100,12 @@ function StockPageState({
   onBack(): void;
 }) {
   const unavailable = market.status === "unavailable";
-  // An outdated gateway is not broken data; saying so points at the one action
-  // that actually fixes it.
-  const outdatedContract = market.error?.category === "contract";
+  // This is the whole page when a symbol will not open, so it is the one place
+  // that has room to say what was refused and why. An outdated gateway used to
+  // be the only failure spelled out here; every other one arrived as its wire
+  // category, which is how a rejected point-in-time series became the word
+  // "malformed" and nothing else.
+  const failure = describeMarketError(market.error?.category ?? "offline");
   return (
     <Screen hideGlobalHeader style={styles.screen}>
       <Pressable
@@ -107,16 +121,12 @@ function StockPageState({
       <View style={styles.stateCard}>
         <Text style={styles.stateTitle}>
           {unavailable
-            ? `行情不可用 · ${
-                outdatedContract ? "网关版本过旧" : market.error?.category ?? "offline"
-              }`
+            ? `行情不可用 · ${failure.label}`
             : "正在连接 moomoo 行情…"}
         </Text>
-        <Text style={styles.stateBody}>
+        <Text style={styles.stateBody} testID="stock-state-body">
           {unavailable
-            ? outdatedContract
-              ? "网关返回的字段少于本版 App 所需。请更新本机网关服务后重试；不会自动切换为演示数据。"
-              : "请检查 OpenD、网络或行情权限后重试。不会自动切换为演示数据。"
+            ? failure.body
             : "正在读取实时只读快照。你可以返回自选列表稍后再试。"}
         </Text>
         {unavailable ? (
@@ -155,6 +165,10 @@ export function StockDetailScreen() {
   >({
     ma5: true,
     magicNine: true,
+    macd: true,
+    // A phone can hold one indicator subchart under the price panel without
+    // squeezing it; the second one is opened on request.
+    rsi: false,
     participation: true,
     forecast: true,
   });
@@ -208,12 +222,11 @@ export function StockDetailScreen() {
   const snapshotWarnings = liveStock?.warnings ?? [];
   const realizedVolatility = liveStock?.indicators.volatility.value ?? null;
   const latestCandle = stock.candles.at(-1);
-  const histogram = Array.isArray(stock.indicators.macd.histogram)
-    ? (stock.indicators.macd.histogram.at(-1) ?? null)
-    : stock.indicators.macd.histogram;
   const toolOptions: { key: VisibleTool; label: string }[] = [
     { key: "ma5", label: "MA5" },
     { key: "magicNine", label: "九转" },
+    { key: "macd", label: "MACD" },
+    { key: "rsi", label: "RSI" },
     { key: "participation", label: "参与结构" },
     ...(stock.forecast ? [{ key: "forecast" as const, label: "预测区间" }] : []),
   ];
@@ -259,56 +272,17 @@ export function StockDetailScreen() {
         </View>
       ) : null}
 
-      <View style={styles.summary}>
-        <Text style={styles.eyebrow}>
-          {dataStatus === "demo"
-            ? "演示事实摘要"
-            : dataStatus === "stale"
-              ? "缓存事实摘要"
-              : "实时事实摘要"}
-        </Text>
-        <Text style={styles.summaryTitle}>
-          {latestCandle
-            ? `最新已完成 K 线 · 收 ${latestCandle.close.toFixed(2)}`
-            : "暂无已完成 K 线"}
-        </Text>
-        <View style={styles.factRow}>
-          <Text style={styles.fact}>
-            MA5{" "}
-            {stock.indicators.ma5.value === null
-              ? "暂不可用"
-              : stock.indicators.ma5.value.toFixed(2)}
-          </Text>
-          <Text style={styles.fact}>
-            RSI{" "}
-            {stock.indicators.rsi.value === null
-              ? "暂不可用"
-              : stock.indicators.rsi.value.toFixed(1)}
-          </Text>
-          <Text style={styles.fact}>
-            MACD {histogram === null ? "暂不可用" : histogram.toFixed(2)}
-          </Text>
-          <Text style={styles.fact}>
-            年化波动{" "}
-            {realizedVolatility === null || realizedVolatility === undefined
-              ? "暂不可用"
-              : `${(realizedVolatility * 100).toFixed(1)}%`}
-          </Text>
-        </View>
-        <Text style={styles.summaryMeta} testID="stock-summary-meta">
-          {magicNineSummary} · 来源{" "}
-          {stock.source.source} · 截止 {formatUtc(stock.source.asOf)}
-        </Text>
-        {snapshotWarnings.length ? (
-          <View style={styles.warnings} testID="snapshot-warnings">
-            {snapshotWarnings.map((warning) => (
-              <Text key={warning} style={styles.warning}>
-                · {warning}
-              </Text>
-            ))}
-          </View>
-        ) : null}
-      </View>
+      <PriceChart
+        compact
+        dataStatus={dataStatus}
+        showForecast={visibleTools.forecast}
+        showMacd={visibleTools.macd}
+        showMagicNine={visibleTools.magicNine}
+        showMovingAverage={visibleTools.ma5}
+        showParticipation={visibleTools.participation}
+        showRsi={visibleTools.rsi}
+        stock={stock}
+      />
 
       <View accessibilityLabel="图表工具" style={styles.tools}>
         {toolOptions.map(({ key, label }) => {
@@ -339,28 +313,60 @@ export function StockDetailScreen() {
         })}
       </View>
 
-      <PriceChart
-        compact
-        dataStatus={dataStatus}
-        showForecast={visibleTools.forecast}
-        showMagicNine={visibleTools.magicNine}
-        showMovingAverage={visibleTools.ma5}
-        showParticipation={visibleTools.participation}
-        stock={stock}
-      />
-      {stock.forecast && visibleTools.forecast ? (
-        <View style={styles.forecastNotice}>
-          <Text style={styles.forecastTitle}>演示概率预测 · 非投资承诺</Text>
-          <Text style={styles.forecastBody}>
-            {stock.forecast.horizon} · {stock.forecast.modelVersion}
+      <Disclosure title="图表口径与免责">
+        <Text style={styles.disclosureText}>
+          横轴按 K 线序号排列，休市时段不占宽度；时间标签是该根 K 线的真实收盘时间（UTC）。
+        </Text>
+        <Text style={styles.disclosureText}>
+          图上只画服务端发布的版本化指标序列。手机端不会用收盘价推算任何指标，序列缺失时直接标注缺失。
+        </Text>
+        <Text style={styles.disclosureText}>
+          订单规模活动代理 · 非真实机构身份 · 每根活动柱与已完成 K
+          线一一对应；延迟持仓披露独立展示。
+        </Text>
+        {stock.forecast && visibleTools.forecast ? (
+          <Text style={styles.disclosureText}>
+            演示概率预测 · 非投资承诺 · {stock.forecast.horizon} ·{" "}
+            {stock.forecast.modelVersion}
           </Text>
-        </View>
-      ) : null}
+        ) : null}
+      </Disclosure>
 
-      <IndicatorStrip
-        macd={stock.indicators.macd}
-        rsi={stock.indicators.rsi}
-      />
+      <View style={styles.summary} testID="stock-fact-summary">
+        <Text style={styles.eyebrow}>
+          {dataStatus === "demo"
+            ? "演示事实摘要"
+            : dataStatus === "stale"
+              ? "缓存事实摘要"
+              : "实时事实摘要"}
+        </Text>
+        <Text style={styles.summaryTitle}>
+          {latestCandle
+            ? `最新已完成 K 线 · 收 ${latestCandle.close.toFixed(2)}`
+            : "暂无已完成 K 线"}
+        </Text>
+        <IndicatorFactRow
+          ma5={stock.indicators.ma5}
+          macd={stock.indicators.macd}
+          realizedVolatility={realizedVolatility}
+          rsi={stock.indicators.rsi}
+        />
+        <Text style={styles.summaryMeta} testID="stock-summary-meta">
+          {magicNineSummary} · 来源{" "}
+          {snapshotSourceLabel(stock.source.source)} · 截止{" "}
+          {formatUtc(stock.source.asOf)}
+        </Text>
+        {snapshotWarnings.length ? (
+          <View style={styles.warnings} testID="snapshot-warnings">
+            {snapshotWarnings.map((warning) => (
+              <Text key={warning} style={styles.warning}>
+                · {serviceTextLabel(warning)}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+      </View>
+
       {visibleTools.participation ? (
         <ParticipationCard
           bars={stock.participationBars}
@@ -428,11 +434,12 @@ export function StockDetailScreen() {
         style={styles.disabledButton}>
         <Text style={styles.disabledButtonTitle}>顾问分析</Text>
         <Text style={styles.disabledButtonText}>
-          等待 ANTHROPIC_API_KEY · 顾问层没有凭据，上面结论里的顾问调整固定为 0
+          等待配置大模型凭据（环境变量 ANTHROPIC_API_KEY）·
+          顾问层没有凭据，上面结论里的顾问调整固定为 0
         </Text>
       </Pressable>
       <Text style={styles.boundary}>
-        仅分析与建议 · 不连接券商 · 不会自动下单
+        仅供分析与建议 · 不连接券商 · 不会自动下单
       </Text>
     </Screen>
   );
@@ -481,16 +488,11 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     lineHeight: 20,
   },
-  factRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
-  fact: {
-    backgroundColor: colors.background,
-    borderRadius: radius.pill,
-    color: colors.ink,
-    fontSize: 9,
-    fontWeight: "800",
-    overflow: "hidden",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
+  disclosureText: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: "600",
+    lineHeight: 15,
   },
   summaryMeta: {
     color: colors.muted,
@@ -517,14 +519,6 @@ const styles = StyleSheet.create({
   toolActive: { backgroundColor: colors.navyRaised },
   toolText: { color: colors.muted, fontSize: 9, fontWeight: "800" },
   toolTextActive: { color: colors.card },
-  forecastNotice: {
-    backgroundColor: colors.blueSoft,
-    borderRadius: radius.md,
-    gap: 3,
-    padding: spacing.sm,
-  },
-  forecastTitle: { color: colors.blue, fontSize: 10, fontWeight: "900" },
-  forecastBody: { color: "#3B5F91", fontSize: 9, lineHeight: 14 },
   disabledCard: {
     backgroundColor: colors.card,
     borderColor: colors.line,
@@ -545,6 +539,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   decisionStateText: { color: colors.muted, fontSize: 12, fontWeight: "800" },
+  decisionStateBody: { color: colors.muted, fontSize: 10, lineHeight: 15 },
   decisionRetry: {
     alignItems: "flex-start",
     justifyContent: "center",

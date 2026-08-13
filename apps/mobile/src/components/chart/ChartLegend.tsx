@@ -2,61 +2,72 @@ import { StyleSheet, Text, View } from "react-native";
 
 import { colors, spacing } from "@/theme/tokens";
 
-const baseItems = [
-  { label: "上涨", color: colors.green },
-  { label: "下跌", color: colors.red },
-] as const;
+import { chartPalette, overlayColor } from "./chartPalette";
 
+export type LegendItem = { key: string; label: string; color: string };
+
+/**
+ * One row, and only for marks that are actually on the chart.
+ *
+ * Rising and falling candles are not listed: the colour is the convention, and
+ * spending a legend slot on it pushed the chart itself further down the page.
+ */
 export function ChartLegend({
+  overlays,
   showForecast,
-  showMovingAverage,
   showParticipation,
 }: {
+  overlays: { key: string; label: string }[];
   showForecast: boolean;
-  showMovingAverage: boolean;
   showParticipation: boolean;
 }) {
-  const items = [
-    ...baseItems,
-    ...(showMovingAverage ? [{ label: "MA5", color: colors.amber }] : []),
+  const items: LegendItem[] = [
+    ...overlays.map(({ key, label }) => ({
+      key,
+      label,
+      color: overlayColor(key),
+    })),
+    ...(showParticipation
+      ? [
+          { key: "main", label: "主力代理", color: chartPalette.main },
+          { key: "retail", label: "散户代理", color: chartPalette.retail },
+        ]
+      : []),
     ...(showForecast
       ? [
-          { label: "50% 区间", color: colors.blue },
-          { label: "80% 区间", color: colors.blueBright },
-          { label: "预测中位", color: colors.purple },
+          { key: "band50", label: "50% 区间", color: chartPalette.forecastBand },
+          {
+            key: "band80",
+            label: "80% 区间",
+            color: chartPalette.forecastWideBand,
+          },
+          {
+            key: "median",
+            label: "预测中位",
+            color: chartPalette.forecastMedian,
+          },
         ]
       : []),
   ];
+
+  if (!items.length) return null;
+
   return (
-    <View accessibilityLabel="图表图例" style={styles.legend}>
-      <View style={styles.row}>
-        {items.map((item) => (
-          <View key={item.label} style={styles.item}>
-            <View style={[styles.dot, { backgroundColor: item.color }]} />
-            <Text style={styles.label}>{item.label}</Text>
-          </View>
-        ))}
-      </View>
-      {showParticipation ? (
-        <View style={styles.participation}>
-          <View style={[styles.bar, styles.mainBar]} />
-          <View style={[styles.bar, styles.retailBar]} />
-          <Text style={styles.participationLabel}>
-            订单规模活动占比 · 深色主力代理 / 浅色散户代理
-          </Text>
+    <View accessibilityLabel="图表图例" style={styles.row}>
+      {items.map((item) => (
+        <View key={item.key} style={styles.item}>
+          <View style={[styles.dot, { backgroundColor: item.color }]} />
+          <Text style={styles.label}>{item.label}</Text>
         </View>
-      ) : null}
+      ))}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  legend: {
-    gap: spacing.xs,
-  },
   row: {
+    alignItems: "center",
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: spacing.sm,
   },
   item: {
@@ -64,35 +75,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: spacing.xs,
   },
-  dot: {
-    borderRadius: 4,
-    height: 6,
-    width: 6,
-  },
-  label: {
-    color: colors.muted,
-    fontSize: 9,
-    fontWeight: "700",
-  },
-  participation: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: spacing.xs,
-  },
-  bar: {
-    height: 7,
-    width: 5,
-  },
-  mainBar: {
-    backgroundColor: colors.blue,
-  },
-  retailBar: {
-    backgroundColor: colors.navyMuted,
-  },
-  participationLabel: {
-    color: colors.navyMuted,
-    flexShrink: 1,
-    fontSize: 9,
-    fontWeight: "700",
-  },
+  dot: { borderRadius: 4, height: 6, width: 6 },
+  label: { color: colors.muted, fontSize: 9, fontWeight: "700" },
 });

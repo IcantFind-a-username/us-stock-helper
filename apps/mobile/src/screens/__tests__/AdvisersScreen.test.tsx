@@ -72,6 +72,6 @@ it("keeps the objective layer frozen while selecting deterministic long and shor
 
   expect(view.getByText("72")).toBeTruthy();
   expect(view.getByText("置信度 68%")).toBeTruthy();
-  expect(view.getByText("仅分析与建议，不连接券商，不会自动下单。")).toBeTruthy();
+  expect(view.getByText("仅供分析与建议，不连接券商，不会自动下单。")).toBeTruthy();
   expect(view.queryByText(/提交订单|自动交易|一键下单/)).toBeNull();
 });

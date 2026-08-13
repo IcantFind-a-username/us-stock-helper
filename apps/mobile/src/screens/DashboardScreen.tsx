@@ -23,6 +23,7 @@ import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
 import { Screen } from "@/components/ui/Screen";
 import type { Candidate, Citation } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
 import { useAppState } from "@/state/AppStateProvider";
 import {
   useMarketDataMode,
@@ -146,20 +147,36 @@ export function DashboardScreen() {
         ? `自选行情，陈旧，原始时间 ${marketWatchlist.lastVerifiedAt ?? "未知"}`
         : `自选行情，实时，验证时间 ${marketWatchlist.lastVerifiedAt ?? "未知"}`;
 
+  // A failure worth showing is a failure worth explaining. The row used to be
+  // the category identifier and nothing else, which named the problem in a
+  // language the reader does not read and offered no way to judge whether it
+  // was his to fix.
+  const watchlistFailure = describeMarketError(
+    marketWatchlist.error?.category ?? "offline",
+  );
+
   const watchlistSurface =
     marketWatchlist.status === "unavailable" ? (
       <View style={styles.watchlistState}>
         <Text style={styles.watchlistTitle}>我的关注</Text>
-        <Pressable
-          accessibilityLabel="重试行情"
-          accessibilityRole="button"
-          onPress={marketWatchlist.refresh}
-          style={styles.unavailableAction}>
+        <View style={styles.unavailableCard}>
           <Text style={styles.unavailableText}>
-            行情不可用 · {marketWatchlist.error?.category ?? "offline"}
+            行情不可用 · {watchlistFailure.label}
           </Text>
-          <Text style={styles.retryText}>重试</Text>
-        </Pressable>
+          <Text
+            style={styles.unavailableBody}
+            testID="watchlist-unavailable-body">
+            {watchlistFailure.body}
+          </Text>
+          <Pressable
+            accessibilityHint={watchlistFailure.title}
+            accessibilityLabel="重试行情"
+            accessibilityRole="button"
+            onPress={marketWatchlist.refresh}
+            style={styles.unavailableAction}>
+            <Text style={styles.retryText}>重试</Text>
+          </Pressable>
+        </View>
       </View>
     ) : marketWatchlist.status === "loading" ? (
       <View style={styles.watchlistState}>
@@ -379,15 +396,18 @@ const styles = StyleSheet.create({
     minHeight: 44,
     minWidth: 44,
   },
-  unavailableAction: {
-    alignItems: "center",
+  unavailableCard: {
     backgroundColor: colors.amberSoft,
     borderRadius: radius.md,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  unavailableAction: {
+    alignItems: "flex-start",
+    justifyContent: "center",
+    minHeight: 44,
   },
   unavailableText: { color: colors.ink, fontSize: 11, fontWeight: "700" },
+  unavailableBody: { color: "#8B5C08", fontSize: 10, lineHeight: 15 },
   retryText: { color: colors.blue, fontSize: 10, fontWeight: "800" },
 });

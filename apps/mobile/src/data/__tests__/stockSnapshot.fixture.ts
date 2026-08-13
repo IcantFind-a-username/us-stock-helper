@@ -1,5 +1,54 @@
 const cutoff = "2026-07-25T15:59:50.000Z";
 
+/**
+ * A per-candle series as the gateway publishes it: one entry per completed
+ * candle, null where the method has no value for that bar.
+ */
+export type SeriesPayload = {
+  values: (number | null)[];
+  source: string;
+  asOf: string;
+  availableAt: string;
+  methodVersion: string;
+  qualityStatus: string;
+};
+
+export type MacdSeriesPayload = Omit<SeriesPayload, "values"> & {
+  line: (number | null)[];
+  signal: (number | null)[];
+  histogram: (number | null)[];
+};
+
+const seriesMetadata = {
+  source: "analysis-core",
+  asOf: "2026-07-25T15:55:00.000Z",
+  availableAt: cutoff,
+  qualityStatus: "live",
+};
+
+/** The same fixture once the gateway also publishes the drawable series. */
+export function stockSnapshotWithSeriesFixture() {
+  const payload = stockSnapshotFixture();
+  payload.indicators.ma5.series = {
+    ...seriesMetadata,
+    methodVersion: "sma-5-v1",
+    values: [null, 140.8],
+  };
+  payload.indicators.rsi.series = {
+    ...seriesMetadata,
+    methodVersion: "wilder-rsi-14-v1",
+    values: [48.5, 56.2],
+  };
+  payload.indicators.macd.series = {
+    ...seriesMetadata,
+    methodVersion: "macd-12-26-9-v1",
+    line: [0.3, 0.45],
+    signal: [0.25, 0.3],
+    histogram: [0.05, 0.15],
+  };
+  return payload;
+}
+
 export function stockSnapshotFixture() {
   return {
     schemaVersion: "2",
@@ -92,6 +141,7 @@ export function stockSnapshotFixture() {
         availableAt: cutoff,
         methodVersion: "sma-5-v1",
         qualityStatus: "live",
+        series: undefined as SeriesPayload | undefined,
       },
       rsi: {
         value: 56.2,
@@ -100,6 +150,7 @@ export function stockSnapshotFixture() {
         availableAt: cutoff,
         methodVersion: "wilder-rsi-14-v1",
         qualityStatus: "live",
+        series: undefined as SeriesPayload | undefined,
       },
       macd: {
         line: 0.45,
@@ -110,6 +161,7 @@ export function stockSnapshotFixture() {
         availableAt: cutoff,
         methodVersion: "macd-12-26-9-v1",
         qualityStatus: "live",
+        series: undefined as MacdSeriesPayload | undefined,
       },
       volatility: {
         value: 0.42 as number | null,

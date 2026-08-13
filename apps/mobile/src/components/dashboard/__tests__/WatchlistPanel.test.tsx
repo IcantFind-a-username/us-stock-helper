@@ -165,7 +165,7 @@ it("labels each score state instead of leaving the cell blank", async () => {
   expect(view.getByTestId("watchlist-score-PENDING").props.children).toBe("…");
   expect(view.getByText("读取中")).toBeTruthy();
   expect(view.getByTestId("watchlist-score-BROKEN").props.children).toBe("—");
-  expect(view.getByText("不可用 · offline")).toBeTruthy();
+  expect(view.getByText("不可用 · 连不上")).toBeTruthy();
   expect(view.getByTestId("watchlist-score-BLANK").props.children).toBe("—");
   expect(view.getByText("未给出评分")).toBeTruthy();
   expect(view.getByTestId("watchlist-score-DEMO").props.children).toBe("—");
@@ -176,7 +176,7 @@ it("labels each score state instead of leaving the cell blank", async () => {
   ).toBeTruthy();
   expect(view.getByLabelText(/查看 PENDING 行情详情.*评分读取中$/)).toBeTruthy();
   expect(
-    view.getByLabelText(/查看 BROKEN 行情详情.*评分不可用 · offline$/),
+    view.getByLabelText(/查看 BROKEN 行情详情.*评分不可用 · 连不上行情服务$/),
   ).toBeTruthy();
   expect(view.getByLabelText(/查看 BLANK 行情详情.*分析未给出评分$/)).toBeTruthy();
   expect(

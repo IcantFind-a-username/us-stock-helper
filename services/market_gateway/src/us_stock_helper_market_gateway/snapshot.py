@@ -10,9 +10,9 @@ from us_stock_helper_core import (
     TDSetupResult,
     build_participation_bars,
     estimate_annualized_volatility,
-    macd,
-    moving_average,
-    rsi,
+    macd_series,
+    moving_average_series,
+    rsi_series,
     td_setup,
 )
 
@@ -278,6 +278,35 @@ def _holdings(items: list[dict[str, Any]], cutoff: datetime) -> list[dict[str, A
     return result
 
 
+# The moving averages a candlestick chart is expected to carry. Five, ten and
+# twenty are the short-term set the rest of the product reasons about; sixty
+# is the slow backdrop that says whether those three are fighting the trend.
+_MA_PERIODS = (5, 10, 20, 60)
+
+# Names the axis a series index refers to, so the app never has to infer that
+# position i belongs to completedCandles[i].
+_SERIES_ALIGNMENT = {"seriesAlignedTo": "completedCandles"}
+
+
+def _last(series: tuple[float | None, ...]) -> float | None:
+    return series[-1] if series else None
+
+
+def _moving_average_entry(
+    base: dict[str, Any], closes: list[float], period: int
+) -> dict[str, Any]:
+    series = moving_average_series(closes, period)
+    value = _last(series)
+    return {
+        **base,
+        **_SERIES_ALIGNMENT,
+        "value": value,
+        "series": list(series),
+        "methodVersion": f"sma-{period}-v1",
+        "qualityStatus": "live" if value is not None else "unavailable",
+    }
+
+
 def _indicators(
     candles: list[dict[str, Any]],
     cutoff: datetime,
@@ -294,32 +323,42 @@ def _indicators(
         "asOf": iso_z(as_of),
         "availableAt": iso_z(cutoff),
     }
-    ma5 = moving_average(closes, 5)
-    rsi14 = rsi(closes, 14)
-    macd_value = macd(closes, 12, 26, 9)
+    # Every drawable series is emitted position-by-position against
+    # completedCandles. The app is barred from deriving indicator paths from
+    # its own closes, so an absent series means an undrawable chart rather
+    # than a client-side fallback, and a shortened one would make the app
+    # guess which bar an index belongs to.
+    rsi14 = rsi_series(closes, 14)
+    macd_lines = macd_series(closes, 12, 26, 9)
     setup = td_setup(bars) if bars else None
     magic = setup.latest if setup else None
     realized = estimate_annualized_volatility(bars, cutoff)
     return {
-        "ma5": {
-            **base,
-            "value": ma5,
-            "methodVersion": "sma-5-v1",
-            "qualityStatus": "live" if ma5 is not None else "unavailable",
+        **{
+            f"ma{period}": _moving_average_entry(base, closes, period)
+            for period in _MA_PERIODS
         },
         "rsi": {
             **base,
-            "value": rsi14,
+            **_SERIES_ALIGNMENT,
+            "value": _last(rsi14),
+            "series": list(rsi14),
             "methodVersion": "wilder-rsi-14-v1",
-            "qualityStatus": "live" if rsi14 is not None else "unavailable",
+            "qualityStatus": "live" if _last(rsi14) is not None else "unavailable",
         },
         "macd": {
             **base,
-            "line": macd_value.line if macd_value else None,
-            "signal": macd_value.signal if macd_value else None,
-            "histogram": macd_value.histogram if macd_value else None,
+            **_SERIES_ALIGNMENT,
+            "line": _last(macd_lines.line),
+            "signal": _last(macd_lines.signal),
+            "histogram": _last(macd_lines.histogram),
+            "lineSeries": list(macd_lines.line),
+            "signalSeries": list(macd_lines.signal),
+            "histogramSeries": list(macd_lines.histogram),
             "methodVersion": "macd-12-26-9-v1",
-            "qualityStatus": "live" if macd_value else "unavailable",
+            "qualityStatus": (
+                "live" if _last(macd_lines.line) is not None else "unavailable"
+            ),
         },
         "volatility": {
             **base,

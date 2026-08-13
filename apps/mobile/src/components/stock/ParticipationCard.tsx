@@ -4,6 +4,7 @@ import type {
   DelayedInstitutionalHolding,
   ParticipationBar,
 } from "@/domain/models";
+import { serviceTextLabel, snapshotSourceLabel } from "@/i18n/serverVocabulary";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 type ParticipationCardProps = {
@@ -64,13 +65,16 @@ export function ParticipationCard({
           ? `主力代理 ${(latestAvailable.mainShare! * 100).toFixed(1)}% · 散户代理 ${(latestAvailable.retailShare! * 100).toFixed(1)}%`
           : "暂无可用活动占比"}
       </Text>
-      <Text style={styles.note}>
-        订单规模活动代理 · 非真实机构身份 · 每根活动柱与已完成 K 线一一对应
-      </Text>
+      {/* The proxy caption lives in the screen's disclosure now: one card
+          repeating it under every chart is what buried the numbers. */}
       {missing.length ? (
         <Text style={styles.uncertainty}>
           {missing.length} 根缺失 ·{" "}
-          {missing.map(({ missingReason }) => missingReason).join("；")}
+          {missing
+            .map(({ missingReason }) =>
+              missingReason === null ? "未给出原因" : serviceTextLabel(missingReason),
+            )
+            .join("；")}
         </Text>
       ) : null}
 
@@ -90,7 +94,8 @@ export function ParticipationCard({
             {formatUtc(latestHolding.availableAt)}
           </Text>
           <Text style={styles.uncertainty}>
-            {latestHolding.source} · {latestHolding.methodVersion}
+            {snapshotSourceLabel(latestHolding.source)} ·{" "}
+            {latestHolding.methodVersion}
           </Text>
         </>
       ) : (

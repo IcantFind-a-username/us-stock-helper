@@ -210,15 +210,17 @@ describe("analysis client transport", () => {
 
     await expect(client.getDecision("NVDA", "short")).rejects.toMatchObject({
       name: "AnalysisRequestError",
-      kind: "malformed",
+      kind: "validation",
     });
   });
 
   it.each([
     [
-      "login required",
+      // This service answers 401 only when the device gate rejects the phone's
+      // token; the brokerage login is a different service's problem.
+      "an unusable device token",
       async () => jsonResponse({}, 401),
-      "login-required",
+      "auth-required",
     ],
     [
       "permission denied",
@@ -236,12 +238,12 @@ describe("analysis client transport", () => {
       "a rejected argument",
       async () =>
         jsonResponse({ error: { code: "INVALID_ARGUMENT" } }, 400),
-      "contract",
+      "invalid-request",
     ],
     [
       "a failed chain",
       async () => jsonResponse({ error: { code: "ANALYSIS_FAILED" } }, 500),
-      "malformed",
+      "analysis-failed",
     ],
     [
       "an unreadable body",
@@ -253,12 +255,12 @@ describe("analysis client transport", () => {
             throw new Error("not json");
           },
         }) as unknown as Response,
-      "malformed",
+      "validation",
     ],
     [
       "an unsupported schema",
       async () => jsonResponse({ schemaVersion: "9" }),
-      "malformed",
+      "validation",
     ],
   ])("classifies %s without falling back to demo analysis", async (_label, reply, kind) => {
     const client = createAnalysisClient({
@@ -432,4 +434,99 @@ it("still refuses a cutoff that is meaningfully in the future", () => {
   value.decisionCutoff = new Date(now.getTime() + 20 * 60_000).toISOString();
 
   expect(() => decodeDecisionEnvelope(value, { now })).toThrow(/future/);
+});
+
+/**
+ * "The decision chain could not be evaluated" is a statement about the chain,
+ * not about the payload. Reporting it as a malformed response sent the reader
+ * looking for corrupt data that was never there.
+ */
+describe("analysis failure classification", () => {
+  function clientReplying(reply: () => Promise<Response>) {
+    return createAnalysisClient({
+      baseUrl: "http://127.0.0.1:8788",
+      fetchImpl: jest.fn(reply) as unknown as typeof fetch,
+      now: () => now,
+    });
+  }
+
+  it.each([
+    ["INVALID_ARGUMENT", 400, "invalid-request"],
+    ["AUTH_REQUIRED", 401, "auth-required"],
+    ["CLIENT_NOT_ALLOWED", 403, "client-not-allowed"],
+    ["PERMISSION_DENIED", 403, "permission"],
+    ["PATH_NOT_ALLOWED", 404, "route-unsupported"],
+    ["METHOD_NOT_ALLOWED", 405, "route-unsupported"],
+    ["ANALYSIS_FAILED", 500, "analysis-failed"],
+    ["AUTH_UNAVAILABLE", 503, "auth-unavailable"],
+  ])("gives %s its own kind", async (code, status, kind) => {
+    const client = clientReplying(async () =>
+      jsonResponse({ error: { code, message: "服务端说明" } }, status),
+    );
+
+    await expect(client.getDecision("NVDA", "short")).rejects.toMatchObject({
+      name: "AnalysisRequestError",
+      kind,
+    });
+  });
+
+  it("does not report a declined analysis as a broken payload", async () => {
+    const client = clientReplying(async () =>
+      jsonResponse({ error: { code: "ANALYSIS_FAILED" } }, 500),
+    );
+
+    const error = (await client
+      .getDecision("NVDA", "short")
+      .catch((caught: unknown) => caught)) as { kind: string };
+
+    expect(error.kind).toBe("analysis-failed");
+    expect(error.kind).not.toBe("malformed");
+  });
+
+  it("says the service named a code this build does not know", async () => {
+    // The service's vocabulary is allowed to grow. What must not happen is a
+    // new code silently inheriting the explanation of an old one.
+    const client = clientReplying(async () =>
+      jsonResponse({ error: { code: "SOMETHING_NEW" } }, 500),
+    );
+
+    await expect(client.getDecision("NVDA", "short")).rejects.toMatchObject({
+      name: "AnalysisRequestError",
+      kind: "unspecified",
+    });
+  });
+
+  it("keeps a body this app cannot decode apart from a declined analysis", async () => {
+    const client = clientReplying(async () => jsonResponse({ schemaVersion: "9" }));
+
+    await expect(client.getDecision("NVDA", "short")).rejects.toMatchObject({
+      name: "AnalysisRequestError",
+      kind: "validation",
+    });
+  });
+
+  it("keeps every analysis code mapped to a kind of its own", async () => {
+    const codes = [
+      "INVALID_ARGUMENT",
+      "AUTH_REQUIRED",
+      "CLIENT_NOT_ALLOWED",
+      "PERMISSION_DENIED",
+      "PATH_NOT_ALLOWED",
+      "ANALYSIS_FAILED",
+      "AUTH_UNAVAILABLE",
+    ];
+    const kinds = await Promise.all(
+      codes.map(async (code) => {
+        const client = clientReplying(async () =>
+          jsonResponse({ error: { code } }, 500),
+        );
+        const error = (await client
+          .getDecision("NVDA", "short")
+          .catch((caught: unknown) => caught)) as { kind: string };
+        return error.kind;
+      }),
+    );
+
+    expect(new Set(kinds).size).toBe(codes.length);
+  });
 });

@@ -1,5 +1,7 @@
 import type {
   Candle,
+  ChartIndicatorSeries,
+  ChartMacdSeries,
   DelayedInstitutionalHolding,
   Direction,
   LiveIndicatorValue,
@@ -60,14 +62,33 @@ export class GatewayValidationError extends Error {
   }
 }
 
+/**
+ * Mirrors the gateway's own error vocabulary rather than compressing it.
+ *
+ * These names are the ones the screen turns into sentences, so two codes share
+ * a name only where the reader's next move is the same. `malformed` in
+ * particular means one specific thing — the gateway judged the provider's data
+ * unusable — and no longer doubles as "and also anything else we failed to
+ * classify", which is what made it unexplainable.
+ */
 export type GatewayRequestErrorKind =
+  | "auth-required"
+  | "client-not-allowed"
   | "contract"
-  | "offline"
+  | "invalid-request"
   | "login-required"
-  | "permission"
-  | "stale"
   | "malformed"
-  | "timeout";
+  | "offline"
+  | "permission"
+  | "provider-error"
+  | "rate-limited"
+  | "route-unsupported"
+  | "sdk-unavailable"
+  | "stale"
+  | "timeout"
+  | "unspecified"
+  | "unsupported"
+  | "validation";
 
 export class GatewayRequestError extends GatewayValidationError {
   constructor(
@@ -333,23 +354,49 @@ function requireExpectedMethod<T extends string>(
   return expected;
 }
 
+/**
+ * One kind per code the gateway can name, matching its ErrorCode enum.
+ *
+ * The former table folded a rate limit, a missing SDK and an offline OpenD
+ * into "offline", and everything it did not list into "malformed" — so a
+ * request rejected for its arguments and a provider whose candles broke
+ * point-in-time ordering reached the screen as the same word.
+ */
+const kindByGatewayCode: Record<string, GatewayRequestErrorKind> = {
+  INVALID_ARGUMENT: "invalid-request",
+  AUTH_REQUIRED: "auth-required",
+  CLIENT_NOT_ALLOWED: "client-not-allowed",
+  ORIGIN_NOT_ALLOWED: "client-not-allowed",
+  PERMISSION_DENIED: "permission",
+  // A path and a method the gateway will not serve are one fact to the reader:
+  // the service on the other end does not offer what this build asks for.
+  PATH_NOT_ALLOWED: "route-unsupported",
+  METHOD_NOT_ALLOWED: "route-unsupported",
+  QUOTA_EXCEEDED: "rate-limited",
+  UNSUPPORTED_CAPABILITY: "unsupported",
+  MALFORMED_PROVIDER_DATA: "malformed",
+  PROVIDER_ERROR: "provider-error",
+  SDK_UNAVAILABLE: "sdk-unavailable",
+  OPEND_OFFLINE: "offline",
+  LOGIN_REQUIRED: "login-required",
+  STALE_DATA: "stale",
+};
+
 function decodeSnapshotError(value: Record<string, unknown>): GatewayRequestError | null {
   if (value.sourceStatus === "live") return null;
   const error = isRecord(value.error) ? value.error : undefined;
-  const code = error && typeof error.code === "string" ? error.code : "MALFORMED_PROVIDER_DATA";
-  const kindByCode: Record<string, GatewayRequestErrorKind> = {
-    OPEND_OFFLINE: "offline",
-    SDK_UNAVAILABLE: "offline",
-    QUOTA_EXCEEDED: "offline",
-    LOGIN_REQUIRED: "login-required",
-    AUTH_REQUIRED: "login-required",
-    PERMISSION_DENIED: "permission",
-    STALE_DATA: "stale",
-    MALFORMED_PROVIDER_DATA: "malformed",
-    PROVIDER_ERROR: "malformed",
-  };
+  const code = error && typeof error.code === "string" ? error.code : null;
+  if (code === null) {
+    // A refusal that names no code used to be reported as malformed provider
+    // data. That put a point-in-time explanation on screen that the gateway
+    // never made, so the app states the absence instead of filling it in.
+    return new GatewayRequestError(
+      "unspecified",
+      "gateway snapshot is unavailable and named no reason",
+    );
+  }
   return new GatewayRequestError(
-    kindByCode[code] ?? "malformed",
+    kindByGatewayCode[code] ?? "unspecified",
     `gateway snapshot is unavailable: ${code}`,
   );
 }
@@ -357,8 +404,15 @@ function decodeSnapshotError(value: Record<string, unknown>): GatewayRequestErro
 function decodeVolatility(
   value: unknown,
   cutoff: Date,
+  candleCount: number,
 ): LiveVolatilityIndicator {
-  const base = decodeIndicatorValue(value, "volatility", "close-to-close-realized-v1", cutoff);
+  const base = decodeIndicatorValue(
+    value,
+    "volatility",
+    "close-to-close-realized-v1",
+    cutoff,
+    candleCount,
+  );
   const record = value as Record<string, unknown>;
   const sampleSize = requireFiniteNumber(record, "sampleSize");
   if (!Number.isInteger(sampleSize) || sampleSize < 0) {
@@ -416,11 +470,116 @@ function decodeCompletedTdSetup(
   return { direction, confirmedAtIndex, perfected: value.perfected, barsSince };
 }
 
+/**
+ * Reads a per-candle series, or states that the gateway published none.
+ *
+ * The contract is deliberately narrow: one entry per completed candle, in the
+ * same order, from the same method version as the latest value it accompanies.
+ * A series that does not line up cannot be drawn on these candles, and shifting
+ * it by a bar would move an indicator onto a price it never described — so a
+ * misaligned series is rejected rather than trimmed to fit. An absent series is
+ * not an error; the app says the line is unavailable.
+ */
+function decodeSeriesValues(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  candleCount: number,
+): (number | null)[] {
+  const values = record[key];
+  if (!Array.isArray(values) || values.length !== candleCount) {
+    throw new GatewayValidationError(
+      `${label} series ${key} must carry one value per completed candle`,
+    );
+  }
+  return values.map((entry) => {
+    if (entry === null) return null;
+    if (typeof entry !== "number" || !Number.isFinite(entry)) {
+      throw new GatewayValidationError(
+        `${label} series ${key} must hold finite numbers or null`,
+      );
+    }
+    return entry;
+  });
+}
+
+function decodeSeriesMetadata(
+  value: unknown,
+  label: string,
+  methodVersion: string,
+  cutoff: Date,
+) {
+  if (!isRecord(value)) {
+    throw new GatewayValidationError(`${label} series must be an object`);
+  }
+  const metadata = requireSnapshotMetadata(value, `${label} series`, cutoff);
+  if (metadata.source !== "analysis-core") {
+    throw new GatewayValidationError(`${label} series must identify analysis-core`);
+  }
+  if (requireString(value, "methodVersion") !== methodVersion) {
+    throw new GatewayValidationError(
+      `${label} series must use the same method version as its latest value`,
+    );
+  }
+  const qualityStatus = requireStatus(value, "qualityStatus");
+  if (qualityStatus !== "live" && qualityStatus !== "unavailable") {
+    throw new GatewayValidationError(`${label} series has an unsupported quality status`);
+  }
+  return { record: value, metadata, qualityStatus };
+}
+
+function decodeIndicatorSeries(
+  value: unknown,
+  label: string,
+  methodVersion: string,
+  cutoff: Date,
+  candleCount: number,
+): ChartIndicatorSeries | null {
+  if (value === undefined || value === null) return null;
+  const { record, metadata, qualityStatus } = decodeSeriesMetadata(
+    value,
+    label,
+    methodVersion,
+    cutoff,
+  );
+  const values = decodeSeriesValues(record, "values", label, candleCount);
+  if (qualityStatus !== "live") return null;
+  return { ...metadata, values, methodVersion, qualityStatus };
+}
+
+function decodeMacdSeries(
+  value: unknown,
+  cutoff: Date,
+  candleCount: number,
+): ChartMacdSeries | null {
+  if (value === undefined || value === null) return null;
+  const label = "indicators.macd";
+  const { record, metadata, qualityStatus } = decodeSeriesMetadata(
+    value,
+    label,
+    "macd-12-26-9-v1",
+    cutoff,
+  );
+  const line = decodeSeriesValues(record, "line", label, candleCount);
+  const signal = decodeSeriesValues(record, "signal", label, candleCount);
+  const histogram = decodeSeriesValues(record, "histogram", label, candleCount);
+  if (qualityStatus !== "live") return null;
+  return {
+    ...metadata,
+    line,
+    signal,
+    histogram,
+    methodVersion: "macd-12-26-9-v1",
+    qualityStatus,
+  };
+}
+
 function decodeIndicatorValue(
   value: unknown,
   key: "ma5" | "rsi" | "volatility",
   methodVersion: string,
   cutoff: Date,
+  candleCount: number,
 ): LiveIndicatorValue {
   if (!isRecord(value)) throw new GatewayValidationError(`indicators.${key} must be an object`);
   const metadata = requireSnapshotMetadata(value, `indicators.${key}`, cutoff);
@@ -440,6 +599,13 @@ function decodeIndicatorValue(
     ...metadata,
     source: "analysis-core",
     value: numericValue,
+    series: decodeIndicatorSeries(
+      value.series,
+      `indicators.${key}`,
+      methodVersion,
+      cutoff,
+      candleCount,
+    ),
     methodVersion,
     qualityStatus,
   };
@@ -608,9 +774,25 @@ export function decodeStockSnapshotEnvelope(
   });
 
   if (!isRecord(value.indicators)) throw new GatewayValidationError("indicators must be an object");
-  const ma5 = decodeIndicatorValue(value.indicators.ma5, "ma5", "sma-5-v1", cutoff);
-  const rsi = decodeIndicatorValue(value.indicators.rsi, "rsi", "wilder-rsi-14-v1", cutoff);
-  const volatility = decodeVolatility(value.indicators.volatility, cutoff);
+  const ma5 = decodeIndicatorValue(
+    value.indicators.ma5,
+    "ma5",
+    "sma-5-v1",
+    cutoff,
+    candles.length,
+  );
+  const rsi = decodeIndicatorValue(
+    value.indicators.rsi,
+    "rsi",
+    "wilder-rsi-14-v1",
+    cutoff,
+    candles.length,
+  );
+  const volatility = decodeVolatility(
+    value.indicators.volatility,
+    cutoff,
+    candles.length,
+  );
   const macdRecord = value.indicators.macd;
   if (!isRecord(macdRecord)) throw new GatewayValidationError("indicators.macd must be an object");
   const macdMetadata = requireSnapshotMetadata(macdRecord, "indicators.macd", cutoff);
@@ -627,6 +809,7 @@ export function decodeStockSnapshotEnvelope(
     line: macdValues[0]!,
     signal: macdValues[1]!,
     histogram: macdValues[2]!,
+    series: decodeMacdSeries(macdRecord.series, cutoff, candles.length),
     methodVersion: requireExpectedMethod(macdRecord, "macd-12-26-9-v1", "indicators.macd"),
     qualityStatus: macdStatus,
   };
@@ -850,14 +1033,21 @@ export function createMarketGatewayClient({
   function toSnapshotRequestError(error: unknown): GatewayRequestError {
     if (error instanceof GatewayRequestError) return error;
     if (error instanceof GatewayHttpError) {
-      if (error.status === 401) return new GatewayRequestError("login-required", error.message);
+      const named = isRecord(error.payload)
+        ? decodeSnapshotError(error.payload)
+        : null;
+      // The code the gateway named outranks the status it travelled with. Both
+      // 401 and 403 carry two codes each — an unpaired device against an
+      // unlogged-in OpenD, a blocked network against a missing quote
+      // entitlement — and reading the status alone merged each pair.
+      if (named && named.kind !== "unspecified") return named;
+      if (error.status === 401) return new GatewayRequestError("auth-required", error.message);
+      // A 403 with no code of its own is genuinely ambiguous between an
+      // entitlement and an allowlist; the entitlement is the one a reader can
+      // check, so the copy sends them there.
       if (error.status === 403) return new GatewayRequestError("permission", error.message);
       if (error.status === 408 || error.status === 504) return new GatewayRequestError("timeout", error.message);
-      if (isRecord(error.payload)) {
-        const snapshotError = decodeSnapshotError(error.payload);
-        if (snapshotError) return snapshotError;
-      }
-      return new GatewayRequestError("malformed", error.message);
+      return named ?? new GatewayRequestError("unspecified", error.message);
     }
     if (error instanceof Error && error.name === "AbortError") {
       return new GatewayRequestError(
@@ -869,7 +1059,11 @@ export function createMarketGatewayClient({
       return new GatewayRequestError("contract", error.message);
     }
     if (error instanceof GatewayValidationError) {
-      return new GatewayRequestError("malformed", error.message);
+      // This app failing to read the gateway's answer is a different fact from
+      // the gateway judging the provider's data unusable, and it has a
+      // different fix. Sharing "malformed" between them meant the screen
+      // explained a point-in-time rejection that had never happened.
+      return new GatewayRequestError("validation", error.message);
     }
     return new GatewayRequestError("offline", "gateway request is unavailable");
   }

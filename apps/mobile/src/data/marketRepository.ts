@@ -7,16 +7,40 @@ import {
 } from "./marketGateway";
 import type { MarketRuntimeConfig } from "@/config/runtimeConfig";
 
-export type MarketDataErrorCategory =
-  | "configuration"
-  | "contract"
-  | "login-required"
-  | "malformed"
-  | "offline"
-  | "permission"
-  | "stale"
-  | "timeout"
-  | "validation";
+/**
+ * Every way a market or analysis request can fail, as the reader experiences
+ * it rather than as the wire spells it.
+ *
+ * One category per remedy is the rule. Two server codes share a category only
+ * when the reader would do the same thing about both, because a category is
+ * what a screen turns into a sentence: collapsing an unlogged-in OpenD into
+ * the same bucket as an unpaired phone produced a screen that could not tell
+ * the reader which of the two to go fix.
+ */
+export const marketErrorCategories = [
+  "analysis-failed",
+  "auth-required",
+  "auth-unavailable",
+  "client-not-allowed",
+  "configuration",
+  "contract",
+  "invalid-request",
+  "login-required",
+  "malformed",
+  "offline",
+  "permission",
+  "provider-error",
+  "rate-limited",
+  "route-unsupported",
+  "sdk-unavailable",
+  "stale",
+  "timeout",
+  "unspecified",
+  "unsupported",
+  "validation",
+] as const;
+
+export type MarketDataErrorCategory = (typeof marketErrorCategories)[number];
 
 export class MarketDataError extends Error {
   constructor(
@@ -241,9 +265,19 @@ export function createGatewayMarketRepository(
   });
 }
 
+/**
+ * Only failures that can end on their own are retried.
+ *
+ * A missing SDK, an unlogged-in OpenD or a phone whose pairing was revoked
+ * needs a person to act, and a timer that keeps asking hides that: the screen
+ * looks busy instead of looking like it is waiting for its operator. Quota
+ * exhaustion is on this list because it does expire by itself, and the caller
+ * backs off between attempts rather than hammering the limit.
+ */
 export function isRetryableMarketError(error: MarketDataError) {
   return (
     error.category === "offline" ||
+    error.category === "rate-limited" ||
     error.category === "stale" ||
     error.category === "timeout"
   );

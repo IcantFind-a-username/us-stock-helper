@@ -9,7 +9,10 @@ import {
   decodeWatchlistEnvelope,
   GatewayRequestError,
 } from "../marketGateway";
-import { stockSnapshotFixture } from "./stockSnapshot.fixture";
+import {
+  stockSnapshotFixture,
+  stockSnapshotWithSeriesFixture,
+} from "./stockSnapshot.fixture";
 
 const now = new Date("2026-07-25T16:00:00.000Z");
 const fallback: WatchlistQuote[] = [
@@ -510,9 +513,12 @@ describe("schema-v2 stock snapshot validation", () => {
 describe("market gateway fallback", () => {
   it.each([
     [
-      "login required",
+      // A bare 401 is the gateway refusing this device's token, which is a
+      // pairing problem. The brokerage login it used to be reported as arrives
+      // as LOGIN_REQUIRED with a 503 instead.
+      "an unusable device token",
       async () => jsonResponse({}, 401),
-      { name: "GatewayRequestError", kind: "login-required" },
+      { name: "GatewayRequestError", kind: "auth-required" },
     ],
     [
       "permission denied",
@@ -993,7 +999,9 @@ describe("market gateway fallback", () => {
       async () => jsonResponse({ sourceStatus: "stale", error: { code: "STALE_DATA" } }, 503),
       "stale",
     ],
-    ["malformed", async () => jsonResponse({ schemaVersion: "wrong" }), "malformed"],
+    // A schema this app cannot read is this app's problem, not a verdict on
+    // the provider's data; `malformed` is reserved for the gateway's own.
+    ["an unreadable schema", async () => jsonResponse({ schemaVersion: "wrong" }), "validation"],
   ])("classifies %s snapshot failures without a fixture fallback", async (_label, reply, kind) => {
     const client = createMarketGatewayClient({
       baseUrl: "http://127.0.0.1:8765",
@@ -1005,5 +1013,178 @@ describe("market gateway fallback", () => {
       name: "GatewayRequestError",
       kind,
     });
+  });
+});
+
+/**
+ * The gateway names fifteen distinct failures. The app used to collapse most of
+ * them into "malformed", which is the one word that cannot be acted on: it
+ * describes a broken payload, and almost none of these are that.
+ */
+describe("market gateway failure classification", () => {
+  function clientReplying(reply: () => Promise<Response>) {
+    return createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl: jest.fn(reply) as unknown as typeof fetch,
+      now: () => now,
+    });
+  }
+
+  it.each([
+    ["INVALID_ARGUMENT", 400, "invalid-request"],
+    ["AUTH_REQUIRED", 401, "auth-required"],
+    ["CLIENT_NOT_ALLOWED", 403, "client-not-allowed"],
+    ["ORIGIN_NOT_ALLOWED", 403, "client-not-allowed"],
+    ["PERMISSION_DENIED", 403, "permission"],
+    ["PATH_NOT_ALLOWED", 404, "route-unsupported"],
+    ["METHOD_NOT_ALLOWED", 405, "route-unsupported"],
+    ["QUOTA_EXCEEDED", 429, "rate-limited"],
+    ["UNSUPPORTED_CAPABILITY", 501, "unsupported"],
+    ["MALFORMED_PROVIDER_DATA", 502, "malformed"],
+    ["PROVIDER_ERROR", 502, "provider-error"],
+    ["SDK_UNAVAILABLE", 503, "sdk-unavailable"],
+    ["OPEND_OFFLINE", 503, "offline"],
+    ["LOGIN_REQUIRED", 503, "login-required"],
+    ["STALE_DATA", 503, "stale"],
+  ])("gives %s its own kind", async (code, status, kind) => {
+    const client = clientReplying(async () =>
+      jsonResponse({ error: { code, message: "upstream said so" } }, status),
+    );
+
+    await expect(client.getStockSnapshot("NVDA", "5m")).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind,
+    });
+  });
+
+  it("keeps every gateway code mapped to a kind of its own", async () => {
+    const codes = [
+      "INVALID_ARGUMENT",
+      "AUTH_REQUIRED",
+      "CLIENT_NOT_ALLOWED",
+      "PERMISSION_DENIED",
+      "PATH_NOT_ALLOWED",
+      "QUOTA_EXCEEDED",
+      "UNSUPPORTED_CAPABILITY",
+      "MALFORMED_PROVIDER_DATA",
+      "PROVIDER_ERROR",
+      "SDK_UNAVAILABLE",
+      "OPEND_OFFLINE",
+      "LOGIN_REQUIRED",
+      "STALE_DATA",
+    ];
+    const kinds = await Promise.all(
+      codes.map(async (code) => {
+        const client = clientReplying(async () =>
+          jsonResponse({ error: { code } }, 500),
+        );
+        const error = (await client
+          .getStockSnapshot("NVDA", "5m")
+          .catch((caught: unknown) => caught)) as GatewayRequestError;
+        return error.kind;
+      }),
+    );
+
+    expect(new Set(kinds).size).toBe(codes.length);
+  });
+
+  it("separates a payload this app cannot decode from one the gateway rejected", async () => {
+    // The gateway saying "the provider's data failed point-in-time validation"
+    // and this app failing to read the gateway's own answer are different
+    // facts with different fixes, and the screen explains them differently.
+    const undecodable = clientReplying(async () =>
+      jsonResponse({ schemaVersion: "wrong" }),
+    );
+
+    await expect(
+      undecodable.getStockSnapshot("NVDA", "5m"),
+    ).rejects.toMatchObject({ name: "GatewayRequestError", kind: "validation" });
+  });
+
+  it("says a refusal carried no reason rather than inventing one", async () => {
+    // An unavailable snapshot with no error object used to be reported as
+    // malformed provider data, which would now put a point-in-time explanation
+    // on screen that the gateway never claimed.
+    const silent = clientReplying(async () =>
+      jsonResponse({ schemaVersion: "2", source: "moomoo", sourceStatus: "unavailable" }, 503),
+    );
+
+    await expect(silent.getStockSnapshot("NVDA", "5m")).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind: "unspecified",
+    });
+  });
+});
+
+describe("indicator series", () => {
+  it("reads the drawable series the gateway published for every indicator", () => {
+    const snapshot = decodeStockSnapshotEnvelope(
+      stockSnapshotWithSeriesFixture(),
+      { now },
+    );
+
+    expect(snapshot.indicators.ma5.series).toMatchObject({
+      values: [null, 140.8],
+      source: "analysis-core",
+      methodVersion: "sma-5-v1",
+      qualityStatus: "live",
+    });
+    expect(snapshot.indicators.rsi.series?.values).toEqual([48.5, 56.2]);
+    expect(snapshot.indicators.macd.series).toMatchObject({
+      line: [0.3, 0.45],
+      signal: [0.25, 0.3],
+      histogram: [0.05, 0.15],
+      methodVersion: "macd-12-26-9-v1",
+    });
+  });
+
+  it("reports a series the gateway did not publish as missing", () => {
+    const snapshot = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
+
+    expect(snapshot.indicators.ma5.series).toBeNull();
+    expect(snapshot.indicators.rsi.series).toBeNull();
+    expect(snapshot.indicators.macd.series).toBeNull();
+    expect(snapshot.indicators.ma5.value).toBe(140.8);
+  });
+
+  it("treats an unavailable series as missing instead of an empty line", () => {
+    const payload = stockSnapshotWithSeriesFixture();
+    payload.indicators.ma5.series!.qualityStatus = "unavailable";
+    payload.indicators.ma5.series!.values = [null, null];
+
+    const snapshot = decodeStockSnapshotEnvelope(payload, { now });
+
+    expect(snapshot.indicators.ma5.series).toBeNull();
+  });
+
+  it.each([
+    ["short series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      value.indicators.ma5.series!.values = [140.8];
+    }],
+    ["long series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      value.indicators.ma5.series!.values = [140.2, 140.8, 141.4];
+    }],
+    ["non-numeric entry", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      (value.indicators.ma5.series!.values as unknown[])[1] = "140.8";
+    }],
+    ["foreign method version", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      value.indicators.ma5.series!.methodVersion = "sma-10-v1";
+    }],
+    ["foreign source", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      value.indicators.ma5.series!.source = "moomoo";
+    }],
+    ["post-cutoff availability", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      value.indicators.ma5.series!.availableAt = "2026-07-25T16:00:00.000Z";
+    }],
+    ["ragged macd series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
+      value.indicators.macd.series!.signal = [0.25];
+    }],
+  ])("rejects a series that cannot be drawn on the candles: %s", (_label, mutate) => {
+    const payload = stockSnapshotWithSeriesFixture();
+    mutate(payload);
+
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(
+      /series/,
+    );
   });
 });

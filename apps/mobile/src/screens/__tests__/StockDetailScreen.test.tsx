@@ -146,17 +146,17 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.getByText("截止 2026-07-25 15:59:48 UTC")).toBeTruthy();
 
   expect(view.getByRole("button", { name: /NVDA 图表摘要，2 根已完成 K 线/ })).toBeTruthy();
+  // The latest values are stated once, in the fact row; the chart carries the
+  // series and no longer repeats the numbers in a second card.
   expect(view.getByText("MA5 140.80")).toBeTruthy();
-  expect(view.getAllByText("RSI 56.2")).toHaveLength(2);
-  expect(view.getByText("中性")).toBeTruthy();
-  expect(view.getByText("DIF 0.45 · DEA 0.30 · 柱 0.15")).toBeTruthy();
-  expect(view.getByText("多头")).toBeTruthy();
-  expect(view.getByText("九转 2 · 尚未完成")).toBeTruthy();
+  expect(view.getAllByText("RSI 56.2")).toHaveLength(1);
+  expect(view.getByText("MACD 0.15")).toBeTruthy();
+  expect(view.queryByText("DIF 0.45 · DEA 0.30 · 柱 0.15")).toBeNull();
+  expect(view.getByTestId("macd-panel", { includeHiddenElements: true })).toBeTruthy();
+  expect(view.getByText("九转 看涨 2/9")).toBeTruthy();
   expect(view.queryByText(/最近完成/)).toBeNull();
 
-  expect(
-    view.getByText("订单规模活动占比 · 深色主力代理 / 浅色散户代理"),
-  ).toBeTruthy();
+  expect(view.getByText("主力代理")).toBeTruthy();
   expect(
     view.getAllByTestId("participation-available", {
       includeHiddenElements: true,
@@ -168,8 +168,10 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
     }),
   ).toHaveLength(1);
   expect(view.getByText("主力代理 60.0% · 散户代理 40.0%")).toBeTruthy();
+  // A reason this app has no translation for still has to reach the reader.
   expect(view.getByText(/1 根缺失 · capital flow unavailable/)).toBeTruthy();
   expect(view.getByText("机构持仓披露 · 延迟数据")).toBeTruthy();
+  expect(view.getByText(/moomoo 延迟机构披露/)).toBeTruthy();
   expect(view.getByText("2026-Q1 · 12.50% · 100 家机构")).toBeTruthy();
   expect(view.getByText(/报告期 2026-03-31 00:00:00 UTC/)).toBeTruthy();
 
@@ -178,10 +180,10 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.queryByText("预测分析")).toBeNull();
   const adviser = view.getByRole("button", { name: "顾问分析等待大模型凭据" });
   expect(adviser.props.accessibilityState).toEqual({ disabled: true });
-  expect(view.getByText("仅分析与建议 · 不连接券商 · 不会自动下单")).toBeTruthy();
+  expect(view.getByText("仅供分析与建议 · 不连接券商 · 不会自动下单")).toBeTruthy();
 
-  expect(view.queryByText(/DEMO/i)).toBeNull();
   expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
+  expect(view.queryByText(/短线 · 演示数据/)).toBeNull();
   expect(view.queryByText("谨慎偏多；等待量价确认，不追高。")).toBeNull();
   expect(view.queryByText("概率预测，不是未来价格承诺")).toBeNull();
   expect(view.queryByText("预测区间")).toBeNull();
@@ -190,23 +192,13 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
 
 it("hides and restores every participation chart surface with one tool", async () => {
   const view = await renderDetail();
-  await waitFor(() =>
-    expect(
-      view.getByText(
-        "订单规模活动占比 · 深色主力代理 / 浅色散户代理",
-      ),
-    ).toBeTruthy(),
-  );
+  await waitFor(() => expect(view.getByText("主力代理")).toBeTruthy());
   const user = userEvent.setup();
 
   await user.press(
     view.getByRole("button", { name: "参与结构，已显示" }),
   );
-  expect(
-    view.queryByText(
-      "订单规模活动占比 · 深色主力代理 / 浅色散户代理",
-    ),
-  ).toBeNull();
+  expect(view.queryByText("主力代理")).toBeNull();
   expect(
     view.queryByTestId("participation-available", {
       includeHiddenElements: true,
@@ -222,17 +214,42 @@ it("hides and restores every participation chart surface with one tool", async (
   await user.press(
     view.getByRole("button", { name: "参与结构，已隐藏" }),
   );
-  expect(
-    view.getByText(
-      "订单规模活动占比 · 深色主力代理 / 浅色散户代理",
-    ),
-  ).toBeTruthy();
+  expect(view.getByText("主力代理")).toBeTruthy();
   expect(
     view.getAllByTestId("participation-available", {
       includeHiddenElements: true,
     }),
   ).toHaveLength(1);
   expect(view.getByTestId("participation-summary")).toBeTruthy();
+});
+
+it("puts the chart first and keeps its caption behind a disclosure", async () => {
+  const view = await renderDetail();
+
+  await waitFor(() => expect(view.getByTestId("stock-chart-card")).toBeTruthy());
+  // The chart outranks the fact summary on the page, which is the whole point
+  // of the layout: the reader should meet the price series first.
+  const order = view
+    .getAllByTestId(/^(stock-chart-card|stock-fact-summary)$/)
+    .map((node) => node.props.testID);
+  expect(order).toEqual(["stock-chart-card", "stock-fact-summary"]);
+
+  expect(view.queryByText(/每根活动柱与已完成 K 线一一对应/)).toBeNull();
+  await userEvent.setup().press(
+    view.getByRole("button", { name: "图表口径与免责，已折叠" }),
+  );
+  expect(view.getByText(/每根活动柱与已完成 K 线一一对应/)).toBeTruthy();
+});
+
+it("adds the RSI subchart only when the reader asks for it", async () => {
+  const view = await renderDetail();
+  const hidden = { includeHiddenElements: true } as const;
+
+  await waitFor(() => expect(view.getByTestId("macd-panel", hidden)).toBeTruthy());
+  expect(view.queryByTestId("rsi-panel", hidden)).toBeNull();
+
+  await userEvent.setup().press(view.getByRole("button", { name: "RSI，已隐藏" }));
+  expect(view.getByTestId("rsi-panel", hidden)).toBeTruthy();
 });
 
 it("shows unavailable Magic Nine honestly without a zero marker or sequence", async () => {
@@ -296,7 +313,7 @@ it("tells the user to update the gateway when its contract is outdated", async (
   });
 
   await waitFor(() =>
-    expect(view.getByText("行情不可用 · 网关版本过旧")).toBeTruthy(),
+    expect(view.getByText("行情不可用 · 网关过旧")).toBeTruthy(),
   );
   expect(view.getByText(/请更新本机网关服务后重试/)).toBeTruthy();
 });
@@ -329,6 +346,7 @@ it("shows the snapshot warnings instead of decoding them into nothing", async ()
   const payload = stockSnapshotFixture();
   payload.warnings = [
     "价格为前复权：除权除息会回溯改写这条历史序列，回测请以复权基准对齐。",
+    "Capital-flow participation is unavailable for this snapshot.",
     "Capital-flow participation is partially unavailable.",
   ];
   const snapshot = decodeStockSnapshotEnvelope(payload, {
@@ -342,8 +360,29 @@ it("shows the snapshot warnings instead of decoding them into nothing", async ()
   await waitFor(() =>
     expect(view.getByTestId("snapshot-warnings")).toHaveTextContent(/前复权/),
   );
+  // The gateway's own sentence turns; the wording it has not written down yet
+  // reaches the reader untranslated rather than not at all.
+  expect(view.getByTestId("snapshot-warnings")).toHaveTextContent(
+    /本次快照没有资金流参与结构数据/,
+  );
   expect(view.getByTestId("snapshot-warnings")).toHaveTextContent(
     /Capital-flow participation is partially unavailable/,
+  );
+});
+
+it("names a missing participation bar's reason in Chinese", async () => {
+  const payload = stockSnapshotFixture();
+  payload.participationBars[1]!.missingReason = "incomplete minute coverage";
+  const snapshot = decodeStockSnapshotEnvelope(payload, {
+    now: new Date("2026-07-25T16:00:00.000Z"),
+  });
+
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => snapshot),
+  });
+
+  await waitFor(() =>
+    expect(view.getByText(/1 根缺失 · 分钟级覆盖不完整/)).toBeTruthy(),
   );
 });
 
@@ -391,11 +430,11 @@ it("preserves the original timestamp when cached live data becomes stale", async
   );
   expect(view.getByText("$142.25")).toBeTruthy();
   expect(view.getByText("缓存数据")).toBeTruthy();
-  expect(view.getByText("5m · STALE")).toBeTruthy();
+  expect(view.getByText("5 分钟 · 缓存数据")).toBeTruthy();
   expect(view.getByText("缓存事实摘要")).toBeTruthy();
   expect(view.queryByText("实时只读")).toBeNull();
   expect(view.queryByText("实时事实摘要")).toBeNull();
-  expect(view.queryByText("5m · LIVE")).toBeNull();
+  expect(view.queryByText("5 分钟 · 实时只读")).toBeNull();
   expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
   expect(view.getByRole("button", { name: "刷新行情" })).toBeTruthy();
 });
@@ -430,9 +469,9 @@ it("keeps stale labels and timestamp while a refresh is pending", async () => {
     view.getByText("行情已延迟 · 原始时间 2026-07-25 15:59:50 UTC"),
   ).toBeTruthy();
   expect(view.getByText("缓存数据")).toBeTruthy();
-  expect(view.getByText("5m · STALE")).toBeTruthy();
+  expect(view.getByText("5 分钟 · 缓存数据")).toBeTruthy();
   expect(view.queryByText("实时只读")).toBeNull();
-  expect(view.queryByText("5m · LIVE")).toBeNull();
+  expect(view.queryByText("5 分钟 · 实时只读")).toBeNull();
   const refreshing = view.getByRole("button", { name: "正在刷新行情" });
   expect(refreshing.props.accessibilityState).toEqual({ disabled: true });
 
@@ -444,7 +483,7 @@ it("keeps stale labels and timestamp while a refresh is pending", async () => {
     await pendingRefresh.promise;
   });
   await waitFor(() => expect(view.getByText("实时只读")).toBeTruthy());
-  expect(view.getByText("5m · LIVE")).toBeTruthy();
+  expect(view.getByText("5 分钟 · 实时只读")).toBeTruthy();
   expect(view.queryByText(/行情已延迟/)).toBeNull();
 });
 
@@ -466,7 +505,7 @@ it("offers actionable loading and unavailable states without rendering fixture d
     }),
   });
   await waitFor(() =>
-    expect(unavailableView.getByText("行情不可用 · configuration")).toBeTruthy(),
+    expect(unavailableView.getByText("行情不可用 · 未配置")).toBeTruthy(),
   );
   const retry = unavailableView.getByRole("button", { name: "重试行情" });
   expect(StyleSheet.flatten(retry.props.style).minHeight).toBeGreaterThanOrEqual(44);
@@ -491,7 +530,7 @@ it("retries an unavailable snapshot once, shows loading, and recovers live", asy
   const view = await renderDetail({ repository });
 
   await waitFor(() =>
-    expect(view.getByText("行情不可用 · configuration")).toBeTruthy(),
+    expect(view.getByText("行情不可用 · 未配置")).toBeTruthy(),
   );
   fireEvent.press(view.getByRole("button", { name: "重试行情" }));
   await waitFor(() => expect(attempts).toBe(2));
@@ -510,7 +549,11 @@ it("uses the fixture only when runtime explicitly selects demo mode", async () =
     expect(view.getByText("演示数据 · 非实时行情")).toBeTruthy(),
   );
   expect(view.getByText("$143.80")).toBeTruthy();
-  expect(view.getByText(/demo-short · DEMO/i)).toBeTruthy();
+  expect(view.getByText(/短线 · 演示数据/)).toBeTruthy();
+  // The fixture snapshot names its source `fixture`; the reader is told what
+  // that means rather than shown the identifier.
+  expect(view.getByTestId("stock-summary-meta")).toHaveTextContent(/来源 演示数据/);
+  expect(view.getByTestId("stock-summary-meta")).not.toHaveTextContent(/fixture/);
   expect(view.queryByText("实时只读")).toBeNull();
 });
 
@@ -532,7 +575,7 @@ it("shows the real decision with the share of the picture it had", async () => {
     /因子覆盖 70%/,
   );
   expect(view.getByTestId("decision-missing-factors")).toHaveTextContent(
-    /macro/,
+    /宏观/,
   );
   expect(view.queryByText("预测分析")).toBeNull();
   expect(view.queryByTestId("decision-state")).toBeNull();
@@ -576,7 +619,7 @@ it("names why the analysis service could not answer and offers one retry", async
 
   await waitFor(() =>
     expect(view.getByTestId("decision-state")).toHaveTextContent(
-      /分析不可用 · offline/,
+      /分析不可用 · 连不上/,
     ),
   );
   // Rendering nothing here would read as "this stock has no conclusion", and a
@@ -696,4 +739,70 @@ it("keeps the analysis and its news when only the quote feed is down", async () 
 
   await waitFor(() => expect(view.queryByTestId("decision-card")).not.toBeNull());
   expect(view.queryByTestId("decision-news")).not.toBeNull();
+});
+
+it("says why a symbol will not open when the gateway rejected its candles", async () => {
+  // The gateway is doing its job here: moomoo's candles failed point-in-time
+  // validation and it refused to serve them. The page has to carry that whole
+  // sentence, because "malformed" told the reader nothing.
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => {
+      throw new MarketDataError(
+        "malformed",
+        "MALFORMED_PROVIDER_DATA: Market data failed point-in-time validation",
+      );
+    }),
+  });
+
+  await waitFor(() =>
+    expect(view.getByText("行情不可用 · 数据被拒")).toBeTruthy(),
+  );
+  const body = view.getByTestId("stock-state-body");
+  // The gateway rejects on roughly twenty checks and names none of them, so
+  // the screen says the data was refused without inventing which check failed.
+  expect(body).toHaveTextContent(/没有说明具体是哪一项/);
+  expect(body).toHaveTextContent(/不准确/);
+  expect(body).toHaveTextContent(/不是你的操作问题/);
+  expect(body).not.toHaveTextContent(/时序/);
+  expect(view.queryByText(/malformed/i)).toBeNull();
+  expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
+});
+
+it("reports a declined analysis as its own state, not as a broken payload", async () => {
+  const view = await renderDetail({
+    analysis: analysisWith(async () => {
+      throw new AnalysisRequestError(
+        "analysis-failed",
+        "The decision chain could not be evaluated",
+      );
+    }),
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("decision-state")).toHaveTextContent(
+      /分析不可用 · 分析失败/,
+    ),
+  );
+  const state = view.getByTestId("decision-state");
+  expect(state).toHaveTextContent(/没有说明/);
+  expect(state).not.toHaveTextContent(/时序校验/);
+  expect(state).not.toHaveTextContent(/analysis-failed/);
+  expect(view.getByRole("button", { name: "重试分析" })).toBeTruthy();
+});
+
+it("carries the same explanation into the news surface", async () => {
+  const view = await renderDetail({
+    analysis: analysisWith(async () => {
+      throw new AnalysisRequestError("analysis-failed", "chain failed");
+    }),
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("decision-news-unavailable")).toHaveTextContent(
+      /新闻证据不可用 · 分析失败/,
+    ),
+  );
+  expect(view.getByTestId("decision-news-unavailable")).not.toHaveTextContent(
+    /analysis-failed/,
+  );
 });

@@ -162,5 +162,10 @@ it("says the quotes are unavailable rather than showing an empty scan", async ()
   await waitFor(() =>
     expect(view.getByTestId("market-scan-unavailable")).toBeTruthy(),
   );
+  expect(view.getByText("自选行情不可用 · 连不上")).toBeTruthy();
+  expect(view.getByTestId("market-scan-unavailable-body")).toHaveTextContent(
+    /OpenD/,
+  );
+  expect(view.queryByText(/offline/)).toBeNull();
   expect(view.queryByTestId("market-scan-empty")).toBeNull();
 });

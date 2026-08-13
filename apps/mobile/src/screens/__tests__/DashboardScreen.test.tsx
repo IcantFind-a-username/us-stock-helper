@@ -322,7 +322,7 @@ it("shows one actionable unavailable state with the error category", async () =>
   const view = await renderDashboard({ repository, demoMode: false });
 
   await waitFor(() =>
-    expect(view.getByText("行情不可用 · permission")).toBeTruthy(),
+    expect(view.getByText("行情不可用 · 无权限")).toBeTruthy(),
   );
   expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
   expect(view.queryByTestId("watchlist-list")).toBeNull();
@@ -338,7 +338,7 @@ it("shows login-required without rendering fallback rows", async () => {
   const view = await renderDashboard({ repository, demoMode: false });
 
   await waitFor(() =>
-    expect(view.getByText("行情不可用 · login-required")).toBeTruthy(),
+    expect(view.getByText("行情不可用 · 未登录")).toBeTruthy(),
   );
   expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
   expect(view.queryByTestId("watchlist-list")).toBeNull();
@@ -364,6 +364,6 @@ it("shows the explicit demo switch only to developers", async () => {
   });
   expect(productionView.queryByText("演示模式")).toBeNull();
   await waitFor(() =>
-    expect(productionView.getByText("行情不可用 · offline")).toBeTruthy(),
+    expect(productionView.getByText("行情不可用 · 连不上")).toBeTruthy(),
   );
 });

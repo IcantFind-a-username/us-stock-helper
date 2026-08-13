@@ -110,13 +110,13 @@ it("renders the same live snapshot with selectable candles and both indicators",
 
   await waitFor(() => expect(view.getByText("NVDA 专业图表")).toBeTruthy());
   expect(view.getByText("实时只读 · 截止 2026-07-25 15:59:50 UTC")).toBeTruthy();
-  expect(view.getByText("价格 · 成交量")).toBeTruthy();
+  expect(view.getByTestId("stock-chart-card")).toBeTruthy();
   expect(view.getByText("RSI 56.2")).toBeTruthy();
-  expect(view.getByText("DIF 0.45 · DEA 0.30 · 柱 0.15")).toBeTruthy();
+  expect(view.getByText("MACD 0.15")).toBeTruthy();
   expect(view.getByText("MA5 140.80")).toBeTruthy();
   expect(view.getByText("机构持仓披露 · 延迟数据")).toBeTruthy();
-  expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
-  expect(view.queryByText(/DEMO/i)).toBeNull();
+  // Nothing on a live chart may read as demo, in any wording.
+  expect(view.queryByText(/演示/)).toBeNull();
   expect(view.queryByText("上涨概率")).toBeNull();
 
   const user = userEvent.setup();
@@ -162,15 +162,15 @@ it("keeps stale data visible and unavailable data actionable without demo fallba
       staleView.getByText("行情已延迟 · 原始时间 2026-07-25 15:59:50 UTC"),
     ).toBeTruthy(),
   );
-  expect(staleView.getByText("价格 · 成交量")).toBeTruthy();
+  expect(staleView.getByTestId("stock-chart-card")).toBeTruthy();
   expect(
     staleView.getByText(
       "缓存数据 · 截止 2026-07-25 15:59:50 UTC",
     ),
   ).toBeTruthy();
-  expect(staleView.getByText("5m · STALE")).toBeTruthy();
+  expect(staleView.getByText("5 分钟 · 缓存数据")).toBeTruthy();
   expect(staleView.queryByText(/实时只读/)).toBeNull();
-  expect(staleView.queryByText("5m · LIVE")).toBeNull();
+  expect(staleView.queryByText("5 分钟 · 实时只读")).toBeNull();
   expect(staleView.queryByText("演示数据 · 非实时行情")).toBeNull();
   await staleView.unmount();
 
@@ -180,10 +180,15 @@ it("keeps stale data visible and unavailable data actionable without demo fallba
     }),
   });
   await waitFor(() =>
-    expect(unavailableView.getByText("行情不可用 · permission")).toBeTruthy(),
+    expect(unavailableView.getByText("行情不可用 · 无权限")).toBeTruthy(),
   );
   expect(unavailableView.getByRole("button", { name: "重试行情" })).toBeTruthy();
-  expect(unavailableView.queryByText("价格 · 成交量")).toBeNull();
+  // The big chart explains the failure as fully as the stock page does.
+  expect(unavailableView.getByTestId("chart-state-body")).toHaveTextContent(
+    /行情权限/,
+  );
+  expect(unavailableView.queryByText(/permission/)).toBeNull();
+  expect(unavailableView.queryByTestId("stock-chart-card")).toBeNull();
   expect(unavailableView.queryByText("演示数据 · 非实时行情")).toBeNull();
 });
 
@@ -218,8 +223,8 @@ it("keeps the full chart stale while an automatic refresh is pending", async () 
       );
       await initialFailure.promise.catch(() => undefined);
     });
-    expect(view.getByText("5m · STALE")).toBeTruthy();
-    expect(view.queryByText("5m · LIVE")).toBeNull();
+    expect(view.getByText("5 分钟 · 缓存数据")).toBeTruthy();
+    expect(view.queryByText("5 分钟 · 实时只读")).toBeNull();
 
     await act(async () => {
       await jest.advanceTimersByTimeAsync(10);
@@ -231,9 +236,9 @@ it("keeps the full chart stale while an automatic refresh is pending", async () 
     expect(
       view.getByText("缓存数据 · 截止 2026-07-25 15:59:50 UTC"),
     ).toBeTruthy();
-    expect(view.getByText("5m · STALE")).toBeTruthy();
+    expect(view.getByText("5 分钟 · 缓存数据")).toBeTruthy();
     expect(view.queryByText(/实时只读/)).toBeNull();
-    expect(view.queryByText("5m · LIVE")).toBeNull();
+    expect(view.queryByText("5 分钟 · 实时只读")).toBeNull();
     const refreshing = view.getByRole("button", {
       name: "正在刷新行情",
     });
@@ -246,7 +251,7 @@ it("keeps the full chart stale while an automatic refresh is pending", async () 
       automaticSuccess.resolve(cached);
       await automaticSuccess.promise;
     });
-    expect(view.getByText("5m · LIVE")).toBeTruthy();
+    expect(view.getByText("5 分钟 · 实时只读")).toBeTruthy();
     expect(view.queryByText(/行情已延迟/)).toBeNull();
     await view.unmount();
   } finally {
@@ -270,7 +275,7 @@ it("wires retry through loading to a recovered full live chart", async () => {
   const view = await renderChart({ repository });
 
   await waitFor(() =>
-    expect(view.getByText("行情不可用 · permission")).toBeTruthy(),
+    expect(view.getByText("行情不可用 · 无权限")).toBeTruthy(),
   );
   fireEvent.press(view.getByRole("button", { name: "重试行情" }));
   await waitFor(() => expect(attempts).toBe(2));
@@ -290,7 +295,7 @@ it("marks the whole chart as non-live only in explicit demo mode", async () => {
   await waitFor(() =>
     expect(view.getByText("演示数据 · 非实时行情")).toBeTruthy(),
   );
-  expect(view.getByText(/demo-short · DEMO/i)).toBeTruthy();
-  expect(view.getByText("价格 · 成交量 · 概率预测")).toBeTruthy();
+  expect(view.getByText(/短线 · 演示数据/)).toBeTruthy();
+  expect(view.getByText(/上涨概率/)).toBeTruthy();
   expect(view.queryByText("实时只读")).toBeNull();
 });
