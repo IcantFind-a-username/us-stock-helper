@@ -92,7 +92,14 @@ stock.example.com {
 			fields {
 				request>headers>Authorization delete
 				request>headers>Cookie delete
-				request>remote_ip ip_mask {
+				# Caddy logs client_ip alongside remote_ip; masking only one
+			# still writes the phone's real address next to the symbol it
+			# asked for, which is a location and interest trail.
+			request>client_ip ip_mask {
+				ipv4 24
+				ipv6 48
+			}
+			request>remote_ip ip_mask {
 					ipv4 24
 					ipv6 48
 				}

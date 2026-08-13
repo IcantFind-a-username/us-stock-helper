@@ -1,3 +1,14 @@
+from .collector import (
+    DEFAULT_LOOKBACK_SECONDS,
+    DEFAULT_RETENTION_SECONDS,
+    DEFAULT_STALE_AFTER_SECONDS,
+    FRESHNESS_ATTRIBUTE,
+    STALE_ATTRIBUTE,
+    EvidenceCollector,
+    EvidenceUnavailable,
+    SourceFailure,
+    freshness_seconds,
+)
 from .coordinator import PollingCoordinator
 from .generic import (
     CacheValidators,
@@ -17,13 +28,35 @@ from .http import (
     ResponseTooLargeError,
     UrllibHttpsTransport,
 )
+from .registry import (
+    APPLICATION_TOKEN,
+    CONTACT_EMAIL_VARIABLE,
+    PUBLIC_SOURCES,
+    SourceKind,
+    SourceRegistry,
+    SourceSpec,
+    build_adapters,
+    contact_email_from_environment,
+    minimum_poll_interval_seconds,
+    user_agent_for,
+)
 from .sec import (
     SecCurrentFilingsAdapter,
     build_sec_current_filings_adapters,
 )
 
 __all__ = [
+    "APPLICATION_TOKEN",
+    "CONTACT_EMAIL_VARIABLE",
+    "DEFAULT_LOOKBACK_SECONDS",
+    "DEFAULT_RETENTION_SECONDS",
+    "DEFAULT_STALE_AFTER_SECONDS",
+    "FRESHNESS_ATTRIBUTE",
+    "PUBLIC_SOURCES",
+    "STALE_ATTRIBUTE",
     "CacheValidators",
+    "EvidenceCollector",
+    "EvidenceUnavailable",
     "FeedAccessError",
     "FeedConfig",
     "FeedError",
@@ -38,6 +71,15 @@ __all__ = [
     "PollingCoordinator",
     "ResponseTooLargeError",
     "SecCurrentFilingsAdapter",
+    "SourceFailure",
+    "SourceKind",
+    "SourceRegistry",
+    "SourceSpec",
     "UrllibHttpsTransport",
+    "build_adapters",
     "build_sec_current_filings_adapters",
+    "contact_email_from_environment",
+    "freshness_seconds",
+    "minimum_poll_interval_seconds",
+    "user_agent_for",
 ]

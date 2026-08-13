@@ -11,7 +11,7 @@
 #
 #   sudo ./deploy/bootstrap.sh prepare
 #   ... you log in to moomoo yourself, per section 6 of README.md ...
-#   sudo ./deploy/bootstrap.sh finish --domain stock.example.com
+#   sudo ./deploy/bootstrap.sh finish --domain stock.example.com --email you@stock.example.com
 #
 # Every step is the same command the runbook spells out; read it there if you
 # want to know what this is doing before you let it do it.
@@ -68,13 +68,18 @@ cmd_prepare() {
   done
 
   log "Firewall"
-  ufw --force reset >/dev/null
+  # Never reset: that would drop rules the operator added, and the OpenSSH
+  # profile only covers port 22. A host whose sshd was moved elsewhere would
+  # become unreachable the moment the policy took effect.
+  local ssh_port
+  ssh_port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
+  ssh_port="${ssh_port:-22}"
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
-  ufw allow OpenSSH >/dev/null
+  ufw allow "${ssh_port}/tcp" >/dev/null
   ufw allow 443/tcp >/dev/null
   ufw --force enable >/dev/null
-  note "inbound: SSH and 443 only"
+  note "inbound: ${ssh_port}/tcp (ssh) and 443 only; existing rules left in place"
 
   log "Prepared"
   cat <<'NEXT'
@@ -86,7 +91,7 @@ cmd_prepare() {
     No script in this repository will do step 2, and none should. When OpenD
     is running and logged in, come back and run:
 
-      sudo ./deploy/bootstrap.sh finish --domain your.domain.example
+      sudo ./deploy/bootstrap.sh finish --domain your.domain --email you@your.domain
 NEXT
 }
 
@@ -94,14 +99,19 @@ cmd_finish() {
   require_root
   require_ubuntu
 
-  local domain=""
+  local domain="" email=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --domain) domain="${2:-}"; shift 2 ;;
+      --email) email="${2:-}"; shift 2 ;;
       *) die "unknown argument: $1" ;;
     esac
   done
   [ -n "${domain}" ] || die "pass --domain your.domain.example"
+  # Let's Encrypt sends expiry and revocation notices to this address. Leaving
+  # the template's placeholder would register the ACME account to someone else
+  # and send them the notices for your certificate.
+  [ -n "${email}" ] || die "pass --email you@your.domain (the ACME contact address)"
 
   log "Checking OpenD"
   # Refusing here is the point: everything below assumes a logged-in session,
@@ -134,14 +144,18 @@ cmd_finish() {
     apt-get install -y -qq caddy
   fi
   install -m 0644 "${DEPLOY_DIR}/Caddyfile" /etc/caddy/Caddyfile
-  sed -i "s/stock\.example\.com/${domain}/" /etc/caddy/Caddyfile
+  sed -i "s/stock\.example\.com/${domain}/g; s/ops@example\.com/${email}/g" /etc/caddy/Caddyfile
+  if grep -q 'example\.com' /etc/caddy/Caddyfile; then
+    die "a placeholder survived in /etc/caddy/Caddyfile; not starting Caddy"
+  fi
   caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
-  note "set the ACME contact address in /etc/caddy/Caddyfile before restarting"
   systemctl restart caddy
-  note "serving ${domain}"
+  note "serving ${domain}, ACME contact ${email}"
 
   log "Preflight"
-  bash "${DEPLOY_DIR}/preflight.sh"
+  # The token is issued after this point, so preflight is expected to report
+  # the missing one; everything else must already hold.
+  bash "${DEPLOY_DIR}/preflight.sh" || note "preflight reported findings above — read them before issuing the token"
 
   log "Done"
   cat <<NEXT
@@ -165,7 +179,7 @@ case "${1:-}" in
   *)
     cat <<'USAGE'
 usage: bootstrap.sh prepare
-       bootstrap.sh finish --domain your.domain.example
+       bootstrap.sh finish --domain your.domain --email you@your.domain
 
 prepare  packages, service accounts, environment files, firewall
 finish   units, Caddy with TLS, preflight — refuses until OpenD is logged in

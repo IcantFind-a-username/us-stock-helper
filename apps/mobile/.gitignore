@@ -41,3 +41,8 @@ example
 # generated native folders
 /ios
 /android
+
+# Local runtime tokens. Never commit: these grant LAN access to the gateway.
+.env
+.env.*
+!.env.example

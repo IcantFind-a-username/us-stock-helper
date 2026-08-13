@@ -27,6 +27,10 @@ screen rather than being smoothed over in serialization:
   as confidently as a measured one is worse than showing nothing.
 - `status: "unavailable"` — no completed candles means no analysis, stated as
   such.
+- `citations[].freshnessSeconds` and `citations[].stale` — how old each cited
+  item was when it was read, and whether that passed the configured window.
+  Both are `null` when the evidence never passed a collector: zero seconds old
+  is a measurement, no measurement is not.
 
 ## Run the server
 
@@ -52,6 +56,10 @@ curl --fail --silent --show-error \
 | `ANALYSIS_API_GATEWAY_URL` | `http://127.0.0.1:8765` | Market gateway origin, loopback only. |
 | `ANALYSIS_API_CANDLE_COUNT` | `200` | Candles requested per decision, 1–1000. |
 | `ANALYSIS_API_GATEWAY_TIMEOUT_SECONDS` | `10` | Bound on one gateway read. |
+| `US_STOCK_HELPER_CONTACT_EMAIL` | unset | Contact address for the feed User-Agent; required, SEC EDGAR serves only clients it can reach. |
+| `ANALYSIS_API_EVIDENCE_LOOKBACK_SECONDS` | `21600` | How far back each poll asks its sources. |
+| `ANALYSIS_API_EVIDENCE_STALE_AFTER_SECONDS` | `86400` | Age past which a cited item is marked stale. |
+| `ANALYSIS_API_EVIDENCE_RETENTION_SECONDS` | `604800` | Memory bound on collected evidence; must exceed the staleness window. |
 
 A loopback deployment ignores any token that is set, because a token that is
 never demanded reads as protection that does not exist. The gateway URL must be
@@ -86,8 +94,26 @@ knowledge earlier than it really was.
 An unreachable gateway, an error envelope, or a candle missing either instant
 raises `MarketGatewayUnavailable`. Only a gateway that answers with a genuinely
 empty candle series yields no bars, which the contract reports as
-`status: "unavailable"`. Evidence has no feed at this boundary yet, so
-`citations` is empty and the score reports its reduced factor coverage.
+`status: "unavailable"`.
+
+## Where evidence comes from
+
+Candles and evidence arrive from different systems and fail in different ways,
+so they have separate providers and `CompositeAnalysisProvider` holds both. The
+evidence half polls the public sources declared in `information_layer`'s source
+registry — SEC EDGAR filings, Federal Reserve, BLS and BEA releases, and issuer
+newsrooms.
+
+A source that cannot be read raises rather than shrinking the result. This
+matters because the chain treats thin evidence as a reason to hold back: if a
+broken feed looked like a quiet market, that restraint would be triggered by an
+outage rather than by the market. Only a round where every source answered can
+produce an empty `citations` list.
+
+The whole evidence path refuses to start without `US_STOCK_HELPER_CONTACT_EMAIL`
+— EDGAR ships in the registry and serves only clients whose User-Agent names a
+reachable contact, so an anonymous deployment has no evidence path at all and
+should say so at startup instead of reporting an empty market per request.
 
 ## Run tests
 

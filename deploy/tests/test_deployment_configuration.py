@@ -557,3 +557,17 @@ class ScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccessLogPrivacyTests(unittest.TestCase):
+    def test_both_client_address_fields_are_masked(self) -> None:
+        """Masking one of the two still records where the reader is.
+
+        Caddy writes remote_ip and client_ip; the log line also carries the
+        requested symbol, so an unmasked address turns the access log into a
+        record of who looked at what from where.
+        """
+        caddyfile = (DEPLOY_ROOT / "Caddyfile").read_text(encoding="utf-8")
+
+        self.assertIn("request>remote_ip ip_mask", caddyfile)
+        self.assertIn("request>client_ip ip_mask", caddyfile)

@@ -286,8 +286,11 @@ class GatewayFailureTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
-    def test_evidence_has_no_feed_and_says_so_by_returning_nothing(self) -> None:
-        self.assertEqual(provider(Gateway(snapshot())).evidence_for("NVDA"), ())
+    def test_the_gateway_boundary_does_not_answer_for_evidence(self) -> None:
+        # It once returned an empty tuple, which read as "the market is quiet"
+        # no matter what the evidence sources were doing. Evidence now has its
+        # own provider, with its own failures.
+        self.assertFalse(hasattr(provider(Gateway(snapshot())), "evidence_for"))
 
 
 class ProviderConfigTests(unittest.TestCase):

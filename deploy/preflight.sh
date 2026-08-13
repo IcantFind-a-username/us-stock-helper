@@ -155,7 +155,13 @@ check_port_exposure() {
 		unknown port-exposure "ss is unavailable, so nothing is known about who can reach these ports"
 		return
 	fi
-	listeners="$(ss -H -ltn 2>/dev/null || true)"
+	# Swallowing ss's exit status would turn "could not look" into "looked
+	# and found nothing", which is the one substitution this script exists to
+	# prevent.
+	if ! listeners="$(ss -H -ltn 2>/dev/null)"; then
+		unknown port-exposure "ss could not enumerate listeners, so exposure is unmeasured"
+		return
+	fi
 	while IFS= read -r line; do
 		[ -n "$line" ] || continue
 		local_address="$(printf '%s\n' "$line" | awk '{print $4}')"
@@ -185,7 +191,7 @@ check_firewall() {
 		unknown firewall "ufw is not installed, so the firewall was not verified"
 		return
 	fi
-	status="$(ufw status 2>/dev/null || true)"
+	status="$(ufw status verbose 2>/dev/null || true)"
 	if [ -z "$status" ]; then
 		unknown firewall "ufw status could not be read, which usually means this check needs root"
 		return
@@ -198,6 +204,21 @@ check_firewall() {
 	*"Status: active"*) ;;
 	*)
 		unknown firewall "ufw reported a status this check does not recognise"
+		return
+		;;
+	esac
+	# An active firewall that defaults to allowing inbound traffic opens every
+	# port that has no explicit rule, including OpenD's. Its rule list reads
+	# identically to a correctly configured host, so the default is the only
+	# place the difference is visible.
+	case "$status" in
+	*"Default: deny (incoming)"* | *"Default: reject (incoming)"*) ;;
+	*"Default:"*)
+		fail firewall "the firewall does not deny inbound traffic by default"
+		return
+		;;
+	*)
+		unknown firewall "ufw did not report its default policy, so inbound exposure is unmeasured"
 		return
 		;;
 	esac

@@ -73,7 +73,10 @@ class SequenceTests(unittest.TestCase):
 class ExposureTests(unittest.TestCase):
     def test_only_ssh_and_https_are_opened(self) -> None:
         self.assertIn("ufw default deny incoming", SOURCE)
-        self.assertIn("ufw allow OpenSSH", SOURCE)
+        # The OpenSSH profile only covers port 22; the script now opens the
+        # port sshd is actually listening on, so a host whose sshd was moved
+        # does not lock itself out.
+        self.assertIn('ufw allow "${ssh_port}/tcp"', SOURCE)
         self.assertIn("ufw allow 443/tcp", SOURCE)
         for port in ("11111", "8765", "8770"):
             with self.subTest(port=port):
@@ -113,3 +116,39 @@ class ShellHygieneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinishReachesTheEndTests(unittest.TestCase):
+    """A half-finished deploy leaves 443 open with no token behind it.
+
+    `finish` restarts Caddy and then runs preflight. Anything preflight is
+    guaranteed to fail on aborts the script under `set -euo pipefail`, so the
+    operator never sees the closing instructions and is left with a public
+    listener, no API, and no idea which step they are stuck on.
+    """
+
+    def test_both_caddyfile_placeholders_are_replaced(self) -> None:
+        # preflight fails on any remaining `example.com`, and Caddy would
+        # otherwise register the ACME account to an address nobody here owns —
+        # expiry and revocation notices would go to a stranger.
+        self.assertIn("stock\\.example\\.com", SOURCE)
+        self.assertIn("ops@example\\.com", SOURCE)
+
+    def test_the_acme_contact_is_required_rather_than_suggested(self) -> None:
+        self.assertIn("--email", SOURCE)
+
+    def test_caddy_is_validated_before_it_serves(self) -> None:
+        finish = SOURCE.split("cmd_finish()")[1]
+        validate = finish.index("caddy validate")
+        restart = finish.index("systemctl restart caddy")
+
+        self.assertLess(validate, restart)
+
+    def test_the_firewall_is_never_reset_blindly(self) -> None:
+        # `ufw --force reset` drops every existing rule. On a host whose sshd
+        # was moved off 22, the following `allow OpenSSH` does not restore
+        # access, and a cloud box with no serial console is then unreachable.
+        self.assertNotIn("ufw --force reset", SOURCE)
+
+    def test_the_running_ssh_port_is_kept_open(self) -> None:
+        self.assertIn("sshd", SOURCE)

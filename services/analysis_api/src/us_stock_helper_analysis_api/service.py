@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from decision_engine import DecisionEngine, DecisionInputs
-from information_layer import EvidenceEvent
+from information_layer import Citation, EvidenceEvent
+from information_layer.feeds import FRESHNESS_ATTRIBUTE, STALE_ATTRIBUTE
 from us_stock_helper_core import (
     Horizon,
     OHLCVBar,
@@ -104,7 +105,18 @@ class AnalysisService:
             )
         )
 
+        citations = [
+            _citation(item) for item in output.evidence_packet.citations
+        ]
         notes: list[str] = []
+        stale_count = sum(1 for item in citations if item["stale"] is True)
+        if stale_count:
+            # Age is stated, never used as a reason to hide the item: whether
+            # an old filing still matters is the reader's call to make.
+            notes.append(
+                f"{stale_count} cited item(s) are older than the configured "
+                "freshness window and are marked stale."
+            )
         if output.forecast is None:
             notes.append(
                 "Realized volatility could not be measured, so no scenario "
@@ -134,16 +146,7 @@ class AnalysisService:
                 "decisionSignal": output.evidence_packet.sentiment.decision_signal,
                 "uncertainty": list(output.evidence_packet.sentiment.uncertainty),
             },
-            "citations": [
-                {
-                    "id": citation.citation_id,
-                    "headline": citation.headline,
-                    "publisher": citation.publisher_name,
-                    "url": citation.canonical_url,
-                    "availableAt": _iso(citation.available_at),
-                }
-                for citation in output.evidence_packet.citations
-            ],
+            "citations": citations,
             "notes": notes,
         }
 
@@ -165,6 +168,38 @@ class AnalysisService:
             "citations": [],
             "notes": [reason],
         }
+
+
+def _citation(citation: Citation) -> dict[str, Any]:
+    attributes = dict(citation.attributes)
+    return {
+        "id": citation.citation_id,
+        "headline": citation.headline,
+        "publisher": citation.publisher_name,
+        "url": citation.canonical_url,
+        "availableAt": _iso(citation.available_at),
+        "freshnessSeconds": _freshness(attributes),
+        "stale": _stale(attributes),
+    }
+
+
+def _freshness(attributes: Mapping[str, str]) -> int | None:
+    # Null means nobody measured the age. Zero would mean it was measured and
+    # came out at this instant, which is a different claim entirely.
+    raw = attributes.get(FRESHNESS_ATTRIBUTE)
+    if raw is None:
+        return None
+    try:
+        return int(float(raw))
+    except ValueError:
+        return None
+
+
+def _stale(attributes: Mapping[str, str]) -> bool | None:
+    raw = attributes.get(STALE_ATTRIBUTE)
+    if raw in {"true", "false"}:
+        return raw == "true"
+    return None
 
 
 def _score(score: ScoreResult) -> dict[str, Any]:

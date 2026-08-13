@@ -34,7 +34,18 @@ def bars(count: int = 40, *, flat: bool = False) -> tuple[OHLCVBar, ...]:
     return tuple(rows)
 
 
-def evidence() -> tuple[EvidenceEvent, ...]:
+def evidence(
+    *,
+    stamped: bool = False,
+    stale: bool = False,
+) -> tuple[EvidenceEvent, ...]:
+    # A collector stamps what it measured; evidence that reached the service
+    # by any other route carries no measurement at all.
+    stamps = (
+        (("freshness_seconds", "1140"), ("stale", "true" if stale else "false"))
+        if stamped
+        else ()
+    )
     return tuple(
         EvidenceEvent.create(
             event_id=event_id,
@@ -58,14 +69,23 @@ def evidence() -> tuple[EvidenceEvent, ...]:
             sentiment=0.7,
             confidence=0.9,
             symbol_relevance=(("NVDA", 0.95),),
+            attributes=stamps,
         )
         for event_id, publisher in (("a", "reuters"), ("b", "bloomberg"))
     )
 
 
 class Provider:
-    def __init__(self, *, rows: tuple[OHLCVBar, ...] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        rows: tuple[OHLCVBar, ...] | None = None,
+        stamped: bool = False,
+        stale: bool = False,
+    ) -> None:
         self.rows = bars() if rows is None else rows
+        self.stamped = stamped
+        self.stale = stale
         self.queries: list[tuple[str, str]] = []
 
     def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
@@ -73,7 +93,7 @@ class Provider:
         return self.rows
 
     def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
-        return evidence()
+        return evidence(stamped=self.stamped, stale=self.stale)
 
 
 def service(provider: Provider | None = None) -> AnalysisService:
@@ -179,6 +199,32 @@ class AnalysisContractTests(unittest.TestCase):
             self.assertTrue(citation["url"].startswith("https://"))
             self.assertTrue(citation["publisher"])
             self.assertTrue(citation["availableAt"])
+
+    def test_a_citation_carries_the_age_measured_when_it_was_read(self) -> None:
+        result = service(Provider(stamped=True)).decision("NVDA", "short")
+
+        for citation in result["citations"]:
+            self.assertEqual(citation["freshnessSeconds"], 1140)
+            self.assertIs(citation["stale"], False)
+
+    def test_evidence_with_no_measured_age_says_so_rather_than_reporting_zero(
+        self,
+    ) -> None:
+        # Zero seconds old is a measurement. Evidence that never passed a
+        # collector has no measurement at all, and the two must not look alike.
+        result = service().decision("NVDA", "short")
+
+        for citation in result["citations"]:
+            self.assertIsNone(citation["freshnessSeconds"])
+            self.assertIsNone(citation["stale"])
+
+    def test_stale_evidence_is_cited_and_flagged_rather_than_dropped(self) -> None:
+        result = service(Provider(stamped=True, stale=True)).decision("NVDA", "short")
+
+        self.assertTrue(result["citations"])
+        for citation in result["citations"]:
+            self.assertIs(citation["stale"], True)
+        self.assertTrue(any("stale" in note.lower() for note in result["notes"]))
 
     def test_an_unknown_horizon_is_refused(self) -> None:
         with self.assertRaises(ValueError):

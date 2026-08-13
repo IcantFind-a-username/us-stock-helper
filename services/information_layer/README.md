@@ -26,6 +26,8 @@
 - `feeds/generic.py`：可配置 RSS/Atom、条件请求、短摘要、关键词相关性和退避元数据。
 - `feeds/sec.py`：SEC EDGAR Current Filings Atom 配置，按表单拆分并保留 accession。
 - `feeds/coordinator.py`：ETag/Last-Modified 状态、内容哈希去重和修订发布。
+- `feeds/registry.py`：真实可用公开源的声明式注册表，逐条标注类型、可靠度、轮询下限和是否需要带联系方式的 User-Agent。
+- `feeds/collector.py`：跨源轮询、进程内留存和时效性标注；把“源读不到”和“源没有内容”当成两件事。
 
 ## 生产适配器优先级
 
@@ -124,6 +126,59 @@ sec_adapters = build_sec_current_filings_adapters(
 SEC adapter 默认最小轮询间隔为 1 秒。SEC 官方当前公平访问上限为全部机器合计不超过每秒 10 个请求；生产调度仍应把所有 SEC adapter 合并限速，并遵守返回的 `Retry-After`。参考 [SEC Developer Resources](https://www.sec.gov/about/developer-resources) 与 [SEC RSS Feeds](https://www.sec.gov/about/rss-feeds)。
 
 `PollingCoordinator` 在进程生命周期内保存条件请求和发布记录：304 不发布、相同 claim/content hash 不重发，内容改变则形成带 `revision_of` 的修订事件。生产部署需要把同样的 validators 与已发布 hash 状态持久化，才能在进程重启后继续去重。
+
+## 源注册表
+
+`feeds/registry.py` 用 `SourceSpec` 逐条声明本系统允许轮询的真实来源，构造时即校验：仅 HTTPS、URL 必须落在该源自己的 host allowlist 内、`robots_allows_polling` 必须为真、可靠度落在 (0, 1]、轮询间隔不得低于该类型的下限。id 在注册表内唯一——两条同 id 会共用协调器的发布记录，互相把对方的条目当成新事件重发。
+
+| source_id | 类型 | 可靠度 | 轮询间隔 | 需要联系式 User-Agent |
+| --- | --- | --- | --- | --- |
+| `sec-current-8-k` | 监管文件 | 0.99 | 300s | 是 |
+| `sec-current-4` | 监管文件 | 0.99 | 300s | 是 |
+| `federal-reserve-press` | 宏观数据 | 0.99 | 900s | 否 |
+| `bls-news-releases` | 宏观数据 | 0.99 | 1800s | 否 |
+| `bea-news-releases` | 宏观数据 | 0.99 | 1800s | 否 |
+| `apple-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+| `nvidia-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+
+注册表里没有新闻通讯社。持牌通讯社和新闻稿分发商需要合同才能自动抓取，条款不明的源一律不加：一条日后必须撤回的证据，比没有这条证据更糟，因为基于它做出的判断已经发生。`SourceKind.NEWS_WIRE` 保留枚举位，是为了将来加入时必须是一次带许可的显式动作。
+
+SEC 只服务能被联系到的客户端，联系邮箱从 `US_STOCK_HELPER_CONTACT_EMAIL` 读取，代码里不写死任何地址——写死的地址对真正运行部署的人是错的，而 SEC 在限速时也就联系不到运维方。未配置时 `build_adapters` 直接拒绝启动并点名缺的变量和被拦下的源。
+
+```python
+import os
+
+from information_layer.feeds import (
+    UrllibHttpsTransport,
+    build_adapters,
+    contact_email_from_environment,
+)
+
+adapters = build_adapters(
+    transport=UrllibHttpsTransport(),
+    contact_email=contact_email_from_environment(os.environ),
+)
+```
+
+## 证据采集与时效性
+
+`EvidenceCollector` 按各源自己的间隔轮询、在进程内留存已收到的事件，并在**每次读取时**计算时效性。
+
+- **读不到就报错**：不可达、被拒绝、解析失败、429/5xx 一律抛 `EvidenceUnavailable`，异常里点名是哪个源、什么原因。只有当所有源都答复了、且确实没有内容时，才会返回空。空证据和取不到证据混为一谈，会让“证据不足”这道硬门失去意义。
+- **半数可用不算可用**：任何一个配置源读不到都会抛错。一半源答复看起来和全部源安静地答复完全一样，调用方无从分辨。
+- **发布方限速不是失败**：协调器按最小间隔跳过的那次轮询不算失败，该源此前收到的内容仍然有效。
+- **freshness 按 `available_at` 计算**：`freshness_seconds` 是"可用时刻到读取时刻"的距离，读取早于可用会抛错而不是钳成 0。每条返回事件带上 `freshness_seconds` 和 `stale` 两个属性，随引用一路传到 API。
+- **过期只标记，不丢弃**：超过 `stale_after_seconds` 的条目标 `stale=true` 后照常返回；这条旧公告还算不算数，是读的人该做的判断。`retention_seconds` 只用来给进程内存封顶，构造器强制它必须大于时效窗口，否则窗口承诺要标记的条目会被直接删掉。
+- **排序按 `available_at` 从新到旧**；同一次轮询里的条目可用时刻相同，退回到发布方自己声明的发布时间排序。
+
+```python
+from information_layer.feeds import EvidenceCollector
+
+collector = EvidenceCollector(adapters, stale_after_seconds=24 * 3600)
+events = collector.collect(symbols=("NVDA",))  # 读不到任何一个源就抛 EvidenceUnavailable
+```
+
+按标的取证据时，带宏观或地缘标签的条目始终保留：它们描述的是所有标的共同所处的市场，过滤掉就等于隐藏了这次判断所处的背景。
 
 ## 运行测试
 

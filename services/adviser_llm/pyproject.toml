@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "us-stock-helper-adviser-llm"
+version = "0.1.0"
+description = "Outbound-only LLM adviser layer for cross-source interpretation"
+requires-python = ">=3.11"
+# The only package in the repository with third-party dependencies. The
+# official SDK is the supported way to reach the Messages API, and a
+# hand-rolled HTTP client would have to re-implement retry, streaming and
+# structured-output parsing without the vendor's guarantees.
+dependencies = [
+    "anthropic>=0.116",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["adviser_llm*"]
+
+[tool.setuptools.package-data]
+adviser_llm = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,5 +1,9 @@
 """Read completed candles from the market gateway's snapshot contract.
 
+This supplies candles only. Evidence comes from `evidence_provider`, because
+the two systems fail in different ways and a single object answering for both
+would have to pick one story to tell about a failure.
+
 The gateway is the only candle source, and every failure to reach it has to
 stay distinguishable from the market genuinely having produced nothing: an
 empty series is a decision the app can trust, a silent one is not. So the
@@ -19,7 +23,6 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
 
-from information_layer import EvidenceEvent
 from us_stock_helper_core import OHLCVBar
 
 
@@ -78,12 +81,6 @@ class MarketGatewayProvider:
                     "the gateway candle series is out of order"
                 )
         return bars
-
-    def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
-        # No evidence feed reaches this boundary yet. Nothing is the true
-        # answer, and the decision chain already reports which factors it
-        # could not score because of it.
-        return ()
 
     def _snapshot(self, symbol: str, interval: str) -> dict[str, Any]:
         query = urlencode(

@@ -297,14 +297,16 @@ class FirewallTests(PreflightTestCase):
     def test_a_firewall_that_opens_an_internal_port_fails(self) -> None:
         self.stub(
             "ufw",
-            'printf "Status: active\\n\\n8765/tcp ALLOW Anywhere\\n443/tcp ALLOW Anywhere\\n"',
+            'printf "Status: active\\nDefault: deny (incoming), allow (outgoing)'
+            '\\n\\n8765/tcp ALLOW IN Anywhere\\n443/tcp ALLOW IN Anywhere\\n"',
         )
         self.assertIn("FAIL", self.run_preflight().statuses("firewall"))
 
     def test_a_firewall_that_opens_only_https_and_ssh_passes(self) -> None:
         self.stub(
             "ufw",
-            'printf "Status: active\\n\\n443/tcp ALLOW Anywhere\\nOpenSSH ALLOW Anywhere\\n"',
+            'printf "Status: active\\nDefault: deny (incoming), allow (outgoing)'
+            '\\n\\n443/tcp ALLOW IN Anywhere\\nOpenSSH ALLOW IN Anywhere\\n"',
         )
         self.assertEqual(self.run_preflight().statuses("firewall"), {"PASS"})
 
@@ -338,3 +340,48 @@ class OpenDCommandLineTests(PreflightTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EvidenceHonestyTests(PreflightTestCase):
+    """The header promises this script never passes what it could not inspect.
+
+    These two checks are the only automated evidence that OpenD's control
+    port and the gateway stay off the public internet. Reporting PASS without
+    looking is worse than having no check: it turns "unverified" into
+    "verified safe" on the one question whose wrong answer exposes a
+    logged-in broker session.
+    """
+
+    def test_a_failing_ss_is_unknown_rather_than_pass(self) -> None:
+        self.stub("ss", 'echo "ss: no netlink" >&2; exit 1')
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.statuses("port-exposure"), {"UNKNOWN"})
+
+    def test_the_firewall_check_reads_the_default_incoming_policy(self) -> None:
+        # `ufw status` omits the default policy line, so a host running
+        # `default allow incoming` prints text identical to a correct one.
+        recorded = self.tree / "ufw-args"
+        self.stub(
+            "ufw",
+            f'printf "%s\\n" "$@" >> {recorded}\n'
+            'echo "Status: active"\n'
+            'echo "443/tcp ALLOW Anywhere"\n'
+            'echo "OpenSSH ALLOW Anywhere"',
+        )
+
+        self.run_preflight()
+
+        self.assertIn("verbose", recorded.read_text(encoding="utf-8"))
+
+    def test_a_default_allow_incoming_policy_fails(self) -> None:
+        self.stub(
+            "ufw",
+            'echo "Status: active"\n'
+            'echo "Default: allow (incoming), allow (outgoing), disabled (routed)"\n'
+            'echo "443/tcp ALLOW IN Anywhere"\n'
+            'echo "OpenSSH ALLOW IN Anywhere"',
+        )
+
+        self.assertIn("FAIL", self.run_preflight().statuses("firewall"))
