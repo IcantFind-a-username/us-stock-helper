@@ -591,9 +591,13 @@ export function createAnalysisClient({
   authorizationToken,
   fetchImpl = fetch,
   now = () => new Date(),
-  // The chain scores, forecasts and cites before it answers, so it needs a
-  // longer deadline than a quote read; the request still has to end by itself.
-  timeoutMs = 8_000,
+  // The deterministic chain reads public evidence and factors before it
+  // answers. A single factor fetch is allowed up to 30 seconds server-side,
+  // so the old eight-second client deadline guaranteed that a healthy but
+  // uncached first request could be abandoned before the server's own budget.
+  // This still ends by itself and does not change the separately opt-in model
+  // path; market quotes continue to use their much shorter deadline.
+  timeoutMs = 45_000,
 }: AnalysisClientOptions): AnalysisSource {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
   let parsedBaseUrl: URL;

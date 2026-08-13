@@ -388,6 +388,52 @@ describe("analysis client transport", () => {
     }
   });
 
+  it("does not abandon a live deterministic decision at the old eight-second deadline", async () => {
+    jest.useFakeTimers();
+    try {
+      let fetchSignal: AbortSignal | undefined;
+      const fetchImpl = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((resolve, reject) => {
+            fetchSignal = init?.signal as AbortSignal;
+            const answer = setTimeout(
+              () => resolve(jsonResponse(decisionFixture())),
+              9_000,
+            );
+            fetchSignal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(answer);
+                reject(
+                  Object.assign(new Error("request aborted"), {
+                    name: "AbortError",
+                  }),
+                );
+              },
+              { once: true },
+            );
+          }),
+      ) as unknown as typeof fetch;
+      const client = createAnalysisClient({
+        baseUrl: "http://127.0.0.1:8788",
+        fetchImpl,
+        now: () => now,
+      });
+
+      const request = client.getDecision("NVDA", "short");
+      await jest.advanceTimersByTimeAsync(9_000);
+
+      expect(fetchSignal?.aborted).toBe(false);
+      await expect(request).resolves.toMatchObject({
+        symbol: "NVDA",
+        interval: "day",
+      });
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("keeps caller cancellation distinct from a timeout that follows it", async () => {
     jest.useFakeTimers();
     try {
