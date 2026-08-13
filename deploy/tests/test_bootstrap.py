@@ -80,8 +80,12 @@ class ExposureTests(unittest.TestCase):
                 self.assertNotIn(f"ufw allow {port}", SOURCE)
 
     def test_environment_files_are_created_private(self) -> None:
-        self.assertIn("install -m 0600", SOURCE)
-        self.assertIn("install -d -m 0750 /etc/usstock", SOURCE)
+        # Root-owned 0600 is what the runbook specifies: systemd reads
+        # EnvironmentFile as the manager, before dropping privileges, so no
+        # service account ever needs to read it.
+        self.assertIn("install -m 0600 -o root -g root", SOURCE)
+        self.assertIn("/etc/us-stock-helper", SOURCE)
+        self.assertNotIn("/etc/usstock/", SOURCE)
 
 
 class ShellHygieneTests(unittest.TestCase):

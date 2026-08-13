@@ -45,23 +45,24 @@ cmd_prepare() {
   apt-get install -y -qq python3 python3-venv python3-pip ufw curl ca-certificates
 
   log "Service accounts"
-  for account in usstock-opend usstock-gateway usstock-analysis; do
+  for account in usstock-opend usstock-gateway usstock-api; do
     if id "${account}" >/dev/null 2>&1; then
       note "${account} exists"
     else
-      useradd --system --create-home --shell /usr/sbin/nologin "${account}"
+      useradd --system --home-dir /nonexistent --no-create-home \
+        --shell /usr/sbin/nologin "${account}"
       note "created ${account}"
     fi
   done
 
   log "Environment files"
-  install -d -m 0750 /etc/usstock
+  install -d -m 0755 -o root -g root /etc/us-stock-helper
   for example in "${DEPLOY_DIR}"/env/*.env.example; do
-    target="/etc/usstock/$(basename "${example}" .example)"
+    target="/etc/us-stock-helper/$(basename "${example}" .example)"
     if [ -f "${target}" ]; then
       note "$(basename "${target}") exists, left alone"
     else
-      install -m 0600 "${example}" "${target}"
+      install -m 0600 -o root -g root "${example}" "${target}"
       note "created $(basename "${target}") — edit it before finishing"
     fi
   done
@@ -114,10 +115,13 @@ cmd_finish() {
   log "Installing units"
   install -m 0644 "${DEPLOY_DIR}"/systemd/*.service /etc/systemd/system/
   systemctl daemon-reload
-  for unit in market-gateway analysis-api; do
-    systemctl enable --now "${unit}.service"
-    note "${unit} enabled"
-  done
+  systemd-analyze verify /etc/systemd/system/opend.service \
+    /etc/systemd/system/market-gateway.service \
+    /etc/systemd/system/analysis-api.service
+  systemctl enable --now market-gateway.service
+  note "market-gateway enabled"
+  # analysis-api stays stopped until a token exists: without one it refuses to
+  # start, which is the intended fail-closed behaviour.
 
   log "Caddy"
   if ! command -v caddy >/dev/null 2>&1; then
@@ -129,8 +133,10 @@ cmd_finish() {
     apt-get update -qq
     apt-get install -y -qq caddy
   fi
-  sed "s/{\$SITE_ADDRESS}/${domain}/g" "${DEPLOY_DIR}/Caddyfile" > /etc/caddy/Caddyfile
-  chmod 0644 /etc/caddy/Caddyfile
+  install -m 0644 "${DEPLOY_DIR}/Caddyfile" /etc/caddy/Caddyfile
+  sed -i "s/stock\.example\.com/${domain}/" /etc/caddy/Caddyfile
+  caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+  note "set the ACME contact address in /etc/caddy/Caddyfile before restarting"
   systemctl restart caddy
   note "serving ${domain}"
 
@@ -139,11 +145,17 @@ cmd_finish() {
 
   log "Done"
   cat <<NEXT
-    Issue the phone's pairing code:
+    Issue the phone's bearer token and start the API:
 
-      sudo -u usstock-analysis python3 -m us_stock_helper_device_auth pair --label "iPhone"
+      sudo ${DEPLOY_DIR}/issue-device-token.sh
+      sudo systemctl enable --now analysis-api.service
 
-    Then enter that code in the app once. It is single-use and short-lived.
+    The token prints once, to this terminal only. Type it into the app.
+
+    Read section 9 of README.md before you rely on it: this is one static
+    token with no expiry and no per-device revocation. services/device_auth
+    implements single-use codes and revocable per-device tokens, but nothing
+    serves them over HTTP yet, so this runbook cannot deploy that.
 NEXT
 }
 

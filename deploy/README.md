@@ -55,9 +55,25 @@ never placed in a systemd unit, an environment file or a command line.
 | `env/analysis-api.env.example` | Template for the API's environment file, including the bearer token. |
 | `Caddyfile` | The single public entry point on 443. |
 | `issue-device-token.sh` | Generates the phone's bearer token and writes it into the environment file. |
+| `bootstrap.sh` | Runs the mechanical steps of this runbook, stopping before section 6. |
 | `preflight.sh` | Pre-deployment self-check; refuses to report PASS for anything it could not inspect. |
 | `.gitignore` | Keeps real environment files and the OpenD config out of git. |
 | `tests/` | The invariants the above must not lose. |
+
+## Shortcut
+
+`bootstrap.sh` performs the mechanical parts of sections 1, 2, 7, 8, 10, 11 and
+12. It stops before section 6 and refuses to continue until OpenD answers on
+loopback, because a stack started against a logged-out OpenD looks healthy and
+returns nothing:
+
+```bash
+sudo ./deploy/bootstrap.sh prepare
+# sections 3, 4, 5 and 6 by hand — the login is yours
+sudo ./deploy/bootstrap.sh finish --domain your.domain
+```
+
+It is a convenience over the steps below, not a replacement for reading them.
 
 ## 1. The server
 
