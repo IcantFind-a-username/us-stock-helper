@@ -444,6 +444,19 @@ describe("schema-v2 stock snapshot validation", () => {
     ]);
   });
 
+  it("keeps an older schema-2 snapshot usable when the optional TD series is absent", () => {
+    const value = stockSnapshotFixture();
+    // `series` was added without a schema-version bump. During a rolling local
+    // upgrade an already-running gateway can still return the earlier schema-2
+    // shape; rejecting the whole snapshot made every stock detail say 响应异常.
+    delete (value.indicators.magicNine as { series?: unknown }).series;
+
+    const snapshot = decodeStockSnapshotEnvelope(value, { now });
+
+    expect(snapshot.magicNine.series).toBeNull();
+    expect(snapshot.symbol).toBe("NVDA");
+  });
+
   it.each([
     [[{ direction: "bullish", count: 1 }], "wrong length"],
     [[null, { direction: "sideways", count: 2 }], "unknown direction"],

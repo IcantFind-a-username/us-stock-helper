@@ -474,7 +474,12 @@ function decodeCompletedTdSetup(
 function decodeMagicNineSeries(
   value: unknown,
   candleCount: number,
-): (MagicNineSeriesPoint | null)[] {
+): (MagicNineSeriesPoint | null)[] | null {
+  // The first schema-2 gateway published only the current setup summary. The
+  // aligned series was added later without changing schemaVersion, so an older
+  // process may legitimately omit it during a rolling local upgrade. Preserve
+  // the summary/badge fallback instead of discarding the entire stock detail.
+  if (value === undefined) return null;
   if (!Array.isArray(value) || value.length !== candleCount) {
     throw new GatewayValidationError(
       "magic nine series must carry one value per completed candle",
