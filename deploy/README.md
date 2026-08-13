@@ -52,7 +52,7 @@ never placed in a systemd unit, an environment file or a command line.
 | `systemd/analysis-api.service` | Runs the decision-chain HTTP boundary as `usstock-api`. |
 | `env/opend.env.example` | Template for OpenD's environment file. |
 | `env/market-gateway.env.example` | Template for the gateway's environment file. |
-| `env/analysis-api.env.example` | Template for the API's environment file, including the bearer token. |
+| `env/analysis-api.env.example` | Template for the API's environment file, including the bearer token and the SEC contact address. |
 | `Caddyfile` | The single public entry point on 443. |
 | `issue-device-token.sh` | Generates the phone's bearer token and writes it into the environment file. |
 | `bootstrap.sh` | Runs the mechanical steps of this runbook, stopping before section 6. |
@@ -207,6 +207,11 @@ for name in opend market-gateway analysis-api; do
     /etc/us-stock-helper/$name.env
 done
 ```
+
+Fill in `US_STOCK_HELPER_CONTACT_EMAIL` in `analysis-api.env` before starting
+the service. The SEC requires a contact address in the User-Agent of every
+automated request, and the evidence sources refuse to start without one rather
+than polling the Commission anonymously.
 
 Mode 0600 owned by root is correct even though the services run as other
 accounts: systemd reads `EnvironmentFile=` as the manager, before it drops

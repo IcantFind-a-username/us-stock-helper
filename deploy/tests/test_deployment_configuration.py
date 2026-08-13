@@ -571,3 +571,22 @@ class AccessLogPrivacyTests(unittest.TestCase):
 
         self.assertIn("request>remote_ip ip_mask", caddyfile)
         self.assertIn("request>client_ip ip_mask", caddyfile)
+
+
+class EvidenceContactTests(unittest.TestCase):
+    def test_the_sec_contact_address_is_templated_and_empty(self) -> None:
+        """Shipping a real address would make every deployment poll as us."""
+        template = (
+            DEPLOY_ROOT / "env" / "analysis-api.env.example"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("US_STOCK_HELPER_CONTACT_EMAIL=", template)
+        self.assertNotIn("US_STOCK_HELPER_CONTACT_EMAIL=@", template)
+        for line in template.splitlines():
+            if line.startswith("US_STOCK_HELPER_CONTACT_EMAIL="):
+                self.assertEqual(line.split("=", 1)[1].strip(), "")
+
+    def test_the_runbook_tells_the_operator_to_fill_it_in(self) -> None:
+        runbook = (DEPLOY_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("US_STOCK_HELPER_CONTACT_EMAIL", runbook)
