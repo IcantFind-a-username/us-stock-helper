@@ -24,6 +24,7 @@ import { Screen } from "@/components/ui/Screen";
 import type { Candidate, Citation } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { useNow } from "@/hooks/use-now";
 import { useAppState } from "@/state/AppStateProvider";
 import {
   useMarketDataMode,
@@ -40,6 +41,7 @@ type DetailState = {
 
 export function DashboardScreen() {
   const router = useRouter();
+  const now = useNow();
   const { horizon, setHorizon } = useAppState();
   const { demoAvailable, demoMode, setDemoMode } = useMarketDataMode();
   const marketWatchlist = useMarketWatchlist();
@@ -243,6 +245,7 @@ export function DashboardScreen() {
         demoMode={demoMode}
         health={snapshot.dataHealth}
         marketSession={snapshot.marketSession}
+        now={now}
         onAlerts={() => router.push("/alerts")}
         onSearch={() => setSearchVisible(true)}
         updatedAt={snapshot.updatedAt}

@@ -2,6 +2,7 @@ import { SymbolView } from "expo-symbols";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { DataHealth } from "@/domain/models";
+import { shanghaiGreeting } from "@/domain/greeting";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 const healthLabels: Record<DataHealth, string> = {
@@ -21,6 +22,7 @@ type DashboardHeaderProps = {
   health: DataHealth;
   demoMode: boolean;
   updatedAt: string;
+  now: Date;
   onSearch(): void;
   onAlerts(): void;
 };
@@ -30,6 +32,7 @@ export function DashboardHeader({
   health,
   updatedAt,
   demoMode,
+  now,
   onSearch,
   onAlerts,
 }: DashboardHeaderProps) {
@@ -45,7 +48,7 @@ export function DashboardHeader({
             {updatedAt.slice(11, 16)}
           </Text>
         ) : null}
-        <Text style={styles.greeting}>早上好，Franz</Text>
+        <Text style={styles.greeting}>{shanghaiGreeting(now, "Franz")}</Text>
         {demoMode ? (
           <Text style={styles.demoStatus}>演示数据 · 非实时行情</Text>
         ) : null}
