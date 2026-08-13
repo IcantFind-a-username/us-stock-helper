@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it } from "@jest/globals";
 import {
   getAnalysisRuntimeConfig,
   getDeviceSessionRuntimeConfig,
+  getInitialDemoMode,
   getMarketRuntimeConfig,
 } from "../runtimeConfig";
 
@@ -16,6 +17,7 @@ const originalDevelopmentToken =
 const originalGatewayToken = process.env.EXPO_PUBLIC_MARKET_GATEWAY_TOKEN;
 const originalAnalysisUrl = process.env.EXPO_PUBLIC_ANALYSIS_API_URL;
 const originalAnalysisToken = process.env.EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN;
+const originalInitialDemoMode = process.env.EXPO_PUBLIC_INITIAL_DEMO_MODE;
 
 function setDevelopment(value: boolean) {
   Object.defineProperty(globalThis, "__DEV__", {
@@ -31,7 +33,8 @@ function restoreEnvironmentValue(
     | "EXPO_PUBLIC_MARKET_API_DEV_TOKEN"
     | "EXPO_PUBLIC_MARKET_GATEWAY_TOKEN"
     | "EXPO_PUBLIC_ANALYSIS_API_URL"
-    | "EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN",
+    | "EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN"
+    | "EXPO_PUBLIC_INITIAL_DEMO_MODE",
   value: string | undefined,
 ) {
   if (value === undefined) {
@@ -46,6 +49,7 @@ beforeEach(() => {
   delete process.env.EXPO_PUBLIC_MARKET_GATEWAY_TOKEN;
   delete process.env.EXPO_PUBLIC_ANALYSIS_API_URL;
   delete process.env.EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN;
+  delete process.env.EXPO_PUBLIC_INITIAL_DEMO_MODE;
 });
 
 afterEach(() => {
@@ -67,6 +71,29 @@ afterEach(() => {
   restoreEnvironmentValue(
     "EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN",
     originalAnalysisToken,
+  );
+  restoreEnvironmentValue(
+    "EXPO_PUBLIC_INITIAL_DEMO_MODE",
+    originalInitialDemoMode,
+  );
+});
+
+it("can start directly in demo mode only in a development build", () => {
+  setDevelopment(true);
+  process.env.EXPO_PUBLIC_INITIAL_DEMO_MODE = " true ";
+
+  expect(getInitialDemoMode()).toBe(true);
+
+  setDevelopment(false);
+  expect(getInitialDemoMode()).toBe(false);
+});
+
+it("rejects a misspelled development demo-mode flag", () => {
+  setDevelopment(true);
+  process.env.EXPO_PUBLIC_INITIAL_DEMO_MODE = "enabled";
+
+  expect(() => getInitialDemoMode()).toThrow(
+    "EXPO_PUBLIC_INITIAL_DEMO_MODE must be true or false",
   );
 });
 

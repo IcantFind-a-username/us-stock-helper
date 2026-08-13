@@ -104,6 +104,28 @@ export function getAnalysisRuntimeConfig(): AnalysisRuntimeConfig {
 }
 
 /**
+ * Lets a local development build boot straight into the deterministic fixture
+ * surface for unattended visual QA. The flag is intentionally ignored in a
+ * production bundle even if it was accidentally left in the build environment.
+ */
+export function getInitialDemoMode(): boolean {
+  const development = typeof __DEV__ !== "undefined" && __DEV__;
+  if (!development) return false;
+
+  const value = process.env.EXPO_PUBLIC_INITIAL_DEMO_MODE?.trim().toLowerCase();
+  if (
+    value === undefined ||
+    value === "" ||
+    value === "false" ||
+    value === "0"
+  ) {
+    return false;
+  }
+  if (value === "true" || value === "1") return true;
+  throw new Error("EXPO_PUBLIC_INITIAL_DEMO_MODE must be true or false");
+}
+
+/**
  * Pairing is what supplies the credential when nothing else does. A development
  * loopback service authenticates nobody, and a development LAN token is already
  * a credential, so those two builds are left alone; every other build — and

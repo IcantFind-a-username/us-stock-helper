@@ -1,5 +1,6 @@
 import type { PropsWithChildren } from "react";
 
+import { getInitialDemoMode } from "@/config/runtimeConfig";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useDeviceSession } from "@/state/DeviceSessionProvider";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
@@ -22,7 +23,8 @@ export function PairedMarketData({ children }: PropsWithChildren) {
   return (
     <MarketDataProvider
       deviceToken={deviceToken}
-      demoWatchlist={fixtureRepository.getDashboard("short").watchlist}>
+      demoWatchlist={fixtureRepository.getDashboard("short").watchlist}
+      initialDemoMode={getInitialDemoMode()}>
       {children}
     </MarketDataProvider>
   );
