@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   type GestureResponderEvent,
   Pressable,
@@ -7,6 +7,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 
 import {
   toDemoChartSnapshot,
@@ -17,9 +18,13 @@ import {
 import {
   buildChartGeometry,
   findNearestByX,
+  focusRatioForX,
+  panChartWindow,
   resolveChartWidth,
+  zoomChartWindow,
   type ChartOverlaySeries,
   type ChartPanelKey,
+  type ChartWindow,
 } from "@/domain/chart";
 import {
   chartStatusLabel,
@@ -94,6 +99,9 @@ export const PriceChart = memo(function PriceChart({
         ? "stale"
         : "live");
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(null);
+  // null means nobody has touched the chart yet, so it keeps following the
+  // newest bar as refreshes arrive. A gesture takes that over.
+  const [visibleWindow, setVisibleWindow] = useState<ChartWindow | null>(null);
   const hasForecast = showForecast && snapshot.forecast !== null;
 
   const panels = useMemo(() => {
@@ -126,6 +134,7 @@ export const PriceChart = memo(function PriceChart({
         overlays,
         macdSeries: showMacd ? snapshot.indicators.macd.series : null,
         rsiSeries: showRsi ? snapshot.indicators.rsi.series : null,
+        window: visibleWindow,
       }),
     [
       chartWidth,
@@ -141,8 +150,107 @@ export const PriceChart = memo(function PriceChart({
       snapshot.indicators.rsi.series,
       snapshot.participationBars,
       snapshot.source.decisionCutoff,
+      visibleWindow,
     ],
   );
+
+  // Gestures need the window, the step and the plot edges as they are right
+  // now, but they must not rebuild the gesture objects mid-drag; a ref carries
+  // the current geometry across without re-attaching handlers.
+  const viewport = useRef({
+    window: geometry.window,
+    step: geometry.step,
+    plotLeft: geometry.plotLeft,
+    plotRight: geometry.plotRight,
+  });
+  useEffect(() => {
+    viewport.current = {
+      window: geometry.window,
+      step: geometry.step,
+      plotLeft: geometry.plotLeft,
+      plotRight: geometry.plotRight,
+    };
+  });
+
+  const panStart = useRef<{
+    window: ChartWindow;
+    step: number;
+    translationX: number;
+  } | null>(null);
+  const pinchStart = useRef<{
+    window: ChartWindow;
+    scale: number;
+    focusRatio: number;
+  } | null>(null);
+
+  const gesture = useMemo(() => {
+    // The chart redraws through React, so the handlers have to reach the JS
+    // thread; there is no shared value a worklet could move on its own.
+    const pan = Gesture.Pan()
+      .withTestId("chart-pan")
+      .runOnJS(true)
+      .maxPointers(1)
+      // A tap stays a tap and a vertical page scroll still wins.
+      .activeOffsetX([-8, 8])
+      .failOffsetY([-16, 16])
+      .onBegin(() => {
+        panStart.current = {
+          window: viewport.current.window,
+          step: viewport.current.step,
+          translationX: 0,
+        };
+      })
+      .onStart((event) => {
+        // Measure from where the drag was recognised, so crossing the
+        // activation threshold does not jump the window a bar or two.
+        if (panStart.current) panStart.current.translationX = event.translationX;
+      })
+      .onUpdate((event) => {
+        const start = panStart.current;
+        if (!start || !(start.step > 0)) return;
+        setVisibleWindow(
+          panChartWindow({
+            window: start.window,
+            total: viewport.current.window.total,
+            // Dragging right pulls earlier bars in, so the window walks back.
+            barDelta: -(event.translationX - start.translationX) / start.step,
+          }),
+        );
+      });
+
+    const applyPinch = (scale: number) => {
+      const start = pinchStart.current;
+      if (!start) return;
+      setVisibleWindow(
+        zoomChartWindow({
+          window: start.window,
+          total: viewport.current.window.total,
+          scale: scale / start.scale,
+          focusRatio: start.focusRatio,
+        }),
+      );
+    };
+    const pinch = Gesture.Pinch()
+      .withTestId("chart-pinch")
+      .runOnJS(true)
+      .onBegin((event) => {
+        pinchStart.current = {
+          window: viewport.current.window,
+          scale: event.scale > 0 ? event.scale : 1,
+          // The anchor is where the fingers landed; letting it follow their
+          // drifting midpoint would pan and zoom at the same time.
+          focusRatio: focusRatioForX({
+            x: event.focalX,
+            plotLeft: viewport.current.plotLeft,
+            plotRight: viewport.current.plotRight,
+          }),
+        };
+      })
+      .onStart((event) => applyPinch(event.scale))
+      .onUpdate((event) => applyPinch(event.scale));
+
+    return Gesture.Simultaneous(pinch, pan);
+  }, []);
 
   const magicNineAvailable = snapshot.magicNine.qualityStatus !== "unavailable";
   const markers = useMemo<MagicNineMarker[]>(() => {
@@ -268,7 +376,13 @@ export const PriceChart = memo(function PriceChart({
   const participationSummary = showParticipation
     ? `，${geometry.participation.filter(({ available }) => available).length} 根有订单规模活动占比`
     : "";
-  const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线，当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%${participationSummary}；轻点或长按选择最近的 K 线`;
+  // The count has to be the drawn count, and when bars are held back off screen
+  // the reader is told how many and how to reach them.
+  const windowSummary =
+    geometry.window.total > geometry.candles.length
+      ? `，共 ${geometry.window.total} 根，双指缩放或横向拖动查看其余`
+      : "";
+  const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线${windowSummary}，当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%${participationSummary}；轻点或长按选择最近的 K 线`;
   const detailLabel = selectedCandle
     ? `${snapshot.symbol} 收盘时间 ${selectedCandle.timestamp}；开 ${selectedCandle.open.toFixed(2)}，高 ${selectedCandle.high.toFixed(2)}，低 ${selectedCandle.low.toFixed(2)}，收 ${selectedCandle.close.toFixed(2)}，成交量 ${selectedCandle.volume}${
         showParticipation
@@ -315,32 +429,34 @@ export const PriceChart = memo(function PriceChart({
         />
       </View>
 
-      <Pressable
-        accessibilityLabel={summary}
-        accessibilityRole="button"
-        onLongPress={selectNearestCandle}
-        onPress={selectNearestCandle}
-        style={({ pressed }) => [
-          styles.chartPress,
-          { minHeight: height },
-          pressed && styles.chartPressed,
-        ]}>
-        <ChartCanvas
-          geometry={geometry}
-          height={height}
-          macdLabel={macdPanelLabel(snapshot.indicators.macd)}
-          markers={markers}
-          rsiLabel={
-            snapshot.indicators.rsi.value === null
-              ? `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} 暂不可用`
-              : `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} ${snapshot.indicators.rsi.value.toFixed(1)}`
-          }
-          selectedX={selectedX}
-          showForecast={hasForecast}
-          showParticipation={showParticipation}
-          width={chartWidth}
-        />
-      </Pressable>
+      <GestureDetector gesture={gesture}>
+        <Pressable
+          accessibilityLabel={summary}
+          accessibilityRole="button"
+          onLongPress={selectNearestCandle}
+          onPress={selectNearestCandle}
+          style={({ pressed }) => [
+            styles.chartPress,
+            { minHeight: height },
+            pressed && styles.chartPressed,
+          ]}>
+          <ChartCanvas
+            geometry={geometry}
+            height={height}
+            macdLabel={macdPanelLabel(snapshot.indicators.macd)}
+            markers={markers}
+            rsiLabel={
+              snapshot.indicators.rsi.value === null
+                ? `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} 暂不可用`
+                : `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} ${snapshot.indicators.rsi.value.toFixed(1)}`
+            }
+            selectedX={selectedX}
+            showForecast={hasForecast}
+            showParticipation={showParticipation}
+            width={chartWidth}
+          />
+        </Pressable>
+      </GestureDetector>
 
       <ChartReadout
         candle={selectedCandle}

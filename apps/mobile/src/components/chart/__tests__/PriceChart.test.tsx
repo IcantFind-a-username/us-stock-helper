@@ -4,9 +4,19 @@ import {
   render,
   userEvent,
 } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { Dimensions, StyleSheet } from "react-native";
+import { State, type PanGesture, type PinchGesture } from "react-native-gesture-handler";
+import {
+  fireGestureHandler,
+  getByGestureTestId,
+} from "react-native-gesture-handler/jest-utils";
 
-import type { ChartSnapshot } from "@/domain/models";
+import {
+  minReadableBodyWidth,
+  readableWindowSize,
+  resolveChartWidth,
+} from "@/domain/chart";
+import type { Candle, ChartSnapshot } from "@/domain/models";
 import { colors } from "@/theme/tokens";
 
 import { PriceChart } from "../PriceChart";
@@ -173,6 +183,208 @@ async function pressAt(
     element.props.onClick?.(responderEvent(locationX));
   });
 }
+
+/** More bars than any window can hold, so the window has to be real. */
+const deepCandles: Candle[] = Array.from({ length: 240 }, (_, index) => {
+  const timestamp = new Date(
+    Date.UTC(2026, 6, 25, 12, index),
+  ).toISOString();
+  return {
+    timestamp,
+    availableAt: new Date(Date.parse(timestamp) + 1_000).toISOString(),
+    complete: true,
+    open: 100 + index,
+    high: 102 + index,
+    low: 99 + index,
+    close: 101 + index,
+    volume: 1_000 + index,
+  };
+});
+
+const deep: ChartSnapshot = {
+  ...snapshot,
+  candles: deepCandles,
+  participationBars: deepCandles.map((candle, index) => ({
+    closedAt: candle.timestamp,
+    mainShare: 0.6,
+    retailShare: 0.4,
+    mainActivity: 120,
+    retailActivity: 80,
+    netFlow: index,
+    coverage: 1,
+    source: "moomoo",
+    asOf: candle.timestamp,
+    availableAt: candle.availableAt,
+    methodVersion: "order-size-activity-share-v1",
+    qualityStatus: "live" as const,
+    missingReason: null,
+  })),
+  indicators: {
+    ma5: {
+      ...snapshot.indicators.ma5,
+      series: {
+        ...metadata,
+        methodVersion: "sma-5-v1",
+        values: deepCandles.map((_, index) => 100.5 + index),
+      },
+    },
+    rsi: {
+      ...snapshot.indicators.rsi,
+      series: {
+        ...metadata,
+        methodVersion: "wilder-rsi-14-v1",
+        values: deepCandles.map((_, index) => 30 + (index % 40)),
+      },
+    },
+    macd: {
+      ...snapshot.indicators.macd,
+      series: {
+        ...metadata,
+        methodVersion: "macd-12-26-9-v1",
+        line: deepCandles.map((_, index) => index / 100),
+        signal: deepCandles.map((_, index) => index / 200),
+        histogram: deepCandles.map((_, index) => (index % 7) - 3),
+      },
+    },
+  },
+};
+
+const viewportWidth = Dimensions.get("window").width;
+const defaultWindowSize = readableWindowSize(resolveChartWidth(viewportWidth));
+
+const visibleBodies = (view: Awaited<ReturnType<typeof render>>) =>
+  view.getAllByTestId("chart-candle", hidden).map((candle) => candle.props);
+
+async function selectedTimestamp(
+  view: Awaited<ReturnType<typeof render>>,
+  locationX: number,
+) {
+  await pressAt(
+    view.getByRole("button", { name: /NVDA 图表摘要/ }),
+    locationX,
+  );
+  return view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel as string;
+}
+
+async function pinchBy(scale: number, focalX: number) {
+  await act(async () => {
+    fireGestureHandler<PinchGesture>(getByGestureTestId("chart-pinch"), [
+      { state: State.BEGAN, scale: 1, focalX },
+      { state: State.ACTIVE, scale, focalX },
+      { state: State.END, scale, focalX },
+    ]);
+  });
+}
+
+async function dragBy(translationX: number) {
+  await act(async () => {
+    fireGestureHandler<PanGesture>(getByGestureTestId("chart-pan"), [
+      { state: State.BEGAN, translationX: 0 },
+      { state: State.ACTIVE, translationX: translationX / 2 },
+      { state: State.ACTIVE, translationX },
+      { state: State.END, translationX },
+    ]);
+  });
+}
+
+it("opens on a window dense enough to tell an up bar from a down bar", async () => {
+  const view = await render(<PriceChart stock={deep} />);
+
+  const bodies = visibleBodies(view);
+  expect(bodies).toHaveLength(defaultWindowSize);
+  expect(bodies.length).toBeLessThan(deepCandles.length);
+  bodies.forEach(({ width }) => {
+    expect(width).toBeGreaterThanOrEqual(minReadableBodyWidth);
+  });
+  // The newest bar is what the chart opens on.
+  expect(await selectedTimestamp(view, 10_000)).toContain(
+    deepCandles.at(-1)!.timestamp,
+  );
+});
+
+it("thins the window on a pinch and leaves the bar under the fingers alone", async () => {
+  const view = await render(<PriceChart stock={deep} />);
+  const oldestBefore = await selectedTimestamp(view, 0);
+
+  await pinchBy(2, 8);
+
+  const bodies = visibleBodies(view);
+  expect(bodies.length).toBeLessThan(defaultWindowSize);
+  expect(bodies.length).toBeGreaterThanOrEqual(
+    Math.floor(defaultWindowSize / 2) - 1,
+  );
+  // Pinched around the left edge, the leftmost bar is the anchor and stays.
+  expect(await selectedTimestamp(view, 0)).toBe(oldestBefore);
+  bodies.forEach(({ width }) => {
+    expect(width).toBeGreaterThanOrEqual(minReadableBodyWidth);
+  });
+});
+
+it("widens the window on a reverse pinch without passing the whole series", async () => {
+  const view = await render(<PriceChart stock={deep} />);
+
+  await pinchBy(0.05, 8);
+
+  const bodies = visibleBodies(view);
+  expect(bodies.length).toBeGreaterThan(defaultWindowSize);
+  expect(bodies.length).toBeLessThanOrEqual(200);
+});
+
+it("drags back into history and stops at the oldest bar", async () => {
+  const view = await render(<PriceChart stock={deep} />);
+  const newest = await selectedTimestamp(view, 10_000);
+  expect(newest).toContain(deepCandles.at(-1)!.timestamp);
+
+  await dragBy(120);
+  const stepped = await selectedTimestamp(view, 10_000);
+  expect(stepped).not.toContain(deepCandles.at(-1)!.timestamp);
+
+  await dragBy(90_000);
+  expect(await selectedTimestamp(view, 0)).toContain(deepCandles[0]!.timestamp);
+  // Already at the oldest bar: another drag has nowhere left to go.
+  await dragBy(90_000);
+  expect(await selectedTimestamp(view, 0)).toContain(deepCandles[0]!.timestamp);
+  expect(visibleBodies(view)).toHaveLength(defaultWindowSize);
+
+  await dragBy(-90_000);
+  expect(await selectedTimestamp(view, 10_000)).toContain(
+    deepCandles.at(-1)!.timestamp,
+  );
+});
+
+it("moves the volume, MACD, RSI and participation panels with the same drag", async () => {
+  const view = await render(<PriceChart stock={deep} />);
+  const labelsAt = () =>
+    view
+      .getAllByTestId(/^chart-time-label:/, hidden)
+      .map((label) => (label.props.testID as string).replace("chart-time-label:", ""));
+  const before = labelsAt();
+
+  await dragBy(90_000);
+
+  const bodies = visibleBodies(view);
+  expect(labelsAt()).not.toEqual(before);
+  expect(view.getAllByTestId("macd-histogram-bar", hidden)).toHaveLength(
+    bodies.length,
+  );
+  expect(view.getAllByTestId("participation-available", hidden)).toHaveLength(
+    bodies.length,
+  );
+  const rsiPath = view.getByTestId("rsi-line", hidden).props.d as string;
+  const maPath = view.getByTestId("chart-overlay-ma5", hidden).props.d as string;
+  // Every panel is cut from the same window, so each line starts on the very
+  // first drawn bar and ends on the last one.
+  const firstX = bodies[0]!.x + bodies[0]!.width / 2;
+  const lastX = bodies.at(-1)!.x + bodies.at(-1)!.width / 2;
+  [rsiPath, maPath].forEach((path) => {
+    const xs = [...path.matchAll(/[ML] (-?[\d.]+)/g)].map(([, value]) =>
+      Number(value),
+    );
+    // Path coordinates are written to two decimals.
+    expect(Math.min(...xs)).toBeCloseTo(firstX, 2);
+    expect(Math.max(...xs)).toBeCloseTo(lastX, 2);
+  });
+});
 
 it("keeps the chart on the page surface instead of a dark island", async () => {
   const view = await render(<PriceChart stock={snapshot} />);

@@ -118,6 +118,17 @@ export type ChartAxisLabel = {
   timestamp: string;
 };
 
+/**
+ * The slice of the point-in-time series that is drawn.
+ *
+ * `offset` counts bars from the oldest point-in-time bar, so it survives a
+ * zoom: the window keeps naming the same bars whatever the pixel width is.
+ */
+export type ChartWindow = { size: number; offset: number };
+
+/** The window the geometry actually drew, with the range it was cut from. */
+export type ResolvedChartWindow = ChartWindow & { total: number };
+
 export type ChartGeometryInput = {
   candles: Candle[];
   forecast: ForecastSnapshot | null;
@@ -129,6 +140,8 @@ export type ChartGeometryInput = {
   overlays?: readonly ChartOverlaySeries[];
   macdSeries?: ChartMacdSeriesInput | null;
   rsiSeries?: ChartRsiSeriesInput | null;
+  /** Omitted means the readable default window, anchored on the newest bar. */
+  window?: ChartWindow | null;
 };
 
 export type ChartGeometry = {
@@ -152,6 +165,7 @@ export type ChartGeometry = {
   priceMin: number;
   priceMax: number;
   priceTicks: { label: string; y: number }[];
+  window: ResolvedChartWindow;
 };
 
 const inset = { left: 8, right: 44, top: 14 } as const;
@@ -176,6 +190,123 @@ const panelMinimum: Record<ChartPanelKey, number> = {
   participation: 18,
 };
 const dayMs = 86_400_000;
+
+/**
+ * A body narrower than this is indistinguishable from its own wick — both are
+ * drawn in the bar's colour — so at that density up and down stop reading.
+ * It is the constraint the default window size is solved for, not a taste call.
+ */
+export const minReadableBodyWidth = 3;
+/** Pinched all the way in. Fewer bars than this is no longer a chart. */
+export const minWindowBars = 30;
+/** Pinched all the way out, and the widest window the density rule allows. */
+export const maxWindowBars = 200;
+
+const bodyWidthRatio = 0.62;
+const maxBodyWidth = 9;
+
+const clampNumber = (value: number, low: number, high: number) =>
+  Math.min(Math.max(value, low), high);
+
+const plotBounds = (width: number) => {
+  const left = inset.left;
+  return { left, right: Math.max(width - inset.right, left + 1) };
+};
+
+/**
+ * The largest window whose bodies still clear {@link minReadableBodyWidth}.
+ *
+ * `reservedSlots` are the slots the forecast takes on the same ordinal axis:
+ * they narrow every bar, so they have to be paid for out of the window.
+ */
+export function readableWindowSize(width: number, reservedSlots = 0) {
+  const { left, right } = plotBounds(width);
+  const affordable =
+    Math.floor((right - left) / (minReadableBodyWidth / bodyWidthRatio)) -
+    reservedSlots;
+  return clampNumber(affordable, minWindowBars, maxWindowBars);
+}
+
+/**
+ * Fits a window to the data: whole bars, never wider than the series, never
+ * scrolled past either end. The pinch limits are not applied here — a caller
+ * that asks for an exact slice gets it, and only {@link zoomChartWindow}
+ * enforces how far a finger may take it.
+ */
+export function clampChartWindow(
+  window: ChartWindow,
+  total: number,
+): ChartWindow {
+  const size = clampNumber(Math.round(window.size), 1, Math.max(total, 1));
+  return {
+    size,
+    offset: clampNumber(Math.round(window.offset), 0, Math.max(total - size, 0)),
+  };
+}
+
+/**
+ * Rescales the window around the pinch centre.
+ *
+ * `scale` is the gesture's own cumulative scale, so pinching apart (> 1) shows
+ * fewer bars. The bar under `focusRatio` keeps its place under the fingers,
+ * which is what makes a pinch feel like zooming rather than like re-cropping.
+ * Offsets are whole bars, so the anchor can land up to half a bar off.
+ */
+export function zoomChartWindow({
+  window,
+  total,
+  scale,
+  focusRatio,
+}: {
+  window: ChartWindow;
+  total: number;
+  scale: number;
+  focusRatio: number;
+}): ChartWindow {
+  const bounded = clampChartWindow(window, total);
+  const ratio = clampNumber(Number.isFinite(focusRatio) ? focusRatio : 0.5, 0, 1);
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const size = clampNumber(
+    Math.round(bounded.size / safeScale),
+    minWindowBars,
+    Math.min(maxWindowBars, Math.max(total, 1)),
+  );
+  const focusBar = bounded.offset + ratio * bounded.size;
+  return clampChartWindow({ size, offset: focusBar - ratio * size }, total);
+}
+
+/** Slides the window along the series; both ends are hard stops. */
+export function panChartWindow({
+  window,
+  total,
+  barDelta,
+}: {
+  window: ChartWindow;
+  total: number;
+  barDelta: number;
+}): ChartWindow {
+  const bounded = clampChartWindow(window, total);
+  const delta = Number.isFinite(barDelta) ? barDelta : 0;
+  return clampChartWindow(
+    { size: bounded.size, offset: bounded.offset + delta },
+    total,
+  );
+}
+
+/** Where a touch sits across the plot, as a share of it. */
+export function focusRatioForX({
+  x,
+  plotLeft,
+  plotRight,
+}: {
+  x: number;
+  plotLeft: number;
+  plotRight: number;
+}) {
+  const span = plotRight - plotLeft;
+  if (!(span > 0) || !Number.isFinite(x)) return 0.5;
+  return clampNumber((x - plotLeft) / span, 0, 1);
+}
 
 const twoDigits = (value: number) => String(value).padStart(2, "0");
 
@@ -230,10 +361,11 @@ const emptyGeometry = (
   width: number,
   height: number,
   requested: readonly ChartPanelKey[],
+  window: ResolvedChartWindow,
 ): ChartGeometry => {
-  const plotLeft = inset.left;
-  const plotRight = Math.max(width - inset.right, plotLeft + 1);
+  const { left: plotLeft, right: plotRight } = plotBounds(width);
   return {
+    window,
     candles: [],
     forecastPoints: [],
     participation: [],
@@ -316,15 +448,16 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
     overlays: overlayInputs = [],
     macdSeries = null,
     rsiSeries = null,
+    window: requestedWindow = null,
   } = input;
 
   const decisionTime = Date.parse(decisionCutoff);
   const hasValidCutoff = Number.isFinite(decisionTime);
   // Every series the server sent is indexed against the candle list it came
   // with, so the source index travels with the bar through the point-in-time
-  // filter and the 200-bar window. Re-indexing after the fact would silently
+  // filter and the visible window. Re-indexing after the fact would silently
   // shift an indicator onto the wrong candle.
-  const pointInTime = hasValidCutoff
+  const decided = hasValidCutoff
     ? candles
         .map((candle, sourceIndex) => ({ candle, sourceIndex }))
         .filter(({ candle }) => {
@@ -339,24 +472,41 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
           (left, right) =>
             Date.parse(left.candle.timestamp) - Date.parse(right.candle.timestamp),
         )
-        .slice(-200)
     : [];
+  const publishedForecast = forecast?.points ?? [];
+  const totalBars = decided.length;
+  // Every bar stays in memory to be dragged back into view; only the window is
+  // turned into geometry, because that is what density costs.
+  const defaultSize = readableWindowSize(width, publishedForecast.length);
+  const resolvedWindow = clampChartWindow(
+    requestedWindow ?? { size: defaultSize, offset: totalBars - defaultSize },
+    totalBars,
+  );
+  const window: ResolvedChartWindow = { ...resolvedWindow, total: totalBars };
+  const pointInTime = decided.slice(
+    resolvedWindow.offset,
+    resolvedWindow.offset + resolvedWindow.size,
+  );
   const pointInTimeCandles = pointInTime.map(({ candle }) => candle);
-  const forecastPoints = forecast?.points ?? [];
+  // The forecast continues from the newest bar. Dragged back into history it
+  // has nothing to continue from, so it is not drawn there.
+  const forecastPoints =
+    resolvedWindow.offset + resolvedWindow.size >= totalBars
+      ? publishedForecast
+      : [];
 
   if (!pointInTimeCandles.length && !forecastPoints.length) {
-    return emptyGeometry(width, height, requestedPanels);
+    return emptyGeometry(width, height, requestedPanels, window);
   }
 
   const panels = layoutPanels(height, requestedPanels);
-  const plotLeft = inset.left;
-  const plotRight = Math.max(width - inset.right, plotLeft + 1);
+  const { left: plotLeft, right: plotRight } = plotBounds(width);
   // Ordinal axis: one slot per bar, closed sessions included nowhere. A time
   // axis would price the overnight gap into blank pixels the reader cannot use.
   const slots = pointInTimeCandles.length + forecastPoints.length;
   const step = (plotRight - plotLeft) / Math.max(slots, 1);
   const slotX = (slot: number) => plotLeft + step * (slot + 0.5);
-  const bodyWidth = Math.max(1, Math.min(9, step * 0.62));
+  const bodyWidth = Math.max(1, Math.min(maxBodyWidth, step * bodyWidthRatio));
 
   const overlayValues = overlayInputs.map((overlay) => ({
     overlay,
@@ -627,6 +777,7 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
     : [];
 
   return {
+    window,
     candles: candleGeometry,
     forecastPoints: forecastGeometry,
     participation,

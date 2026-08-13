@@ -177,6 +177,7 @@ export function ChartCanvas({
               fill={candleColor}
               height={candle.bodyHeight}
               rx={0.6}
+              testID="chart-candle"
               width={candle.bodyWidth}
               x={candle.x - candle.bodyWidth / 2}
               y={candle.bodyTop}

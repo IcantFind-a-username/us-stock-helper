@@ -129,7 +129,14 @@ it("keeps the token out of the error raised when secure storage fails", async ()
   );
 });
 
-it("reports an unavailable secure store instead of pretending the device is unpaired", async () => {
+it("reports an unreachable keychain instead of pretending the device is unpaired", async () => {
+  // A locked or otherwise unreachable Keychain and a phone that was never
+  // paired send the reader to different actions, so they must not collapse
+  // into the same empty read.
+  const SecureStore = jest.requireMock("expo-secure-store") as {
+    getItemAsync: jest.Mock<() => Promise<string | null>>;
+  };
+  SecureStore.getItemAsync.mockRejectedValueOnce(new Error("keychain locked"));
   const store = createDeviceCredentialStore(resolveSecureStoreBackend());
 
   expect(await store.read()).toEqual({
@@ -138,15 +145,18 @@ it("reports an unavailable secure store instead of pretending the device is unpa
   });
 });
 
-it("names the package an operator has to install for secure storage", async () => {
-  const backend = resolveSecureStoreBackend();
+it("says the keychain could not be reached rather than blaming the caller", async () => {
+  const SecureStore = jest.requireMock("expo-secure-store") as {
+    setItemAsync: jest.Mock<() => Promise<void>>;
+  };
+  SecureStore.setItemAsync.mockRejectedValueOnce(new Error("keychain locked"));
 
-  const error = await backend
+  const error = await resolveSecureStoreBackend()
     .writeValue("k", "v", { accessibility: "when-unlocked-this-device-only" })
     .catch((caught: unknown) => caught);
 
   expect(error).toBeInstanceOf(SecureStoreUnavailableError);
-  expect((error as Error).message).toContain("expo-secure-store");
+  expect((error as Error).message).toContain("keychain could not be reached");
 });
 
 it("reports unreadable stored bytes as unreadable rather than as unpaired", async () => {

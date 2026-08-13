@@ -588,7 +588,7 @@ it("never lets participation input reorder candle geometry", () => {
   );
 });
 
-it("keeps only the latest 200 completed candles in the interactive chart", () => {
+it("draws only the window while keeping every earlier bar reachable", () => {
   const manyCandles: Candle[] = Array.from({ length: 201 }, (_, index) => ({
     timestamp: new Date(Date.UTC(2026, 6, 23, 9, index)).toISOString(),
     availableAt: new Date(Date.UTC(2026, 6, 23, 9, index, 1)).toISOString(),
@@ -614,16 +614,40 @@ it("keeps only the latest 200 completed candles in the interactive chart", () =>
     ],
   });
 
-  expect(geometry.candles).toHaveLength(200);
-  expect(geometry.candles[0]?.timestamp).toBe(manyCandles[1]?.timestamp);
+  const { size, offset } = geometry.window;
+  expect(geometry.window.total).toBe(201);
+  expect(size).toBeLessThan(201);
+  expect(geometry.candles).toHaveLength(size);
+  // The newest bar is the one the chart opens on.
+  expect(offset).toBe(201 - size);
+  expect(geometry.candles.at(-1)?.timestamp).toBe(manyCandles[200]?.timestamp);
   // Server indices survive the window so a bar the server named by index — a
   // confirmed nine, say — still lands on the bar it described.
-  expect(geometry.candles[0]?.sourceIndex).toBe(1);
+  expect(geometry.candles[0]?.sourceIndex).toBe(offset);
   expect(geometry.candles.at(-1)?.sourceIndex).toBe(200);
-  expect(geometry.participation).toHaveLength(200);
-  // The overlay is trimmed by the same window, so bar 0 keeps bar 1's value.
-  expect(geometry.overlays[0]?.points).toHaveLength(200);
-  expect(geometry.overlays[0]?.points[0]?.value).toBe(101);
+  expect(geometry.participation).toHaveLength(size);
+  expect(geometry.overlays[0]?.points).toHaveLength(size);
+  expect(geometry.overlays[0]?.points[0]?.value).toBe(100 + offset);
+
+  // The bars the window left out are still there to be dragged back into view.
+  const dragged = geometryFor({
+    candles: manyCandles,
+    forecast: { ...forecast, predictedAt: "2026-07-24T10:00:00.000Z" },
+    participationBars: [],
+    panels: ["participation"],
+    window: { size, offset: 0 },
+    overlays: [
+      {
+        key: "ma5",
+        label: "MA5",
+        values: manyCandles.map((_, index) => 100 + index),
+      },
+    ],
+  });
+
+  expect(dragged.candles[0]?.sourceIndex).toBe(0);
+  expect(dragged.candles[0]?.timestamp).toBe(manyCandles[0]?.timestamp);
+  expect(dragged.overlays[0]?.points[0]?.value).toBe(100);
 });
 
 it("uses an explicit live decision cutoff when forecast is null", () => {

@@ -1,13 +1,13 @@
+import * as SecureStore from "expo-secure-store";
+
 /**
  * The narrow secure-storage surface this app needs, kept as an interface so the
  * device token has exactly one door out of the process.
  *
- * TODO: back `resolveSecureStoreBackend` with `expo-secure-store` once that
- * package is installed (`npx expo install expo-secure-store`, then rebuild the
- * native client). It is deliberately absent from package.json today, and no
- * fallback to AsyncStorage or the filesystem may be added in its place: those
- * are plaintext and reach iCloud backups, which is precisely what the Keychain
- * is being used to avoid. Until then this module fails loudly.
+ * Backed by `expo-secure-store`. No fallback to AsyncStorage or the
+ * filesystem may be added in its place: those are plaintext and reach iCloud
+ * backups, which is precisely what the Keychain is here to avoid. A Keychain
+ * this process cannot reach is reported as that, never as an empty read.
  */
 
 /**
@@ -58,6 +58,50 @@ const unavailableBackend: SecureStoreBackend = {
   },
 };
 
+const keychainBackend: SecureStoreBackend = {
+  async readValue(key) {
+    try {
+      return await SecureStore.getItemAsync(key);
+    } catch (error) {
+      throw new SecureStoreUnavailableError(describe(error));
+    }
+  },
+  async writeValue(key, value, options) {
+    try {
+      await SecureStore.setItemAsync(key, value, {
+        keychainAccessible: accessibilityClass(options.accessibility),
+      });
+    } catch (error) {
+      throw new SecureStoreUnavailableError(describe(error));
+    }
+  },
+  async deleteValue(key) {
+    try {
+      await SecureStore.deleteItemAsync(key);
+    } catch (error) {
+      throw new SecureStoreUnavailableError(describe(error));
+    }
+  },
+};
+
+function accessibilityClass(value: SecureValueAccessibility) {
+  // The only class excluded from both iCloud Keychain and encrypted device
+  // backups, so a token written under it cannot be restored onto another
+  // phone.
+  if (value === "when-unlocked-this-device-only") {
+    return SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY;
+  }
+  throw new SecureStoreUnavailableError(
+    `unsupported keychain accessibility: ${value}`,
+  );
+}
+
+function describe(error: unknown) {
+  return error instanceof Error
+    ? `the keychain could not be reached: ${error.message}`
+    : "the keychain could not be reached";
+}
+
 export function resolveSecureStoreBackend(): SecureStoreBackend {
-  return unavailableBackend;
+  return keychainBackend;
 }
