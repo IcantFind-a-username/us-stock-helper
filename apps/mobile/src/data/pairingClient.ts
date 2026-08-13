@@ -12,6 +12,14 @@ import {
  * rather than trusted to the caller. Nothing the server says is copied into a
  * thrown error: its messages quote the code back, and this client's rejections
  * end up in crash reports.
+ *
+ * The wire contract is `services/device_auth` plus Task 2 of
+ * `docs/superpowers/plans/2026-07-25-single-user-cloud-runtime.md`:
+ * `POST /v1/device-pairings`, unauthenticated and rate-limited, answering
+ * `{deviceId, deviceToken, expiresAt}` exactly once. The request carries the
+ * pairing code and nothing else, because `redeem_pairing_code` labels the new
+ * device from the code the operator issued and refuses by design to let any
+ * caller-supplied string reach an operator's listing.
  */
 
 export class PairingError extends Error {
@@ -32,7 +40,6 @@ export class PairingError extends Error {
 
 export type PairingRequest = {
   code: string;
-  deviceName: string;
 };
 
 export type PairingClient = {
@@ -48,23 +55,52 @@ type PairingClientOptions = {
 
 const loopbackHostnames = new Set(["127.0.0.1", "localhost", "::1"]);
 
+/**
+ * Codes that name a problem with the endpoint, or with this caller's standing
+ * at it, rather than with the pairing code.
+ *
+ * They are the only thing that separates a read-only gateway with no pairing
+ * route from a pairing endpoint that refused a code, because both of them
+ * answer 401. Sending a reader who hit the first one back to retype their code
+ * is the failure this table exists to prevent.
+ */
 const reasonByErrorCode: Record<string, PairingFailureReason> = {
+  AUTH_REQUIRED: "pairing-unsupported",
+  PATH_NOT_ALLOWED: "pairing-unsupported",
+  METHOD_NOT_ALLOWED: "pairing-unsupported",
+  INVALID_ARGUMENT: "pairing-unsupported",
+  CLIENT_NOT_ALLOWED: "client-not-allowed",
+  DEVICE_REVOKED: "revoked",
+  RATE_LIMITED: "rate-limited",
+  // Honoured only because a server stated one of them outright. device_auth
+  // answers every bad code with a single refusal so that failed guesses teach
+  // an attacker nothing, so none of these arrives from the server this app
+  // pairs with, and none of them is ever inferred from a status alone.
   INVALID_PAIRING_CODE: "invalid-code",
   PAIRING_CODE_NOT_FOUND: "invalid-code",
   PAIRING_CODE_EXPIRED: "expired-code",
   PAIRING_CODE_CONSUMED: "code-used",
   ALREADY_PAIRED: "code-used",
-  RATE_LIMITED: "rate-limited",
-  DEVICE_REVOKED: "revoked",
 };
 
+/**
+ * What a status means on its own, once no error code has named the failure.
+ *
+ * A refusal collapses to one reason here. The statuses that could be read as
+ * "expired" or "already used" are only ever that reading by convention, and a
+ * wrong reading costs the reader a code they did not need to reissue or a
+ * retype that could never have worked.
+ */
 const reasonByStatus: Record<number, PairingFailureReason> = {
-  400: "invalid-code",
-  401: "invalid-code",
-  404: "invalid-code",
-  409: "code-used",
-  410: "expired-code",
+  400: "pairing-unsupported",
+  401: "code-refused",
+  403: "client-not-allowed",
+  404: "pairing-unsupported",
+  405: "pairing-unsupported",
+  409: "code-refused",
+  410: "code-refused",
   429: "rate-limited",
+  501: "pairing-unsupported",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -155,7 +191,7 @@ export function createPairingClient({
   }
 
   return {
-    async pair({ code, deviceName }, callerSignal) {
+    async pair({ code }, callerSignal) {
       const pairingCode = code.trim();
       if (pairingCode === "") {
         throw new PairingError("invalid-code", "a pairing code is required");
@@ -186,10 +222,7 @@ export function createPairingClient({
               Accept: "application/json",
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({
-              pairingCode,
-              deviceName: deviceName.trim(),
-            }),
+            body: JSON.stringify({ pairingCode }),
             // A redirect would hand the pairing code to whatever origin the
             // response names, so the request fails instead of following one.
             redirect: "error",

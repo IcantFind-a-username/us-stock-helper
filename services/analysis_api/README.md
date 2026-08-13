@@ -3,12 +3,20 @@
 The read-only HTTP boundary for the point-in-time decision chain. It composes
 `information_layer`, `analysis_core`, `adviser_layer` and `decision_engine`
 behind two GET paths and turns their output into one JSON answer the app can
-render.
+render. A third path exists and does exactly one other thing: it exchanges a
+pairing code for a device token, which is where every credential this service
+accepts comes from.
 
 ## Safety invariants
 
-- The path allowlist is exactly `GET /health` and `GET /decision`; every write
-  method fails closed with 405.
+- The path allowlist is exactly `GET /health`, `GET /decision` and
+  `POST /v1/device-pairings`; every other method on every path fails closed
+  with 405, and the pairing path answers nothing but POST.
+- The pairing path is unauthenticated because it is where a credential comes
+  from. What protects it is the code — single use, minutes long, and rate
+  limited per caller in the credential database, so the count survives a
+  restart. Every other path requires a device token that `device_auth`
+  verifies and that the operator can revoke one phone at a time.
 - No field in any response can carry an order, an account or a credential, and
   the risk plan states in its own warnings that it cannot place one.
 - Provider failures are replaced with a fixed message: their text can contain
@@ -51,7 +59,8 @@ curl --fail --silent --show-error \
 | `ANALYSIS_API_HOST` | `127.0.0.1` | Bind address. |
 | `ANALYSIS_API_PORT` | `8770` | Bind port. |
 | `ANALYSIS_API_ALLOW_LAN` | unset | Opt-in required before a non-loopback bind. |
-| `ANALYSIS_API_TOKEN` | unset | Bearer token, 32+ characters, required in LAN mode. |
+| `ANALYSIS_API_TRUST_PROXY` | unset | Declares a reverse proxy in front; requires a credential database and makes the pairing throttle count the forwarded address. |
+| `DEVICE_AUTH_DATABASE` | unset | `device_auth` credential file. Set it and every read demands a device token; leave it unset and no pairing path is served at all. |
 | `ANALYSIS_API_ALLOWED_CLIENTS` | loopback | Comma-separated client CIDRs, required in LAN mode. |
 | `ANALYSIS_API_GATEWAY_URL` | `http://127.0.0.1:8765` | Market gateway origin, loopback only. |
 | `ANALYSIS_API_CANDLE_COUNT` | `200` | Candles requested per decision, 1–1000. |
@@ -61,25 +70,28 @@ curl --fail --silent --show-error \
 | `ANALYSIS_API_EVIDENCE_STALE_AFTER_SECONDS` | `86400` | Age past which a cited item is marked stale. |
 | `ANALYSIS_API_EVIDENCE_RETENTION_SECONDS` | `604800` | Memory bound on collected evidence; must exceed the staleness window. |
 
-A loopback deployment ignores any token that is set, because a token that is
-never demanded reads as protection that does not exist. The gateway URL must be
-loopback: this service carries no gateway credential and therefore cannot
-authenticate to a LAN gateway.
+`ANALYSIS_API_TOKEN` is gone. It was one static bearer token that every phone
+shared, could not expire and could not be revoked one device at a time, so a
+deployment that still sets it is stopped at startup rather than started with it
+ignored. The gateway URL must be loopback: this service carries no gateway
+credential and therefore cannot authenticate to a LAN gateway.
 
 ## Explicit iPhone LAN mode
 
-Do not commit these values. Generate the token at runtime and choose the actual
-Wi-Fi subnet used by the Mac and iPhone:
+Do not commit these values. Choose the actual Wi-Fi subnet used by the Mac and
+iPhone, and point the credential database somewhere only this account can read:
 
 ```bash
 export ANALYSIS_API_ALLOW_LAN=1
 export ANALYSIS_API_HOST=0.0.0.0
-export ANALYSIS_API_TOKEN="$(openssl rand -hex 32)"
 export ANALYSIS_API_ALLOWED_CLIENTS=192.168.50.0/24
+export DEVICE_AUTH_DATABASE="$HOME/.us-stock-helper/device-auth.sqlite3"
 ```
 
-Every request then needs `Authorization: Bearer <token>`, and the iOS client
-must read that token from Keychain rather than hardcode it into the bundle.
+Print a pairing code with
+`python3 -m us_stock_helper_device_auth pair --label "iPhone"` and type it into
+the app. Every request then needs `Authorization: Bearer <device token>`, and
+the app stores that token in the Keychain rather than in the bundle.
 
 ## Point-in-time mapping of gateway candles
 

@@ -41,6 +41,11 @@ unknown() { printf 'UNKNOWN %s %s\n' "$1" "$2"; unknowns=$((unknowns + 1)); }
 file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true; }
 file_owner() { stat -c '%U' "$1" 2>/dev/null || stat -f '%Su' "$1" 2>/dev/null || true; }
 
+# The last assignment wins, matching both systemd and the environment file
+# format: a key repeated later in a file overrides the earlier one, so reading
+# the first would check a line the service does not use.
+read_setting() { sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -n 1; }
+
 check_environment_files() {
 	local name path mode owner
 	for name in $ENV_FILES; do
@@ -63,17 +68,50 @@ check_environment_files() {
 	done
 }
 
-check_issued_token() {
-	local path line value
+# The credential the phone uses is minted by the pairing exchange and lives in
+# this database, so what an operator can get wrong before the first start is
+# where the database is — not what it contains.
+check_credential_database() {
+	local path value
 	path="$ENV_DIR/analysis-api.env"
-	line="$(grep -E '^ANALYSIS_API_TOKEN=' "$path" 2>/dev/null || true)"
-	value="${line#ANALYSIS_API_TOKEN=}"
+	if grep -Eq '^ANALYSIS_API_TOKEN=' "$path" 2>/dev/null; then
+		# The service refuses to start on this rather than ignoring it, but
+		# saying so here turns a crash loop into a sentence.
+		fail environment-file-credential "$path still sets ANALYSIS_API_TOKEN, which nothing reads any more"
+		return
+	fi
+	value="$(read_setting "$path" DEVICE_AUTH_DATABASE)"
 	if [ -z "$value" ]; then
-		fail environment-file-token "no token is issued, so the analysis API will refuse to start"
-	elif [ "${#value}" -lt 32 ]; then
-		fail environment-file-token "the issued token is shorter than the 32 characters the service demands"
+		fail environment-file-credential "no DEVICE_AUTH_DATABASE is set, so the analysis API will refuse to start"
+	elif [ "${value#/}" = "$value" ]; then
+		fail environment-file-credential "DEVICE_AUTH_DATABASE is not an absolute path"
 	else
-		pass environment-file-token "a token is issued and long enough"
+		pass environment-file-credential "a credential database is configured"
+	fi
+}
+
+# ProtectSystem=strict leaves the whole filesystem read-only to the service
+# except the directory systemd creates for it. A database configured anywhere
+# else is a service that starts and then fails every pairing, which reads as a
+# permission bug rather than as the missing line it is.
+check_state_directory() {
+	local unit env_path state database
+	unit="$UNIT_DIR/analysis-api.service"
+	env_path="$ENV_DIR/analysis-api.env"
+	if [ ! -f "$unit" ]; then
+		fail state-directory "$unit is missing"
+		return
+	fi
+	state="$(read_setting "$unit" StateDirectory)"
+	database="$(read_setting "$env_path" DEVICE_AUTH_DATABASE)"
+	if [ -z "$state" ]; then
+		fail state-directory "$unit grants no StateDirectory, so the credential database cannot be written"
+	elif [ -z "$database" ]; then
+		fail state-directory "no DEVICE_AUTH_DATABASE is set, so nothing can be checked against the granted directory"
+	elif [ "${database#/var/lib/$state/}" = "$database" ]; then
+		fail state-directory "DEVICE_AUTH_DATABASE is outside /var/lib/$state, the only path this service may write"
+	else
+		pass state-directory "the credential database is inside the directory systemd creates"
 	fi
 }
 
@@ -267,7 +305,8 @@ check_opend_command_line() {
 }
 
 check_environment_files
-check_issued_token
+check_credential_database
+check_state_directory
 check_unit_secrets
 check_unit_syntax
 check_caddyfile_ports

@@ -1,5 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals";
 
+import { describePairingFailure } from "@/domain/pairing";
+
 import { createPairingClient, PairingError } from "../pairingClient";
 
 const pairingCode = "K7Q-4M2-88T";
@@ -39,14 +41,22 @@ function clientWith(
   };
 }
 
+function unreachableClient() {
+  const fetchImpl = jest.fn(async () => {
+    throw new TypeError("Network request failed");
+  }) as unknown as typeof fetch;
+  return createPairingClient({
+    baseUrl: "https://api.example.com",
+    development: false,
+    fetchImpl,
+  });
+}
+
 describe("pairing request", () => {
   it("exchanges a pairing code for a device credential", async () => {
     const { client, fetchImpl } = clientWith(jsonResponse(pairingPayload(), 201));
 
-    const credential = await client.pair({
-      code: pairingCode,
-      deviceName: "iPhone",
-    });
+    const credential = await client.pair({ code: pairingCode });
 
     expect(credential).toEqual(pairingPayload());
     const [url, init] = (fetchImpl as jest.Mock).mock.calls[0] as [
@@ -55,16 +65,30 @@ describe("pairing request", () => {
     ];
     expect(url).toBe("https://api.example.com/v1/device-pairings");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
-      pairingCode,
-      deviceName: "iPhone",
-    });
+    expect(JSON.parse(String(init.body))).toEqual({ pairingCode });
+  });
+
+  it("submits the pairing code alone, because the server names the device itself", async () => {
+    const { client, fetchImpl } = clientWith(jsonResponse(pairingPayload(), 201));
+
+    await client.pair({ code: pairingCode });
+
+    // device_auth labels a device from the code the operator issued and refuses
+    // to let any caller-supplied string reach an operator listing, so a device
+    // name on the wire would be a field the server is required to discard.
+    const [, init] = (fetchImpl as jest.Mock).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(Object.keys(JSON.parse(String(init.body)) as object)).toEqual([
+      "pairingCode",
+    ]);
   });
 
   it("sends no authorization header, because pairing is what grants authority", async () => {
     const { client, fetchImpl } = clientWith(jsonResponse(pairingPayload(), 201));
 
-    await client.pair({ code: pairingCode, deviceName: "iPhone" });
+    await client.pair({ code: pairingCode });
 
     const [, init] = (fetchImpl as jest.Mock).mock.calls[0] as [
       string,
@@ -79,9 +103,9 @@ describe("pairing request", () => {
   it("refuses to let a redirect carry the pairing code to another origin", async () => {
     const { client, fetchImpl } = clientWith(jsonResponse(null, 302));
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "malformed" });
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "malformed",
+    });
     const [, init] = (fetchImpl as jest.Mock).mock.calls[0] as [
       string,
       RequestInit,
@@ -92,25 +116,22 @@ describe("pairing request", () => {
   it("rejects a blank code without spending a server attempt on it", async () => {
     const { client, fetchImpl } = clientWith(jsonResponse(pairingPayload(), 201));
 
-    await expect(
-      client.pair({ code: "   ", deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "invalid-code" });
+    await expect(client.pair({ code: "   " })).rejects.toMatchObject({
+      reason: "invalid-code",
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("trims the surrounding whitespace a keyboard adds to a typed code", async () => {
     const { client, fetchImpl } = clientWith(jsonResponse(pairingPayload(), 201));
 
-    await client.pair({ code: `  ${pairingCode} `, deviceName: " iPhone " });
+    await client.pair({ code: `  ${pairingCode} ` });
 
     const [, init] = (fetchImpl as jest.Mock).mock.calls[0] as [
       string,
       RequestInit,
     ];
-    expect(JSON.parse(String(init.body))).toEqual({
-      pairingCode,
-      deviceName: "iPhone",
-    });
+    expect(JSON.parse(String(init.body))).toEqual({ pairingCode });
   });
 });
 
@@ -170,35 +191,162 @@ describe("origin policy", () => {
   });
 });
 
-describe("failure classification", () => {
-  it.each([
-    [404, "PAIRING_CODE_NOT_FOUND", "invalid-code"],
-    [400, "INVALID_PAIRING_CODE", "invalid-code"],
-    [410, "PAIRING_CODE_EXPIRED", "expired-code"],
-    [409, "PAIRING_CODE_CONSUMED", "code-used"],
-    [403, "DEVICE_REVOKED", "revoked"],
-    [500, "INTERNAL", "server"],
-    [503, "UNAVAILABLE", "server"],
-  ])(
-    "maps HTTP %s %s to the %s reason",
-    async (status, code, reason) => {
-      const { client } = clientWith(
-        jsonResponse({ error: { code, message: "denied" } }, status as number),
-      );
+/**
+ * The five conditions a reader has to be able to tell apart, and the one the
+ * server refuses to split.
+ *
+ * `services/device_auth` answers every bad code — mistyped, expired, already
+ * used — with a single refusal, on purpose: splitting them would tell someone
+ * guessing codes which of their guesses had once been real. So the app reports
+ * one refusal too, with copy that names every recovery it might need, rather
+ * than picking one of the three and sending the reader to retry the wrong
+ * thing.
+ */
+describe("the five failures a reader must be able to tell apart", () => {
+  async function reasonFor(response: Response) {
+    const { client } = clientWith(response);
+    const error = (await client
+      .pair({ code: pairingCode })
+      .catch((caught: unknown) => caught)) as PairingError;
+    expect(error).toBeInstanceOf(PairingError);
+    return error.reason;
+  }
 
-      await expect(
-        client.pair({ code: pairingCode, deviceName: "iPhone" }),
-      ).rejects.toMatchObject({ reason });
+  it("separates a refused code, a rate limit, a missing endpoint and an unreachable server", async () => {
+    const refused = await reasonFor(
+      jsonResponse({ error: { code: "PAIRING_REFUSED" } }, 401),
+    );
+    const throttled = await reasonFor(jsonResponse({}, 429));
+    const missing = await reasonFor(
+      jsonResponse({ error: { code: "PATH_NOT_ALLOWED" } }, 404),
+    );
+    const unreachable = (await unreachableClient()
+      .pair({ code: pairingCode })
+      .catch((caught: unknown) => caught)) as PairingError;
+
+    const reasons = [refused, throttled, missing, unreachable.reason];
+    expect(reasons).toEqual([
+      "code-refused",
+      "rate-limited",
+      "pairing-unsupported",
+      "offline",
+    ]);
+    const titles = reasons.map((reason) => describePairingFailure({ reason }).title);
+    expect(new Set(titles).size).toBe(reasons.length);
+  });
+
+  it("answers a refused code with every recovery it could need, and claims no more", async () => {
+    const copy = describePairingFailure({ reason: "code-refused" });
+
+    // The server states only that the code was not accepted, so the copy has
+    // to cover retyping and reissuing without asserting which one is needed.
+    expect(copy.body).toContain("核对");
+    expect(copy.body).toContain("重新生成");
+    expect(copy.body).not.toContain("已经过期");
+  });
+
+  it("still splits the refusals apart when a server does state which one it was", async () => {
+    const expired = await reasonFor(
+      jsonResponse({ error: { code: "PAIRING_CODE_EXPIRED" } }, 401),
+    );
+    const used = await reasonFor(
+      jsonResponse({ error: { code: "PAIRING_CODE_CONSUMED" } }, 401),
+    );
+    const wrong = await reasonFor(
+      jsonResponse({ error: { code: "INVALID_PAIRING_CODE" } }, 401),
+    );
+
+    expect([expired, used, wrong]).toEqual([
+      "expired-code",
+      "code-used",
+      "invalid-code",
+    ]);
+  });
+});
+
+describe("an older gateway that has no pairing endpoint", () => {
+  it.each([
+    ["a path the read-only gateway does not expose", 404, "PATH_NOT_ALLOWED"],
+    ["a path that answers GET but not POST", 405, "METHOD_NOT_ALLOWED"],
+    ["a gateway that rejects the request shape", 400, "INVALID_ARGUMENT"],
+    ["a gateway that demands a bearer token first", 401, "AUTH_REQUIRED"],
+  ])("reports %s as a missing pairing endpoint", async (_name, status, code) => {
+    const { client } = clientWith(
+      jsonResponse({ error: { code, message: "no" } }, status as number),
+    );
+
+    // Every one of these used to reach the reader as "your code is wrong",
+    // which is the one thing they cannot fix by retyping it.
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "pairing-unsupported",
+    });
+  });
+
+  it.each([404, 405, 501])(
+    "reports a bare HTTP %s as a missing pairing endpoint",
+    async (status) => {
+      const { client } = clientWith(jsonResponse({}, status));
+
+      await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+        reason: "pairing-unsupported",
+      });
     },
   );
 
-  it("classifies a status the server did not annotate by its HTTP code alone", async () => {
-    const { client } = clientWith(jsonResponse({}, 410));
+  it("tells a missing endpoint apart from a refused code on screen", async () => {
+    const missing = describePairingFailure({ reason: "pairing-unsupported" });
+    const refused = describePairingFailure({ reason: "code-refused" });
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "expired-code" });
+    expect(missing.title).not.toBe(refused.title);
+    // Retyping is the wrong instinct here and the copy has to head it off.
+    expect(missing.body).not.toContain("核对");
+    expect(missing.body).toContain("配对端点");
   });
+
+  it("reports a network allowlist refusal as its own condition", async () => {
+    const { client } = clientWith(
+      jsonResponse({ error: { code: "CLIENT_NOT_ALLOWED" } }, 403),
+    );
+
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "client-not-allowed",
+    });
+  });
+});
+
+describe("failure classification", () => {
+  it.each([
+    [403, "DEVICE_REVOKED", "revoked"],
+    [429, "RATE_LIMITED", "rate-limited"],
+    [500, "INTERNAL", "server"],
+    [503, "UNAVAILABLE", "server"],
+  ])("maps HTTP %s %s to the %s reason", async (status, code, reason) => {
+    const { client } = clientWith(
+      jsonResponse({ error: { code, message: "denied" } }, status as number),
+    );
+
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason,
+    });
+  });
+
+  it.each([400, 401, 409, 410])(
+    "refuses to guess from a bare HTTP %s which refusal it was",
+    async (status) => {
+      const { client } = clientWith(jsonResponse({}, status));
+
+      const error = (await client
+        .pair({ code: pairingCode })
+        .catch((caught: unknown) => caught)) as PairingError;
+
+      // A status alone cannot separate "mistyped" from "expired"; naming one
+      // would send the reader to fix something that was never broken.
+      expect(["code-refused", "pairing-unsupported"]).toContain(error.reason);
+      expect(["invalid-code", "expired-code", "code-used"]).not.toContain(
+        error.reason,
+      );
+    },
+  );
 
   it("reports the retry delay a rate limiter supplied", async () => {
     const { client } = clientWith(
@@ -207,17 +355,16 @@ describe("failure classification", () => {
       }),
     );
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "rate-limited", retryAfterSeconds: 900 });
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "rate-limited",
+      retryAfterSeconds: 900,
+    });
   });
 
   it("leaves the retry delay null when the rate limiter gave none", async () => {
     const { client } = clientWith(jsonResponse({}, 429));
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
       reason: "rate-limited",
       retryAfterSeconds: null,
     });
@@ -228,9 +375,7 @@ describe("failure classification", () => {
       jsonResponse({}, 429, { "retry-after": "Tue, 10 Nov 2026 00:00:00 GMT" }),
     );
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
       reason: "rate-limited",
       retryAfterSeconds: null,
     });
@@ -241,9 +386,7 @@ describe("failure classification", () => {
       jsonResponse({}, 429, { "retry-after": "-5" }),
     );
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
       reason: "rate-limited",
       retryAfterSeconds: null,
     });
@@ -256,9 +399,7 @@ describe("failure classification", () => {
 
     // Reading the leading digits would turn half an hour into thirty seconds
     // and send the reader back while the lockout is still running.
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
       reason: "rate-limited",
       retryAfterSeconds: null,
     });
@@ -269,9 +410,9 @@ describe("failure classification", () => {
       jsonResponse({ deviceId: "abc", expiresAt: null }, 201),
     );
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "malformed" });
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "malformed",
+    });
   });
 
   it("rejects a device token too short to be a 256-bit secret", async () => {
@@ -279,9 +420,9 @@ describe("failure classification", () => {
       jsonResponse({ ...pairingPayload(), deviceToken: "short" }, 201),
     );
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "malformed" });
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "malformed",
+    });
   });
 
   it("accepts a credential whose expiry the server declined to state", async () => {
@@ -291,9 +432,9 @@ describe("failure classification", () => {
 
     // A missing expiry stays null; a guessed one would silently expire a
     // working session or keep a dead one alive on screen.
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).resolves.toMatchObject({ expiresAt: null });
+    await expect(client.pair({ code: pairingCode })).resolves.toMatchObject({
+      expiresAt: null,
+    });
   });
 
   it("rejects an expiry that is not an ISO timestamp", async () => {
@@ -301,24 +442,23 @@ describe("failure classification", () => {
       jsonResponse({ ...pairingPayload(), expiresAt: "soon" }, 201),
     );
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "malformed" });
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "malformed",
+    });
   });
 
   it("reports an unreachable server as offline", async () => {
-    const fetchImpl = jest.fn(async () => {
-      throw new TypeError("Network request failed");
-    }) as unknown as typeof fetch;
-    const client = createPairingClient({
-      baseUrl: "https://api.example.com",
-      development: false,
-      fetchImpl,
-    });
-
     await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
+      unreachableClient().pair({ code: pairingCode }),
     ).rejects.toMatchObject({ reason: "offline" });
+  });
+
+  it("tells an unreachable server apart from a server that answered badly", async () => {
+    const offline = describePairingFailure({ reason: "offline" });
+    const server = describePairingFailure({ reason: "server" });
+
+    expect(offline.title).not.toBe(server.title);
+    expect(offline.body).not.toBe(server.body);
   });
 
   it("reports a body that is not JSON as malformed", async () => {
@@ -331,9 +471,9 @@ describe("failure classification", () => {
       },
     } as unknown as Response);
 
-    await expect(
-      client.pair({ code: pairingCode, deviceName: "iPhone" }),
-    ).rejects.toMatchObject({ reason: "malformed" });
+    await expect(client.pair({ code: pairingCode })).rejects.toMatchObject({
+      reason: "malformed",
+    });
   });
 
   it("aborts and classifies a pairing request that outruns its deadline", async () => {
@@ -361,7 +501,7 @@ describe("failure classification", () => {
         timeoutMs: 25,
       });
 
-      const request = client.pair({ code: pairingCode, deviceName: "iPhone" });
+      const request = client.pair({ code: pairingCode });
       await Promise.resolve();
       jest.advanceTimersByTime(25);
 
@@ -384,7 +524,7 @@ describe("secret hygiene", () => {
     );
 
     const error = (await client
-      .pair({ code: pairingCode, deviceName: "iPhone" })
+      .pair({ code: pairingCode })
       .catch((caught: unknown) => caught)) as PairingError;
 
     expect(error).toBeInstanceOf(PairingError);
@@ -399,7 +539,7 @@ describe("secret hygiene", () => {
     );
 
     const error = (await client
-      .pair({ code: pairingCode, deviceName: "iPhone" })
+      .pair({ code: pairingCode })
       .catch((caught: unknown) => caught)) as PairingError;
 
     expect(

@@ -2,17 +2,28 @@
  * The vocabulary of pairing failures, and the words a reader actually sees.
  *
  * Every reason is separated from every other one because the recovery differs:
- * a mistyped code is retyped, an expired code is reissued on the server, and a
- * rate-limited device has to wait. Collapsing them into one "pairing failed"
- * would leave the reader guessing which of the three they are in.
+ * a rate-limited device has to wait, a server with no pairing endpoint has to
+ * be upgraded, and an unreachable one has to be found first. Collapsing them
+ * into one "pairing failed" would leave the reader guessing which they are in.
+ *
+ * The one place the app deliberately does not separate is the refused code.
+ * `services/device_auth` answers "mistyped", "expired" and "already used" with
+ * a single refusal so that nobody can learn from the answers which of their
+ * guesses had once been real, and this app is not entitled to invent the
+ * distinction the server withheld. `code-refused` is that single answer;
+ * `invalid-code`, `expired-code` and `code-used` survive for the case where a
+ * server states outright which one it was.
  */
 
 export const pairingFailureReasons = [
+  "code-refused",
   "invalid-code",
   "expired-code",
   "code-used",
   "rate-limited",
   "revoked",
+  "pairing-unsupported",
+  "client-not-allowed",
   "insecure-origin",
   "not-configured",
   "offline",
@@ -37,6 +48,10 @@ export type PairingFailureCopy = {
 };
 
 const copyByReason: Record<PairingFailureReason, PairingFailureCopy> = {
+  "code-refused": {
+    title: "服务器没有接受这个配对码",
+    body: "服务器只回答不接受，不说明是打错了、超时作废了，还是已经绑定过别的设备——这样别人就无法靠试错反推出哪些配对码曾经真实存在。请先逐字核对刚才输入的内容，注意区分数字与字母；确认没打错就在服务器上重新生成一个配对码再试。",
+  },
   "invalid-code": {
     title: "配对码不正确",
     body: "服务器没有认出这个配对码。请核对服务器上打印的那一串字符，注意区分数字与字母，然后重新输入。",
@@ -56,6 +71,14 @@ const copyByReason: Record<PairingFailureReason, PairingFailureCopy> = {
   revoked: {
     title: "设备授权已被撤销",
     body: "服务器不再接受这台设备的令牌。请在服务器上生成新的配对码，重新完成一次配对。",
+  },
+  "pairing-unsupported": {
+    title: "这个地址上没有配对接口",
+    body: "服务器回答说它不提供配对端点，或者看不懂这个配对请求。多半是服务端还没升级到带配对功能的版本，或者这个地址指向的是只提供只读分析的旧网关。请先在服务器上确认配对端点已经上线，再回来重试；反复输入配对码不会有任何帮助。",
+  },
+  "client-not-allowed": {
+    title: "服务器不接受来自这台设备的请求",
+    body: "请求在到达配对接口之前就被服务器的来源白名单挡下了，和配对码本身无关。请在服务器上把这台手机所在的网络加入允许列表，或者确认手机连的是正确的服务器地址。",
   },
   "insecure-origin": {
     title: "服务器地址不是 HTTPS",

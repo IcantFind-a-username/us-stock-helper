@@ -23,7 +23,9 @@ from pathlib import Path
 DEPLOY_ROOT = Path(__file__).resolve().parents[1]
 PREFLIGHT = DEPLOY_ROOT / "preflight.sh"
 
-ISSUED_TOKEN = "a" * 64
+# Not a credential any more, just something shaped like one: no shipped file
+# carries a secret now, so the unit checks below have to plant their own.
+INLINED_SECRET = "a" * 64
 DEPLOYED_DOMAIN = "helper.invalid"
 DEPLOYED_EMAIL = "ops@helper.invalid"
 
@@ -57,10 +59,12 @@ class PreflightTestCase(unittest.TestCase):
             directory.mkdir()
 
         for name in ("opend", "market-gateway", "analysis-api"):
-            source = (DEPLOY_ROOT / "env" / f"{name}.env.example").read_text("utf-8")
+            # Copied as shipped. There is nothing left for an operator to fill
+            # in before the first start, which is itself part of what these
+            # tests hold in place.
             target = self.environment_dir / f"{name}.env"
             target.write_text(
-                source.replace("ANALYSIS_API_TOKEN=", f"ANALYSIS_API_TOKEN={ISSUED_TOKEN}"),
+                (DEPLOY_ROOT / "env" / f"{name}.env.example").read_text("utf-8"),
                 encoding="utf-8",
             )
             target.chmod(0o600)
@@ -127,7 +131,8 @@ class HonestReportingTests(PreflightTestCase):
             reported,
             {
                 "environment-file-mode",
-                "environment-file-token",
+                "environment-file-credential",
+                "state-directory",
                 "unit-plaintext-secret",
                 "unit-syntax",
                 "caddyfile-internal-port",
@@ -158,20 +163,68 @@ class EnvironmentFileTests(PreflightTestCase):
         result = self.run_preflight(PREFLIGHT_EXPECTED_OWNER="nobody-who-owns-this")
         self.assertIn("FAIL", result.statuses("environment-file-mode"))
 
-    def test_an_unissued_token_fails_before_the_service_ever_starts(self) -> None:
+    def rewrite_analysis_environment(self, old: str, new: str) -> None:
+        path = self.environment_dir / "analysis-api.env"
+        path.write_text(path.read_text("utf-8").replace(old, new), encoding="utf-8")
+        path.chmod(0o600)
+
+    def test_a_missing_credential_database_fails_before_the_service_starts(
+        self,
+    ) -> None:
+        self.rewrite_analysis_environment("DEVICE_AUTH_DATABASE=", "UNUSED_SETTING=")
+
+        self.assertIn(
+            "FAIL", self.run_preflight().statuses("environment-file-credential")
+        )
+
+    def test_a_relative_database_path_fails(self) -> None:
+        # It would be resolved against the working directory, which is the
+        # install tree the service cannot write.
+        self.rewrite_analysis_environment(
+            "DEVICE_AUTH_DATABASE=/var/lib", "DEVICE_AUTH_DATABASE=var/lib"
+        )
+
+        self.assertIn(
+            "FAIL", self.run_preflight().statuses("environment-file-credential")
+        )
+
+    def test_the_retired_static_token_fails_rather_than_being_ignored(self) -> None:
         path = self.environment_dir / "analysis-api.env"
         path.write_text(
-            path.read_text("utf-8").replace(f"ANALYSIS_API_TOKEN={ISSUED_TOKEN}",
-                                            "ANALYSIS_API_TOKEN="),
+            path.read_text("utf-8") + f"\nANALYSIS_API_TOKEN={INLINED_SECRET}\n",
             encoding="utf-8",
         )
         path.chmod(0o600)
-        self.assertIn("FAIL", self.run_preflight().statuses("environment-file-token"))
 
-    def test_an_issued_token_passes(self) -> None:
-        self.assertEqual(
-            self.run_preflight().statuses("environment-file-token"), {"PASS"}
+        self.assertIn(
+            "FAIL", self.run_preflight().statuses("environment-file-credential")
         )
+
+    def test_the_shipped_configuration_names_a_credential_database(self) -> None:
+        self.assertEqual(
+            self.run_preflight().statuses("environment-file-credential"), {"PASS"}
+        )
+
+    def test_a_database_outside_the_granted_directory_fails(self) -> None:
+        # ProtectSystem=strict makes every other path read-only, so this is a
+        # service that starts and then cannot pair a single phone.
+        self.rewrite_analysis_environment(
+            "DEVICE_AUTH_DATABASE=/var/lib", "DEVICE_AUTH_DATABASE=/srv"
+        )
+
+        self.assertIn("FAIL", self.run_preflight().statuses("state-directory"))
+
+    def test_a_unit_that_grants_no_state_directory_fails(self) -> None:
+        unit = self.unit_dir / "analysis-api.service"
+        unit.write_text(
+            unit.read_text("utf-8").replace("StateDirectory=", "UnusedDirective="),
+            encoding="utf-8",
+        )
+
+        self.assertIn("FAIL", self.run_preflight().statuses("state-directory"))
+
+    def test_the_shipped_unit_and_environment_agree_on_the_directory(self) -> None:
+        self.assertEqual(self.run_preflight().statuses("state-directory"), {"PASS"})
 
 
 class UnitFileTests(PreflightTestCase):
@@ -179,7 +232,7 @@ class UnitFileTests(PreflightTestCase):
         unit = self.unit_dir / "analysis-api.service"
         unit.write_text(
             unit.read_text("utf-8").replace(
-                "[Install]", f"Environment=ANALYSIS_API_TOKEN={ISSUED_TOKEN}\n\n[Install]"
+                "[Install]", f"Environment=DEVICE_SECRET={INLINED_SECRET}\n\n[Install]"
             ),
             encoding="utf-8",
         )
@@ -194,7 +247,7 @@ class UnitFileTests(PreflightTestCase):
         unit = self.unit_dir / "analysis-api.service"
         unit.write_text(
             unit.read_text("utf-8").replace(
-                "[Install]", "Environment=ANALYSIS_API_TOKEN=correct-horse\n\n[Install]"
+                "[Install]", "Environment=DEVICE_SECRET=correct-horse\n\n[Install]"
             ),
             encoding="utf-8",
         )

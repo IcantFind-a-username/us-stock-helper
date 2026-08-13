@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from urllib.error import HTTPError
 
 from us_stock_helper_analysis_api.http_app import (
+    PAIRING_PATH,
     AnalysisApplication,
     AnalysisServerConfig,
     build_server,
@@ -48,6 +49,21 @@ class HttpBoundaryTests(unittest.TestCase):
         for path in ("/orders", "/decision/../secrets", "/"):
             with self.subTest(path=path):
                 status, _, body = app().handle("GET", path, {})
+
+                self.assertEqual(status, 404)
+                self.assertEqual(body["error"]["code"], "PATH_NOT_ALLOWED")
+
+    def test_the_read_application_alone_never_serves_the_pairing_path(self) -> None:
+        """The application's own allowlist is the reads and nothing else.
+
+        Routing settles the pairing path before this object sees it, so this
+        is defence in depth rather than a live behaviour — which is exactly why
+        it needs its own test. Widening the allowlist here would be invisible
+        until the day a routing mistake let a POST reach the decision branch.
+        """
+        for method in ("GET", "POST"):
+            with self.subTest(method=method):
+                status, _, body = app().handle(method, PAIRING_PATH, {})
 
                 self.assertEqual(status, 404)
                 self.assertEqual(body["error"]["code"], "PATH_NOT_ALLOWED")
@@ -145,7 +161,11 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertTrue(body["asOf"].endswith("Z"))
 
 
-LAN_TOKEN = "0123456789abcdef0123456789abcdef"
+# The credential itself is device_auth's now, so everything about who may call
+# this service — pairing, verification, revocation, the throttle — is asserted
+# in test_device_pairing.py. What remains here is the binding: where the socket
+# is, and which networks may reach it at all.
+LAN_DATABASE = "/var/lib/us-stock-helper/device-auth.sqlite3"
 
 
 class AnalysisServerConfigTests(unittest.TestCase):
@@ -154,7 +174,7 @@ class AnalysisServerConfigTests(unittest.TestCase):
 
         self.assertEqual(config.host, "127.0.0.1")
         self.assertFalse(config.allow_lan)
-        self.assertIsNone(config.token)
+        self.assertIsNone(config.device_database)
         self.assertEqual(config.allowed_client_networks, ("127.0.0.0/8", "::1/128"))
 
     def test_non_loopback_binding_requires_explicit_opt_in(self) -> None:
@@ -166,29 +186,21 @@ class AnalysisServerConfigTests(unittest.TestCase):
         complete = {
             "ANALYSIS_API_ALLOW_LAN": "1",
             "ANALYSIS_API_HOST": "0.0.0.0",
-            "ANALYSIS_API_TOKEN": LAN_TOKEN,
+            "DEVICE_AUTH_DATABASE": LAN_DATABASE,
             "ANALYSIS_API_ALLOWED_CLIENTS": "192.168.50.0/24",
         }
         config = AnalysisServerConfig.from_environment(complete)
         self.assertTrue(config.allow_lan)
         self.assertEqual(config.allowed_client_networks, ("192.168.50.0/24",))
 
-    def test_lan_mode_rejects_weak_tokens_and_world_cidrs(self) -> None:
+    def test_lan_mode_rejects_an_empty_or_world_wide_client_list(self) -> None:
         base = {
             "ANALYSIS_API_ALLOW_LAN": "1",
             "ANALYSIS_API_HOST": "0.0.0.0",
-            "ANALYSIS_API_TOKEN": LAN_TOKEN,
+            "DEVICE_AUTH_DATABASE": LAN_DATABASE,
             "ANALYSIS_API_ALLOWED_CLIENTS": "192.168.50.0/24",
         }
-        with self.assertRaisesRegex(ValueError, "32"):
-            AnalysisServerConfig.from_environment(
-                {**base, "ANALYSIS_API_TOKEN": "x" * 31}
-            )
-        with self.assertRaisesRegex(ValueError, "32"):
-            AnalysisServerConfig.from_environment(
-                {**base, "ANALYSIS_API_TOKEN": ""}
-            )
-        with self.assertRaisesRegex(ValueError, "32"):
+        with self.assertRaisesRegex(ValueError, "CIDR"):
             AnalysisServerConfig.from_environment(
                 {**base, "ANALYSIS_API_ALLOWED_CLIENTS": ""}
             )
@@ -219,90 +231,12 @@ class AnalysisServerConfigTests(unittest.TestCase):
             {
                 "ANALYSIS_API_ALLOW_LAN": "1",
                 "ANALYSIS_API_HOST": "0.0.0.0",
-                "ANALYSIS_API_TOKEN": LAN_TOKEN,
+                "DEVICE_AUTH_DATABASE": LAN_DATABASE,
                 "ANALYSIS_API_ALLOWED_CLIENTS": "192.168.50.0/24",
             }
         )
         self.assertTrue(lan.allows_client("192.168.50.8"))
         self.assertFalse(lan.allows_client("192.168.51.8"))
-
-    def test_a_loopback_deployment_asks_for_a_token_only_if_one_is_set(
-        self,
-    ) -> None:
-        # Discarding a configured token was the old behaviour. It made the
-        # cloud topology — loopback behind Caddy — an unauthenticated public
-        # API while the operator believed the token protected it.
-        self.assertTrue(
-            AnalysisServerConfig.from_environment({}).authorizes(None)
-        )
-        self.assertFalse(
-            AnalysisServerConfig.from_environment(
-                {"ANALYSIS_API_TOKEN": LAN_TOKEN}
-            ).authorizes(None)
-        )
-
-    def test_lan_mode_requires_a_matching_bearer_token(self) -> None:
-        config = AnalysisServerConfig.from_environment(
-            {
-                "ANALYSIS_API_ALLOW_LAN": "1",
-                "ANALYSIS_API_HOST": "0.0.0.0",
-                "ANALYSIS_API_TOKEN": LAN_TOKEN,
-                "ANALYSIS_API_ALLOWED_CLIENTS": "192.168.50.0/24",
-            }
-        )
-
-        self.assertTrue(config.authorizes(f"Bearer {LAN_TOKEN}"))
-        self.assertFalse(config.authorizes(None))
-        self.assertFalse(config.authorizes(""))
-        self.assertFalse(config.authorizes(LAN_TOKEN))
-        self.assertFalse(config.authorizes("Bearer " + "x" * 32))
-        # hmac.compare_digest raises on non-ASCII strings; letting that escape
-        # crashes the handler thread before authentication and prints a stack
-        # trace containing absolute paths.
-        self.assertFalse(config.authorizes("Bearer Ünicöde-Ünicöde-Ünicöde-Ünico"))
-
-
-class ReverseProxyTests(unittest.TestCase):
-    """Loopback stops being evidence of trust the moment something proxies to it.
-
-    The deployment binds this service to 127.0.0.1 and puts Caddy in front of
-    it, so every public request arrives from loopback. Treating that as
-    authenticated would publish the whole decision chain to the internet, and
-    discarding a token the operator did configure is worse still: they would
-    believe they were protected.
-    """
-
-    def test_a_configured_token_is_never_discarded(self) -> None:
-        config = AnalysisServerConfig.from_environment(
-            {"ANALYSIS_API_TOKEN": LAN_TOKEN}
-        )
-
-        self.assertEqual(config.token, LAN_TOKEN)
-        self.assertFalse(config.authorizes(None))
-        self.assertTrue(config.authorizes(f"Bearer {LAN_TOKEN}"))
-
-    def test_a_proxied_deployment_must_demand_a_token(self) -> None:
-        with self.assertRaisesRegex(ValueError, "token"):
-            AnalysisServerConfig.from_environment(
-                {"ANALYSIS_API_TRUST_PROXY": "1"}
-            )
-
-        config = AnalysisServerConfig.from_environment(
-            {"ANALYSIS_API_TRUST_PROXY": "1", "ANALYSIS_API_TOKEN": LAN_TOKEN}
-        )
-
-        self.assertEqual(config.host, "127.0.0.1")
-        self.assertFalse(config.authorizes(None))
-        self.assertFalse(config.authorizes("Bearer " + "x" * 32))
-        self.assertTrue(config.authorizes(f"Bearer {LAN_TOKEN}"))
-
-    def test_an_unconfigured_loopback_deployment_still_needs_no_token(self) -> None:
-        # A developer running this on their own machine with nothing in front
-        # of it is the one case where loopback really does mean trusted.
-        config = AnalysisServerConfig.from_environment({})
-
-        self.assertIsNone(config.token)
-        self.assertTrue(config.authorizes(None))
 
 
 def loopback_config(**overrides: Any) -> AnalysisServerConfig:
@@ -310,7 +244,8 @@ def loopback_config(**overrides: Any) -> AnalysisServerConfig:
         "host": "127.0.0.1",
         "port": 0,
         "allow_lan": False,
-        "token": None,
+        "trust_proxy": False,
+        "device_database": None,
         "allowed_client_networks": ("127.0.0.0/8", "::1/128"),
     }
     return AnalysisServerConfig(**{**defaults, **overrides})
@@ -393,23 +328,16 @@ class ServerBindingTests(unittest.TestCase):
             self.assertEqual(status, 404)
             self.assertEqual(body["error"]["code"], "PATH_NOT_ALLOWED")
 
-    def test_lan_mode_authenticates_every_request_without_echoing_the_token(
+    def test_an_unconfigured_loopback_deployment_answers_without_a_credential(
         self,
     ) -> None:
-        config = loopback_config(
-            allow_lan=True,
-            token=LAN_TOKEN,
-            allowed_client_networks=("127.0.0.0/8",),
-        )
-        with running(config) as base:
-            status, _, body = call(f"{base}/health")
-            self.assertEqual(status, 401)
-            self.assertEqual(body["error"]["code"], "AUTH_REQUIRED")
-            self.assertNotIn(LAN_TOKEN, repr(body))
-
-            status, _, body = call(f"{base}/health", token=LAN_TOKEN)
-            self.assertEqual(status, 200)
-            self.assertNotIn(LAN_TOKEN, repr(body))
+        # A developer running this on their own machine with nothing in front
+        # of it is the one case where loopback really does mean trusted, and
+        # the one shape in which no credential database exists to consult.
+        # Every configuration that is reachable from anywhere else demands a
+        # device token; test_device_pairing.py asserts that over the wire.
+        with running(loopback_config()) as base:
+            self.assertEqual(call(f"{base}/health")[0], 200)
 
     def test_a_client_outside_the_allowlist_is_refused_before_any_analysis(
         self,
@@ -424,3 +352,53 @@ class ServerBindingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FailClosedTests(unittest.TestCase):
+    """A gate that cannot open must stop the service, not wave everyone through.
+
+    `_admit` skips authorisation entirely when there is no gate, so swallowing
+    the failure to open the credential database does not degrade one feature —
+    it publishes every read path. The comment above the call says a database
+    this service cannot read stops the deployment; nothing was holding that.
+    """
+
+    def test_an_unopenable_credential_database_refuses_to_build_a_server(
+        self,
+    ) -> None:
+        config = AnalysisServerConfig.from_environment(
+            {
+                "ANALYSIS_API_TRUST_PROXY": "1",
+                "DEVICE_AUTH_DATABASE": "/proc/nonexistent/devices.sqlite3",
+            }
+        )
+
+        with self.assertRaises(Exception) as caught:
+            build_server(service(Provider()), config)
+
+        self.assertNotIsInstance(caught.exception, AssertionError)
+
+
+class ForwardedForTests(unittest.TestCase):
+    """Rate limiting is the only thing guarding the one write path.
+
+    Its identity must come from the proxy, and a caller may send more than one
+    X-Forwarded-For header. Reading only the first one lets the caller supply
+    the line the limiter counts, which hands them an unlimited supply of
+    pairing-code guesses.
+    """
+
+    def test_the_last_forwarded_header_line_decides_the_identity(self) -> None:
+        from us_stock_helper_analysis_api.http_app import _forwarded_client
+
+        class Headers:
+            @staticmethod
+            def get_all(name: str) -> list[str]:
+                # A caller-supplied line first, the proxy's own line last.
+                return ["8.8.8.8", "203.0.113.7"]
+
+            @staticmethod
+            def get(name: str, default: object = None) -> object:
+                return "8.8.8.8"
+
+        self.assertEqual(_forwarded_client(Headers()), "203.0.113.7")

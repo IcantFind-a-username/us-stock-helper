@@ -11,14 +11,25 @@ StartLimitIntervalSec=0
 Type=exec
 User=usstock-api
 Group=usstock-api
-# The bearer token lives in this file rather than in an Environment= line
-# because Environment= is readable by any local account through
-# `systemctl show`, while a file read by the manager at exec time is not.
+# No credential is named in this file or in the environment it reads: a phone's
+# token is minted by the pairing exchange and lives in the database below.
+# EnvironmentFile= is still used rather than Environment= because Environment=
+# is readable by any local account through `systemctl show`, and the paths here
+# are configuration an operator changes without editing a unit.
 EnvironmentFile=/etc/us-stock-helper/analysis-api.env
 WorkingDirectory=/opt/us-stock-helper
 ExecStart=/usr/bin/python3 -m us_stock_helper_analysis_api
 Restart=always
 RestartSec=5
+
+# The credential database is the one thing this service writes. ProtectSystem=
+# strict and ProtectHome=yes below leave nothing else writable — the package's
+# own default under ~/.us-stock-helper/ included — so systemd creates this
+# directory, owns its mode, and keeps it out of the install tree that
+# `python -m` imports from. DEVICE_AUTH_DATABASE must point inside it, and
+# deploy/tests checks that it does.
+StateDirectory=us-stock-helper-analysis-api
+StateDirectoryMode=0700
 
 StandardOutput=journal
 StandardError=journal

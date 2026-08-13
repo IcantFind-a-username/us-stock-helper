@@ -66,7 +66,6 @@ type DeviceSessionProviderProps = PropsWithChildren<{
   credentialStore?: DeviceCredentialStore;
   pairingClient?: PairingClient;
   pairingRequired?: boolean;
-  deviceName?: string;
 }>;
 
 const DeviceSessionContext = createContext<DeviceSessionContextValue | null>(
@@ -131,7 +130,6 @@ export function DeviceSessionProvider({
   credentialStore,
   pairingClient,
   pairingRequired,
-  deviceName = "iPhone",
 }: DeviceSessionProviderProps) {
   const store = useMemo(
     () =>
@@ -201,7 +199,7 @@ export function DeviceSessionProvider({
       }
       setRecord((current) => ({ ...current, status: "pairing", failure: null }));
       try {
-        const credential = await client.client.pair({ code, deviceName });
+        const credential = await client.client.pair({ code });
         // The token is only ever announced as held after it is durably held: a
         // session that lived in memory alone would look identical on screen and
         // then disappear at the next launch with no explanation.
@@ -211,7 +209,7 @@ export function DeviceSessionProvider({
         setRecord(unpairedRecord(toFailure(error)));
       }
     },
-    [client, deviceName, store],
+    [client, store],
   );
 
   const forgetDevice = useCallback(async () => {

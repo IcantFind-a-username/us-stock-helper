@@ -52,9 +52,9 @@ never placed in a systemd unit, an environment file or a command line.
 | `systemd/analysis-api.service` | Runs the decision-chain HTTP boundary as `usstock-api`. |
 | `env/opend.env.example` | Template for OpenD's environment file. |
 | `env/market-gateway.env.example` | Template for the gateway's environment file. |
-| `env/analysis-api.env.example` | Template for the API's environment file, including the bearer token and the SEC contact address. |
+| `env/analysis-api.env.example` | Template for the API's environment file: paths, the credential database and the SEC contact address. |
 | `Caddyfile` | The single public entry point on 443. |
-| `issue-device-token.sh` | Generates the phone's bearer token and writes it into the environment file. |
+| `issue-pairing-code.sh` | Prints one single-use pairing code for one phone, to the terminal only. |
 | `bootstrap.sh` | Runs the mechanical steps of this runbook, stopping before section 6. |
 | `preflight.sh` | Pre-deployment self-check; refuses to report PASS for anything it could not inspect. |
 | `.gitignore` | Keeps real environment files and the OpenD config out of git. |
@@ -98,7 +98,7 @@ Use SSH keys only. Confirm `PasswordAuthentication no` and
 
 Three accounts, one per service, none of them root and none of them able to log
 in. Separate accounts are the reason a fault in the closed-source OpenD binary
-cannot read the phone's bearer token.
+cannot read the device credential database, which only `usstock-api` may open.
 
 ```bash
 for account in usstock-opend usstock-gateway usstock-api; do
@@ -213,11 +213,14 @@ the service. The SEC requires a contact address in the User-Agent of every
 automated request, and the evidence sources refuse to start without one rather
 than polling the Commission anonymously.
 
-Mode 0600 owned by root is correct even though the services run as other
-accounts: systemd reads `EnvironmentFile=` as the manager, before it drops
-privileges, so no service account ever needs to read the file. That is also why
-the token is not in an `Environment=` line — those are readable by any local
-account through `systemctl show`.
+No secret goes in these files. The phone's credential is minted by the
+pairing exchange in section 9 and stored hashed in the database named by
+`DEVICE_AUTH_DATABASE`; nothing an operator types into a file opens this
+service. Mode 0600 owned by root is still correct: systemd reads
+`EnvironmentFile=` as the manager, before it drops privileges, so no service
+account needs to read the file, and any setting added later inherits that
+protection instead of an `Environment=` line, which every local account can
+read through `systemctl show`.
 
 ## 8. Install the units
 
@@ -231,8 +234,11 @@ sudo systemd-analyze verify /etc/systemd/system/opend.service \
 sudo systemctl enable --now opend.service market-gateway.service
 ```
 
-Leave `analysis-api.service` stopped until a token exists; without one it
-refuses to start, which is the intended fail-closed behaviour.
+`analysis-api.service` can start now: with no phone paired it answers 401 to
+every read, which is the fail-closed state. It is enabled in section 9, next to
+the pairing that gives it something to admit. It still refuses to start if
+`DEVICE_AUTH_DATABASE` is unset — a service behind the proxy with no credential
+store would be a public decision chain.
 
 Check what the hardening actually bought:
 
@@ -245,35 +251,67 @@ pulls in numpy, pandas and pycryptodome, and none of them has been verified
 under it on this host. To add it, set it in a drop-in, restart, and confirm the
 service still answers `/health` — do not assume.
 
-## 9. Issue the phone's token
+## 9. Pair the phone
 
 ```bash
-sudo /opt/us-stock-helper/deploy/issue-device-token.sh
 sudo systemctl enable --now analysis-api.service
+sudo /opt/us-stock-helper/deploy/issue-pairing-code.sh "Franz iPhone"
 ```
 
-The token is printed once, to the terminal only. Type it into the app, which
-keeps it in the iOS Keychain; it is never compiled into the bundle.
+The label is how that phone is listed afterwards, and it is chosen here rather
+than on the phone on purpose: the listing is read on this terminal, so no
+string a caller types belongs in it.
 
-**What this token is not.** It is one static bearer token. It is
-not a single-use pairing code, it has no expiry, and there is no server-side
-device registry behind it, so there is no way to revoke one phone while leaving
-another working. To revoke, run `issue-device-token.sh` again and restart the
-service: that invalidates every device at once and requires re-entering the new
-token on each one. Rotate it if a phone is lost, if the
-token is ever displayed somewhere it might have been captured, and on a
-schedule you set.
+The code prints once, to the terminal only, and is stored as a hash. Type it
+into the app while it is still live. The pairing code is single-use and expires
+ten minutes after it is printed; redeeming it hands the phone a device token
+that the app keeps in the iOS Keychain. The device token is never printed on
+this host, never written to a log, and never passes through the environment
+file — the pairing response is the only place it exists outside the phone.
 
-`services/device_auth` in this repository already implements single-use codes
-and revocable per-device tokens, but no HTTP boundary reaches it yet: the
-analysis API imports nothing from it and serves no pairing route, so it cannot
-be deployed by this runbook. When it is wired in, three things here change
-together — the paragraph above stops being true, `analysis-api.service` needs a
-`StateDirectory` for the credential database (`ProtectSystem=strict` and
-`ProtectHome=yes` mean the package's default `~/.us-stock-helper/` path will not
-work, so `DEVICE_AUTH_DATABASE` must point into that state directory), and the
-deploy tests that pin the current shape must be updated in the same change. A
-test fails on the day the import appears, so this cannot drift silently.
+Guessing the code is not a way in. Five attempts a minute are allowed per
+caller, the count lives in the credential database rather than in the process,
+and it therefore survives a restart of the service. A wrong code, an expired
+code and a code that has already been used are all refused with the same
+answer, so a guesser learns nothing about which of their guesses were once
+real. Behind Caddy each phone is counted separately, because the edge states
+the address it observed and the service counts against that.
+
+**Listing and revoking.** Both run as the service account, against the same
+database the service reads:
+
+```bash
+sudo runuser -u usstock-api -- env \
+  PYTHONPATH=/opt/us-stock-helper/services/device_auth/src \
+  DEVICE_AUTH_DATABASE=/var/lib/us-stock-helper-analysis-api/device-auth.sqlite3 \
+  python3 -m us_stock_helper_device_auth devices
+
+sudo runuser -u usstock-api -- env \
+  PYTHONPATH=/opt/us-stock-helper/services/device_auth/src \
+  DEVICE_AUTH_DATABASE=/var/lib/us-stock-helper-analysis-api/device-auth.sqlite3 \
+  python3 -m us_stock_helper_device_auth revoke <device-id> --reason "phone lost"
+```
+
+Revocation takes effect on that phone's next request and needs no restart: the
+token is checked against the database every time it is presented. You can
+revoke one phone without touching the others, which is the whole reason this
+replaced the static bearer token the earlier revision of this runbook issued.
+If you are upgrading such a host, delete `ANALYSIS_API_TOKEN` from
+`/etc/us-stock-helper/analysis-api.env`; the service now refuses to start while
+it is set, rather than starting and ignoring a credential you believe is being
+checked.
+
+`attempts` shows the audit trail — when a code was tried, from where, and how
+it failed. It is the only place the distinction between "expired", "already
+used" and "never existed" is available, and it is deliberately here rather than
+in the answer the caller receives:
+
+```bash
+sudo runuser -u usstock-api -- env \
+  PYTHONPATH=/opt/us-stock-helper/services/device_auth/src \
+  DEVICE_AUTH_DATABASE=/var/lib/us-stock-helper-analysis-api/device-auth.sqlite3 \
+  python3 -m us_stock_helper_device_auth attempts --limit 20
+```
 
 ## 10. Caddy and TLS
 
@@ -356,17 +394,44 @@ nc -vz your.domain 8765   # must fail
 nc -vz your.domain 11111  # must fail
 
 # The public edge refuses an unauthenticated caller.
-curl -i https://your.domain/health                      # 401
+curl -i https://your.domain/health                                    # 401
 curl -i -H 'Authorization: Bearer wrong' https://your.domain/health   # 401
+
+# Pair this shell the way the phone does, using a second code from section 9.
+# Do this last, and revoke the device it creates when you are finished: the
+# token lands in this shell's history and environment, which is exactly where a
+# phone's token never goes.
+CODE=<the code section 9 printed>
+TOKEN="$(curl --fail --silent --show-error -X POST \
+  -H 'Content-Type: application/json' -d "{\"pairingCode\":\"$CODE\"}" \
+  https://your.domain/v1/device-pairings \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["deviceToken"])')"
+
 curl -i -H "Authorization: Bearer $TOKEN" https://your.domain/health  # 200
 
-# The public edge refuses writes and unlisted paths.
+# The pairing path is the only write, and only by POST.
 curl -i -X POST -H "Authorization: Bearer $TOKEN" https://your.domain/decision  # 405
+curl -i https://your.domain/v1/device-pairings                                 # 404 at the edge
 curl -i -H "Authorization: Bearer $TOKEN" https://your.domain/watchlist         # 404
+
+# A wrong code is refused, and the sixth attempt in a minute is throttled.
+for i in 1 2 3 4 5 6; do
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+    -H 'Content-Type: application/json' -d '{"pairingCode":"ZZZZZZZZ"}' \
+    https://your.domain/v1/device-pairings
+done                                                    # 400 x5 then 429
 
 # A real decision, with its refusals intact.
 curl --fail --silent -H "Authorization: Bearer $TOKEN" \
   'https://your.domain/decision?symbol=NVDA&horizon=short' | head -c 400
+
+# Then cut this shell off again, and confirm it is out.
+sudo runuser -u usstock-api -- env \
+  PYTHONPATH=/opt/us-stock-helper/services/device_auth/src \
+  DEVICE_AUTH_DATABASE=/var/lib/us-stock-helper-analysis-api/device-auth.sqlite3 \
+  python3 -m us_stock_helper_device_auth devices
+# revoke the device-id this shell paired, then:
+curl -i -H "Authorization: Bearer $TOKEN" https://your.domain/health  # 401
 ```
 
 Then confirm no secret reached a log:
@@ -390,22 +455,26 @@ of this deployment.
 | --- | --- |
 | Follow logs | `journalctl -u analysis-api -f` |
 | Restart the chain | `sudo systemctl restart opend market-gateway analysis-api` |
-| Rotate the phone token | `sudo ./issue-device-token.sh && sudo systemctl restart analysis-api` |
+| Pair another phone | `sudo ./issue-pairing-code.sh "the phone's label"` |
+| Cut one phone off | `us_stock_helper_device_auth revoke <device-id> --reason ...` (section 9) |
 | Update the code | `sudo git -C /opt/us-stock-helper pull && sudo systemctl restart market-gateway analysis-api` |
 | Re-check the host | `sudo /opt/us-stock-helper/deploy/preflight.sh` |
 
-Back up `/etc/us-stock-helper/` only if the backup is encrypted and stored
-somewhere you control: it contains the bearer token, and `opend.conf` may
-contain your login material. A backup of this host is a copy of your broker
-session.
+Back up `/etc/us-stock-helper/` and
+`/var/lib/us-stock-helper-analysis-api/` only if the backup is encrypted and
+stored somewhere you control: `opend.conf` may contain your login material, and
+the state directory holds the device credential database. A backup of this host
+is a copy of your broker session.
 
 ## What this deployment still does not do
 
 Stated plainly so nobody discovers it during an incident:
 
-- No single-use pairing, no per-device revocation, no token expiry (section 9).
-- No rate limiting at the edge. A leaked token can be used as fast as the
-  attacker likes until it is rotated.
+- Device tokens do not expire. They are revoked, one phone at a time, and
+  never on a schedule of their own (section 9).
+- No rate limiting at the edge for the read paths. Pairing is throttled in the
+  credential database, but a leaked device token can be used as fast as the
+  attacker likes until you revoke it.
 - The market gateway has no authentication of its own. It does not need one
   while it is loopback-only, but any local account on this host can read it.
   Keep the host single-purpose.
@@ -417,7 +486,7 @@ Stated plainly so nobody discovers it during an incident:
 ## Tests
 
 ```bash
-PYTHONPATH=services/analysis_api/src:services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine:services/market_gateway/src \
+PYTHONPATH=services/analysis_api/src:services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine:services/market_gateway/src:services/device_auth/src \
   python3 -m unittest discover -s deploy/tests -v
 ```
 

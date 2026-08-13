@@ -39,7 +39,6 @@ async function renderPairing(pairingClient: PairingClient) {
   const view = await render(
     <DeviceSessionProvider
       credentialStore={createDeviceCredentialStore(memoryBackend())}
-      deviceName="iPhone"
       pairingClient={pairingClient}>
       <PairDeviceScreen />
     </DeviceSessionProvider>,
@@ -99,6 +98,65 @@ it("tells a wrong code apart from an expired one in the copy it shows", async ()
   await fireEvent.changeText(expiredView.getByLabelText("配对码"), "K7Q-4M2-88T");
   await fireEvent.press(expiredView.getByRole("button", { name: "完成配对" }));
   await waitFor(() => expect(expiredView.getByText("配对码已过期")).toBeTruthy());
+});
+
+async function failWith(error: PairingError) {
+  const view = await renderPairing({
+    pair: async () => {
+      throw error;
+    },
+  });
+  await fireEvent.changeText(view.getByLabelText("配对码"), "K7Q-4M2-88T");
+  await fireEvent.press(view.getByRole("button", { name: "完成配对" }));
+  await waitFor(() => expect(view.getByTestId("pairing-failure")).toBeTruthy());
+  return view;
+}
+
+it("puts a different and separately actionable screen behind each way pairing fails", async () => {
+  const shown: string[] = [];
+  for (const error of [
+    new PairingError("code-refused", "refused"),
+    new PairingError("rate-limited", "throttled", { retryAfterSeconds: 900 }),
+    new PairingError("pairing-unsupported", "no endpoint"),
+    new PairingError("client-not-allowed", "blocked"),
+    new PairingError("offline", "unreachable"),
+  ]) {
+    const view = await failWith(error);
+    // Every run types the same code into the same unpaired screen, so the only
+    // thing that can differ between these trees is the failure the card names.
+    shown.push(JSON.stringify(view.toJSON()));
+  }
+
+  expect(new Set(shown).size).toBe(shown.length);
+});
+
+it("does not send a reader back to the keyboard when the server has no pairing endpoint", async () => {
+  const view = await failWith(new PairingError("pairing-unsupported", "no endpoint"));
+
+  expect(view.getByText("这个地址上没有配对接口")).toBeTruthy();
+  // Retyping is the reflex this screen has to interrupt: no code entered here
+  // can create an endpoint that the server is not serving.
+  expect(view.queryByText(/逐字核对/)).toBeNull();
+  expect(view.getByText(/配对端点/)).toBeTruthy();
+});
+
+it("keeps saying the device is unpaired while it explains a server-side failure", async () => {
+  const view = await failWith(new PairingError("pairing-unsupported", "no endpoint"));
+
+  // The failure explains why pairing did not happen; it never implies that it
+  // did. A device that reads "已配对" here would wait forever for data.
+  expect(view.getByText("未配对")).toBeTruthy();
+  expect(view.queryByText("已配对")).toBeNull();
+  expect(view.getByLabelText("配对码")).toBeTruthy();
+});
+
+it("names the single refusal without claiming to know which one it was", async () => {
+  const view = await failWith(new PairingError("code-refused", "refused"));
+
+  expect(view.getByText("服务器没有接受这个配对码")).toBeTruthy();
+  const rendered = JSON.stringify(view.toJSON());
+  expect(rendered).toContain("逐字核对");
+  expect(rendered).toContain("重新生成");
 });
 
 it("shows the rate limiter's own wording, including the wait it stated", async () => {

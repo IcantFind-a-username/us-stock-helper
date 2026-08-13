@@ -1,13 +1,20 @@
 """The HTTP surface for the decision chain.
 
-Deliberately narrow: two GET paths, an explicit allowlist, and write methods
-that fail closed. This service reads and explains; nothing here can act, and
-the shape of the surface should make that obvious to anyone auditing it.
+Deliberately narrow: two GET paths that read, one POST that pairs a phone, an
+explicit allowlist, and write methods that fail closed everywhere else. This
+service reads and explains; nothing here can act, and the shape of the surface
+should make that obvious to anyone auditing it.
+
+The pairing route is the exception that proves the rule, and it is written to
+be read as one. It changes state, so it is a single fixed path, a single
+method, a body this file caps before it is read, and a rate limit that lives in
+the credential database rather than in this process. It answers without a
+credential because it is where a credential comes from; everything else demands
+a device token that the operator can revoke.
 """
 
 from __future__ import annotations
 
-import hmac
 import ipaddress
 import json
 import os
@@ -17,10 +24,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
+from .device_gate import MAX_PAIRING_BODY_BYTES, DeviceGate, rate_limit_identity
 from .service import AnalysisService, InvalidRequest
 
 
-_PATHS = {"/health", "/decision"}
+PAIRING_PATH = "/v1/device-pairings"
+_READ_PATHS = {"/health", "/decision"}
+# What the deployment must expose, read and write together. The edge allowlist
+# is tied to this set by a test in deploy/tests.
+_PATHS = _READ_PATHS | {PAIRING_PATH}
 _HEADERS = {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
@@ -40,7 +52,11 @@ class AnalysisApplication:
         query: Mapping[str, list[str]],
     ) -> tuple[int, dict[str, str], dict[str, Any]]:
         headers = dict(_HEADERS)
-        if path not in _PATHS:
+        # The pairing path is deliberately absent from this allowlist. It is
+        # routed before anything reaches here, and leaving it out means a
+        # mistake in that routing surfaces as a 404 rather than as the decision
+        # branch answering a POST.
+        if path not in _READ_PATHS:
             return 404, headers, _error(
                 "PATH_NOT_ALLOWED", "Path is not exposed by this read-only service"
             )
@@ -79,7 +95,8 @@ class AnalysisServerConfig:
     host: str
     port: int
     allow_lan: bool
-    token: str | None
+    trust_proxy: bool
+    device_database: str | None
     allowed_client_networks: tuple[str, ...]
 
     @classmethod
@@ -106,7 +123,19 @@ class AnalysisServerConfig:
         if not 1 <= port <= 65535:
             raise ValueError("ANALYSIS_API_PORT must be between 1 and 65535")
 
-        token = env.get("ANALYSIS_API_TOKEN")
+        # A deployment that still carries the retired static token is stopped
+        # rather than started with it ignored. The variable used to be the only
+        # thing standing between the decision chain and the internet, so an
+        # operator who set it believes it is being checked; coming up anyway
+        # would leave them holding a credential nothing consults while the door
+        # answers to one they have never seen.
+        if "ANALYSIS_API_TOKEN" in env:
+            raise ValueError(
+                "ANALYSIS_API_TOKEN is no longer honoured; pair the phone with"
+                " device_auth and remove the variable"
+            )
+
+        database = (env.get("DEVICE_AUTH_DATABASE") or "").strip() or None
         clients = tuple(
             part.strip()
             for part in env.get("ANALYSIS_API_ALLOWED_CLIENTS", "").split(",")
@@ -114,10 +143,9 @@ class AnalysisServerConfig:
         )
 
         if allow_lan:
-            if not token or len(token) < 32 or not clients:
-                raise ValueError(
-                    "LAN mode requires a 32+ character token and explicit client CIDRs"
-                )
+            if not clients:
+                raise ValueError("LAN mode requires explicit client CIDRs")
+            _require_database(database, "LAN mode")
             for network in clients:
                 if ipaddress.ip_network(network, strict=False).prefixlen == 0:
                     raise ValueError(
@@ -129,22 +157,21 @@ class AnalysisServerConfig:
                     "Non-loopback binding requires ANALYSIS_API_ALLOW_LAN=1"
                 )
             clients = ("127.0.0.0/8", "::1/128")
-            # Loopback stops being evidence of trust the moment a reverse
-            # proxy fronts it: every public request then arrives from
-            # 127.0.0.1. The cloud deployment is exactly that shape, so a
-            # proxied service must demand a token, and a token the operator
-            # configured is never discarded — believing you are protected when
-            # you are not is worse than knowing you are open.
-            if trust_proxy and (not token or len(token) < 32):
-                raise ValueError(
-                    "ANALYSIS_API_TRUST_PROXY=1 requires a 32+ character token"
-                )
+            # Loopback stops being evidence of trust the moment a reverse proxy
+            # fronts it: every public request then arrives from 127.0.0.1. The
+            # cloud deployment is exactly that shape, so a proxied service must
+            # demand a credential, and a database the operator configured is
+            # never discarded — believing you are protected when you are not is
+            # worse than knowing you are open.
+            if trust_proxy:
+                _require_database(database, "ANALYSIS_API_TRUST_PROXY=1")
 
         return cls(
             host=host,
             port=port,
             allow_lan=allow_lan,
-            token=token,
+            trust_proxy=trust_proxy,
+            device_database=database,
             allowed_client_networks=clients,
         )
 
@@ -158,32 +185,22 @@ class AnalysisServerConfig:
             for network in self.allowed_client_networks
         )
 
-    def authorizes(self, authorization: str | None) -> bool:
-        # Enforcement follows the token, not the binding. Nothing else can
-        # tell a private loopback from one behind a public proxy.
-        if self.token is None:
-            return True
-        prefix = "Bearer "
-        supplied = (
-            authorization[len(prefix) :]
-            if authorization and authorization.startswith(prefix)
-            else ""
-        )
-        expected = self.token or ""
-        # Compare bytes: hmac.compare_digest raises TypeError on non-ASCII
-        # strings, which would crash the handler thread before authentication
-        # and print a stack trace with absolute paths in it.
-        return bool(supplied) and hmac.compare_digest(
-            supplied.encode("utf-8"), expected.encode("utf-8")
-        )
-
 
 def build_server(
     service: AnalysisService,
     config: AnalysisServerConfig | None = None,
+    *,
+    gate: DeviceGate | None = None,
 ) -> ThreadingHTTPServer:
     resolved = config or AnalysisServerConfig.from_environment()
     application = AnalysisApplication(service)
+    # Opened once, at startup, so a database this service cannot read stops the
+    # deployment instead of surfacing as a refusal on the first phone's first
+    # request. Every call afterwards opens its own connection, which is what
+    # lets the operator's terminal revoke a device this process is already
+    # serving.
+    if gate is None and resolved.device_database is not None:
+        gate = DeviceGate.open(resolved.device_database)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -209,11 +226,14 @@ def build_server(
             status, headers, body = _admit(
                 application,
                 resolved,
+                gate,
                 self.command,
                 parsed.path,
                 parse_qs(parsed.query, keep_blank_values=True),
                 self.headers.get("Authorization"),
                 self.client_address[0],
+                _forwarded_client(self.headers),
+                self._pairing_body,
             )
             encoded = json.dumps(
                 body,
@@ -227,6 +247,26 @@ def build_server(
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _pairing_body(self) -> bytes | None:
+            """The declared body, or None when it is longer than this will read.
+
+            Read only for the pairing route and only up to the declared length.
+            An absent Content-Length is an empty body rather than a stream to
+            drain: nothing on this surface accepts a chunked upload, and
+            reading until the client stops sending would let one socket hold a
+            handler thread for as long as it liked.
+            """
+            declared = self.headers.get("Content-Length")
+            if declared is None:
+                return b""
+            try:
+                length = int(declared)
+            except ValueError:
+                return None
+            if not 0 <= length <= MAX_PAIRING_BODY_BYTES:
+                return None
+            return self.rfile.read(length)
+
         def log_message(self, format: str, *args: object) -> None:
             return None
 
@@ -236,23 +276,69 @@ def build_server(
 def _admit(
     application: AnalysisApplication,
     config: AnalysisServerConfig,
+    gate: DeviceGate | None,
     method: str,
     path: str,
     query: Mapping[str, list[str]],
     authorization: str | None,
     client_ip: str,
+    forwarded_for: str | None,
+    read_body: Callable[[], bytes | None],
 ) -> tuple[int, dict[str, str], dict[str, Any]]:
-    # Address and token are settled before the path is even looked at, so an
-    # unapproved caller cannot map the allowlist by reading 404s and 405s.
+    # The network allowlist is settled before anything else, pairing included:
+    # it is the boundary of who may speak to this socket at all.
     if not config.allows_client(client_ip):
-        return 403, dict(_HEADERS), _error(
+        return _answer(403, {}, _error(
             "CLIENT_NOT_ALLOWED", "Client network is not allowed"
-        )
-    if not config.authorizes(authorization):
-        return 401, dict(_HEADERS), _error(
-            "AUTH_REQUIRED", "Analysis API authorization is required"
-        )
+        ))
+
+    if path == PAIRING_PATH:
+        # The whole write surface, in one branch. A deployment with no
+        # credential database does not serve it at all, because the throttle
+        # that protects it lives in that database.
+        if gate is None:
+            return _answer(404, {}, _error(
+                "PATH_NOT_ALLOWED", "Path is not exposed by this read-only service"
+            ))
+        if method != "POST":
+            return _answer(405, {"Allow": "POST"}, _error(
+                "METHOD_NOT_ALLOWED", "Pairing accepts only POST"
+            ))
+        body = read_body()
+        if body is None:
+            return _answer(413, {}, _error(
+                "PAYLOAD_TOO_LARGE", "The pairing request body is too large to read"
+            ))
+        return _answer(*gate.redeem(
+            body,
+            client_id=rate_limit_identity(
+                forwarded_for, client_ip, trust_proxy=config.trust_proxy
+            ),
+        ))
+
+    # Everywhere else the credential is settled before the path is looked at,
+    # so an unapproved caller cannot map the allowlist by reading 404s and
+    # 405s. The pairing path above is the one thing they can confirm exists,
+    # and it is published in the app anyway.
+    if gate is not None:
+        refused = gate.refusal(authorization)
+        if refused is not None:
+            return _answer(*refused)
     return application.handle(method, path, query)
+
+
+def _answer(
+    status: int, headers: Mapping[str, str], body: dict[str, Any]
+) -> tuple[int, dict[str, str], dict[str, Any]]:
+    return status, {**_HEADERS, **headers}, body
+
+
+def _require_database(database: str | None, subject: str) -> None:
+    if database is None:
+        raise ValueError(
+            f"{subject} requires DEVICE_AUTH_DATABASE so a device token can be"
+            " verified and revoked"
+        )
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -262,6 +348,22 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _forwarded_client(headers: Any) -> str | None:
+    """Take the identity from the last forwarded header line, not the first.
+
+    A caller may send more than one X-Forwarded-For header; a proxy appends
+    its own line rather than replacing what arrived. Reading only the first
+    lets the caller choose the value the rate limiter counts, which turns the
+    one guarded write path into an unlimited supply of pairing-code guesses.
+    """
+
+    lines = headers.get_all("X-Forwarded-For") or []
+    for line in reversed(lines):
+        if line and line.strip():
+            return line
+    return None
 
 
 def _one(query: Mapping[str, list[str]], key: str) -> str:

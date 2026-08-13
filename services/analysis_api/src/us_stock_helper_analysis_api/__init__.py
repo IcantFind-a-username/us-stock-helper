@@ -5,7 +5,13 @@ from .gateway_provider import (
     MarketGatewayUnavailable,
     provider_from_environment,
 )
-from .http_app import AnalysisApplication, AnalysisServerConfig, build_server
+from .device_gate import DeviceGate
+from .http_app import (
+    PAIRING_PATH,
+    AnalysisApplication,
+    AnalysisServerConfig,
+    build_server,
+)
 from .service import (
     SCHEMA_VERSION,
     AnalysisProvider,
@@ -14,11 +20,13 @@ from .service import (
 )
 
 __all__ = [
+    "PAIRING_PATH",
     "SCHEMA_VERSION",
     "AnalysisApplication",
     "AnalysisProvider",
     "AnalysisServerConfig",
     "AnalysisService",
+    "DeviceGate",
     "InvalidRequest",
     "MarketGatewayProvider",
     "MarketGatewayUnavailable",

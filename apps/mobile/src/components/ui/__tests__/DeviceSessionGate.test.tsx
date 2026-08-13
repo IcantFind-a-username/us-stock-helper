@@ -48,7 +48,6 @@ async function renderGate({
   return render(
     <DeviceSessionProvider
       credentialStore={createDeviceCredentialStore(memoryBackend(seed))}
-      deviceName="iPhone"
       pairingClient={idleClient}
       pairingRequired={pairingRequired}>
       <DeviceSessionGate>
@@ -90,7 +89,6 @@ it("says it is still checking rather than flashing an unpaired screen", async ()
   const view = await render(
     <DeviceSessionProvider
       credentialStore={createDeviceCredentialStore(pendingBackend)}
-      deviceName="iPhone"
       pairingClient={idleClient}
       pairingRequired>
       <DeviceSessionGate>

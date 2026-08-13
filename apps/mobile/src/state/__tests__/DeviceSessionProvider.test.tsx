@@ -61,7 +61,6 @@ async function renderSession({
   const wrapper = ({ children }: PropsWithChildren) => (
     <DeviceSessionProvider
       credentialStore={createDeviceCredentialStore(backend)}
-      deviceName="iPhone"
       {...(pairingClient ? { pairingClient } : {})}>
       {children}
     </DeviceSessionProvider>
@@ -164,6 +163,43 @@ it("never writes a device token to a console log", async () => {
       expect(JSON.stringify(call)).not.toContain(deviceToken);
     }
   }
+});
+
+it("keeps the token out of the session state that screens render", async () => {
+  const { backend } = memoryBackend();
+
+  const { result } = await renderSession({ backend, pairingClient: acceptingClient() });
+  await waitFor(() => expect(result.current.session.status).toBe("unpaired"));
+  await act(async () => {
+    await result.current.pair("K7Q-4M2-88T");
+  });
+
+  // Screens render this object, and a rendered tree is what a crash reporter
+  // and a screenshot both capture. The token stays on the separate handle that
+  // only the market layer reads.
+  expect(JSON.stringify(result.current.session)).not.toContain(deviceToken);
+  expect(Object.values(result.current.session)).not.toContain(deviceToken);
+});
+
+it("keeps the token out of a failure raised after the token had arrived", async () => {
+  const backend: SecureStoreBackend = {
+    readValue: async () => null,
+    // A backend that quotes what it was handed is the realistic hazard: the
+    // value it is quoting is the token itself.
+    writeValue: async (_key, value) => {
+      throw new Error(`keychain refused ${value}`);
+    },
+    deleteValue: async () => undefined,
+  };
+
+  const { result } = await renderSession({ backend, pairingClient: acceptingClient() });
+  await waitFor(() => expect(result.current.session.status).toBe("unpaired"));
+  await act(async () => {
+    await result.current.pair("K7Q-4M2-88T");
+  });
+
+  expect(result.current.session.failure?.reason).toBe("secure-store-unavailable");
+  expect(JSON.stringify(result.current.session)).not.toContain(deviceToken);
 });
 
 it("stays unpaired and names the reason when the server rejects the code", async () => {

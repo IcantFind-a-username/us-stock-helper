@@ -130,8 +130,9 @@ cmd_finish() {
     /etc/systemd/system/analysis-api.service
   systemctl enable --now market-gateway.service
   note "market-gateway enabled"
-  # analysis-api stays stopped until a token exists: without one it refuses to
-  # start, which is the intended fail-closed behaviour.
+  # analysis-api is left for section 9, next to the pairing that gives it
+  # something to admit. Started now it would answer 401 to everything, which is
+  # correct but reads as a broken deployment.
 
   log "Caddy"
   if ! command -v caddy >/dev/null 2>&1; then
@@ -153,23 +154,24 @@ cmd_finish() {
   note "serving ${domain}, ACME contact ${email}"
 
   log "Preflight"
-  # The token is issued after this point, so preflight is expected to report
-  # the missing one; everything else must already hold.
-  bash "${DEPLOY_DIR}/preflight.sh" || note "preflight reported findings above — read them before issuing the token"
+  # Nothing here is expected to be outstanding: the credential database is
+  # configured by the shipped template, so every check should already hold.
+  bash "${DEPLOY_DIR}/preflight.sh" || note "preflight reported findings above — read them before pairing a phone"
 
   log "Done"
   cat <<NEXT
-    Issue the phone's bearer token and start the API:
+    Start the API and pair the phone:
 
-      sudo ${DEPLOY_DIR}/issue-device-token.sh
       sudo systemctl enable --now analysis-api.service
+      sudo ${DEPLOY_DIR}/issue-pairing-code.sh "the phone's label"
 
-    The token prints once, to this terminal only. Type it into the app.
+    The pairing code prints once, to this terminal only, and is single use.
+    Type it into the app before it expires; the app receives a device token in
+    exchange and keeps it in the Keychain, where nothing on this host can read
+    it.
 
-    Read section 9 of README.md before you rely on it: this is one static
-    token with no expiry and no per-device revocation. services/device_auth
-    implements single-use codes and revocable per-device tokens, but nothing
-    serves them over HTTP yet, so this runbook cannot deploy that.
+    Read section 9 of README.md for listing and revoking phones. Until one is
+    paired the API answers 401 to every read, which is the intended state.
 NEXT
 }
 
