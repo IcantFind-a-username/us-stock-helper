@@ -17,10 +17,45 @@ function decision(mutate: (value: ReturnType<typeof decisionFixture>) => void = 
 it("shows the score together with how much of the picture it had", async () => {
   const view = await render(<DecisionCard decision={decision()} />);
 
+  expect(view.getByTestId("decision-interval")).toHaveTextContent(/日线/);
   expect(view.getByTestId("decision-score")).toHaveTextContent(/72.5/);
   // A score without its coverage reads as a complete verdict; four of the
   // eight factors have no feed yet.
   expect(view.getByTestId("decision-coverage")).toHaveTextContent(/因子覆盖 70%/);
+});
+
+it("shows every measured factor instead of leaving fundamentals in a dark card", async () => {
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        const score = value.score as Record<string, unknown>;
+        score.unavailableFactors = ["geopolitics", "institutional_flow"];
+        score.factorCoverage = 0.8;
+        score.contributions = [
+          {
+            name: "fundamentals",
+            rawValue: 0.64,
+            weight: 0.14,
+            points: 4.2,
+            explanation: "SEC XBRL filing snapshot.",
+          },
+          {
+            name: "macro",
+            rawValue: 0.3,
+            weight: 0.1,
+            points: 1.5,
+            explanation: "Treasury yield curve snapshot.",
+          },
+        ];
+      })}
+    />,
+  );
+
+  const factors = view.getByTestId("decision-factor-breakdown");
+  expect(factors).toHaveTextContent(/基本面/);
+  expect(factors).toHaveTextContent(/宏观/);
+  expect(factors).toHaveTextContent(/贡献 \+4\.20/);
+  expect(factors).toHaveTextContent(/权重 14%/);
 });
 
 it("names the unscored factors in Chinese instead of printing field names", async () => {

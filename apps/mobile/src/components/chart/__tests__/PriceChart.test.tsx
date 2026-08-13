@@ -117,6 +117,7 @@ const snapshot: ChartSnapshot = {
     ...metadata,
     direction: "bullish",
     count: 2,
+    series: null,
     completed: false,
     perfected: false,
     confirmedAtIndex: null,
@@ -184,11 +185,8 @@ async function pressAt(
   });
 }
 
-/** More bars than any window can hold, so the window has to be real. */
-const deepCandles: Candle[] = Array.from({ length: 240 }, (_, index) => {
-  const timestamp = new Date(
-    Date.UTC(2026, 6, 25, 12, index),
-  ).toISOString();
+const candleAt = (index: number): Candle => {
+  const timestamp = new Date(Date.UTC(2026, 6, 25, 12, index)).toISOString();
   return {
     timestamp,
     availableAt: new Date(Date.parse(timestamp) + 1_000).toISOString(),
@@ -199,12 +197,21 @@ const deepCandles: Candle[] = Array.from({ length: 240 }, (_, index) => {
     close: 101 + index,
     volume: 1_000 + index,
   };
-});
+};
 
-const deep: ChartSnapshot = {
+/** More bars than any window can hold, so the window has to be real. */
+const deepCandles: Candle[] = Array.from({ length: 240 }, (_, index) =>
+  candleAt(index),
+);
+
+const deepSnapshot = (
+  candles: Candle[],
+  decisionCutoff: string,
+): ChartSnapshot => ({
   ...snapshot,
-  candles: deepCandles,
-  participationBars: deepCandles.map((candle, index) => ({
+  source: { ...snapshot.source, decisionCutoff },
+  candles,
+  participationBars: candles.map((candle, index) => ({
     closedAt: candle.timestamp,
     mainShare: 0.6,
     retailShare: 0.4,
@@ -225,7 +232,7 @@ const deep: ChartSnapshot = {
       series: {
         ...metadata,
         methodVersion: "sma-5-v1",
-        values: deepCandles.map((_, index) => 100.5 + index),
+        values: candles.map((_, index) => 100.5 + index),
       },
     },
     rsi: {
@@ -233,7 +240,7 @@ const deep: ChartSnapshot = {
       series: {
         ...metadata,
         methodVersion: "wilder-rsi-14-v1",
-        values: deepCandles.map((_, index) => 30 + (index % 40)),
+        values: candles.map((_, index) => 30 + (index % 40)),
       },
     },
     macd: {
@@ -241,13 +248,15 @@ const deep: ChartSnapshot = {
       series: {
         ...metadata,
         methodVersion: "macd-12-26-9-v1",
-        line: deepCandles.map((_, index) => index / 100),
-        signal: deepCandles.map((_, index) => index / 200),
-        histogram: deepCandles.map((_, index) => (index % 7) - 3),
+        line: candles.map((_, index) => index / 100),
+        signal: candles.map((_, index) => index / 200),
+        histogram: candles.map((_, index) => (index % 7) - 3),
       },
     },
   },
-};
+});
+
+const deep = deepSnapshot(deepCandles, snapshot.source.decisionCutoff);
 
 const viewportWidth = Dimensions.get("window").width;
 const defaultWindowSize = readableWindowSize(resolveChartWidth(viewportWidth));
@@ -352,6 +361,35 @@ it("drags back into history and stops at the oldest bar", async () => {
   );
 });
 
+it("keeps following the newest bar when a refresh brings two more", async () => {
+  const view = await render(<PriceChart stock={deep} />);
+  // A gesture takes the window over from the default that follows the newest
+  // bar on its own, and it is that handed-over window a refresh used to strand:
+  // the offset counts from the oldest bar, so two new bars at the other end
+  // left the reader looking at neither the live edge nor anything they chose.
+  await dragBy(-40);
+  expect(await selectedTimestamp(view, 10_000)).toContain(
+    deepCandles.at(-1)!.timestamp,
+  );
+  const drawn = visibleBodies(view).length;
+
+  const refreshedCandles = [...deepCandles, candleAt(240), candleAt(241)];
+  await act(async () => {
+    view.rerender(
+      <PriceChart
+        stock={deepSnapshot(refreshedCandles, "2026-07-25T16:05:00.000Z")}
+      />,
+    );
+  });
+
+  expect(await selectedTimestamp(view, 10_000)).toContain(
+    refreshedCandles.at(-1)!.timestamp,
+  );
+  // Following the newest bar is not the same as being reset: the reader keeps
+  // the zoom they pinched to.
+  expect(visibleBodies(view)).toHaveLength(drawn);
+});
+
 it("moves the volume, MACD, RSI and participation panels with the same drag", async () => {
   const view = await render(<PriceChart stock={deep} />);
   const labelsAt = () =>
@@ -384,6 +422,49 @@ it("moves the volume, MACD, RSI and participation panels with the same drag", as
     expect(Math.min(...xs)).toBeCloseTo(firstX, 2);
     expect(Math.max(...xs)).toBeCloseTo(lastX, 2);
   });
+});
+
+/** Every prop value the renderer would hand to the native SVG layer. */
+const renderedValues = (node: unknown, collected: string[] = []): string[] => {
+  if (Array.isArray(node)) {
+    node.forEach((child) => renderedValues(child, collected));
+    return collected;
+  }
+  if (!node || typeof node !== "object") return collected;
+  const element = node as {
+    props?: Record<string, unknown>;
+    children?: unknown[];
+  };
+  Object.values(element.props ?? {}).forEach((value) => {
+    if (typeof value === "number" || typeof value === "string") {
+      collected.push(String(value));
+    }
+  });
+  (element.children ?? []).forEach((child) => renderedValues(child, collected));
+  return collected;
+};
+
+it("never hands the canvas a coordinate the device cannot draw", async () => {
+  // A path of "M NaN 12" is not an error anywhere in JS: it renders as nothing
+  // on the phone while every element the tests count is still present.
+  const drawn = await render(<PriceChart stock={deep} />);
+  const values = renderedValues(drawn.toJSON());
+  expect(values.length).toBeGreaterThan(100);
+  values.forEach((value) => {
+    expect(value).not.toMatch(/NaN|Infinity/);
+  });
+
+  // The same guarantee where the arithmetic has nothing to work with: every
+  // bar of this snapshot closed after the decision cutoff.
+  const nothingDecided = await render(
+    <PriceChart stock={deepSnapshot(deepCandles, "2026-07-25T11:00:00.000Z")} />,
+  );
+  renderedValues(nothingDecided.toJSON()).forEach((value) => {
+    expect(value).not.toMatch(/NaN|Infinity/);
+  });
+  expect(
+    nothingDecided.queryAllByTestId("chart-candle", hidden),
+  ).toHaveLength(0);
 });
 
 it("keeps the chart on the page surface instead of a dark island", async () => {
@@ -533,6 +614,49 @@ it("marks the exact bar the server confirmed a nine on", async () => {
   // The mark follows the index the server named, so it cannot be parked on the
   // newest bar and still look right.
   expect(firstX).toBeLessThan(lastX);
+});
+
+it("draws every published TD count across a complete run", async () => {
+  const candles = Array.from({ length: 9 }, (_, index) => ({
+    ...snapshot.candles[0]!,
+    timestamp: `2026-07-25T15:${String(5 + index * 5).padStart(2, "0")}:00.000Z`,
+    availableAt: `2026-07-25T15:${String(5 + index * 5).padStart(2, "0")}:01.000Z`,
+    close: 132 + index,
+  }));
+  const view = await render(
+    <PriceChart
+      stock={{
+        ...snapshot,
+        candles,
+        participationBars: [],
+        magicNine: {
+          ...snapshot.magicNine,
+          direction: "bearish",
+          count: 9,
+          completed: true,
+          confirmedAtIndex: 8,
+          series: Array.from({ length: 9 }, (_, index) => ({
+            direction: "bearish" as const,
+            count: index + 1,
+          })),
+        },
+      }}
+    />,
+  );
+
+  expect(
+    view.getAllByTestId("magic-nine-series-marker", hidden),
+  ).toHaveLength(9);
+  expect(
+    view
+      .getAllByTestId("magic-nine-series-label", hidden)
+      .map((node) =>
+        String(
+          (node.props.children as { props?: { children?: unknown } }).props
+            ?.children,
+        ),
+      ),
+  ).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
 });
 
 it("does not draw a false magic-nine zero when the indicator is unavailable", async () => {

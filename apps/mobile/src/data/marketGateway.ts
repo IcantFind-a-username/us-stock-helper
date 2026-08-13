@@ -11,6 +11,7 @@ import type {
   CompletedTdSetup,
   LiveVolatilityIndicator,
   MagicNineSnapshot,
+  MagicNineSeriesPoint,
   ParticipationBar,
   SnapshotProvenance,
   WatchlistQuote,
@@ -470,6 +471,42 @@ function decodeCompletedTdSetup(
   return { direction, confirmedAtIndex, perfected: value.perfected, barsSince };
 }
 
+function decodeMagicNineSeries(
+  value: unknown,
+  candleCount: number,
+): (MagicNineSeriesPoint | null)[] {
+  if (!Array.isArray(value) || value.length !== candleCount) {
+    throw new GatewayValidationError(
+      "magic nine series must carry one value per completed candle",
+    );
+  }
+  return value.map((item, index) => {
+    if (item === null) return null;
+    if (!isRecord(item)) {
+      throw new GatewayValidationError(
+        `magic nine series item ${index} must be an object or null`,
+      );
+    }
+    if (item.direction !== "bullish" && item.direction !== "bearish") {
+      throw new GatewayValidationError(
+        `magic nine series item ${index} has an unknown direction`,
+      );
+    }
+    const count = item.count;
+    if (
+      typeof count !== "number" ||
+      !Number.isInteger(count) ||
+      count < 1 ||
+      count > 9
+    ) {
+      throw new GatewayValidationError(
+        `magic nine series item ${index} has an invalid count`,
+      );
+    }
+    return { direction: item.direction, count } as MagicNineSeriesPoint;
+  });
+}
+
 /**
  * Reads a per-candle series, or states that the gateway published none.
  *
@@ -860,8 +897,11 @@ export function decodeStockSnapshotEnvelope(
   const magicStatus = requireStatus(magicRecord, "qualityStatus");
   if (magicStatus !== "live" && magicStatus !== "unavailable") throw new GatewayValidationError("indicators.magicNine has an unsupported quality status");
   const direction = magicRecord.direction;
-  if (direction !== null && typeof direction !== "string") throw new GatewayValidationError("magic nine direction must be a string or null");
+  if (direction !== null && direction !== "bullish" && direction !== "bearish") throw new GatewayValidationError("magic nine direction must be bullish, bearish or null");
   const count = requireFiniteNumber(magicRecord, "count");
+  if (!Number.isInteger(count) || count < 0 || count > 9) {
+    throw new GatewayValidationError("magic nine count must be an integer from zero to nine");
+  }
   const rawConfirmedAtIndex = magicRecord.confirmedAtIndex;
   if (rawConfirmedAtIndex !== null && (typeof rawConfirmedAtIndex !== "number" || !Number.isInteger(rawConfirmedAtIndex) || rawConfirmedAtIndex < 0 || rawConfirmedAtIndex >= candles.length)) {
     throw new GatewayValidationError("magic nine confirmedAtIndex is invalid");
@@ -879,6 +919,7 @@ export function decodeStockSnapshotEnvelope(
     source: "analysis-core",
     direction,
     count,
+    series: decodeMagicNineSeries(magicRecord.series, candles.length),
     completed: magicRecord.completed,
     perfected,
     confirmedAtIndex,

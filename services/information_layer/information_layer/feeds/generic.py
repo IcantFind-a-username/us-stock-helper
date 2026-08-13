@@ -169,7 +169,17 @@ class GenericFeedAdapter:
 
         headers = [
             ("User-Agent", self.config.user_agent),
-            ("Accept", "application/atom+xml, application/rss+xml, application/xml"),
+            # The feed types come first because they are what this adapter can
+            # parse. The wildcard is last and lowest-weighted because some
+            # publishers — apps.bea.gov among them — answer 406 to an Accept
+            # header that offers them no fallback, which silently removed a
+            # whole source rather than degrading it. Anything that arrives and
+            # is not a feed is still rejected downstream by the parser.
+            (
+                "Accept",
+                "application/atom+xml, application/rss+xml, application/xml,"
+                " */*;q=0.1",
+            ),
         ]
         if validators.etag:
             headers.append(("If-None-Match", validators.etag))
@@ -492,16 +502,27 @@ def _clean_text(raw: str, max_chars: int) -> str:
     return text[: max(1, max_chars - 1)].rstrip() + "…"
 
 
+def _from_iso_8601(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def _parse_timestamp(value: str) -> datetime | None:
     if not value.strip():
         return None
-    try:
-        parsed = (
-            datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if "T" in value
-            else parsedate_to_datetime(value)
-        )
-    except (TypeError, ValueError, OverflowError):
+    # Which grammar this is cannot be decided by looking for a letter. An
+    # RFC-822 stamp carries a capital T in "GMT" and in three of the seven
+    # weekday abbreviations, so a substring test sent real RSS dates to the
+    # ISO-8601 parser, where they failed and the entry was dropped in silence.
+    # Both grammars are simply attempted, ISO first because it is the stricter
+    # of the two and will not accept an RFC-822 string by accident.
+    for reader in (_from_iso_8601, parsedate_to_datetime):
+        try:
+            parsed = reader(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if parsed is not None:
+            break
+    else:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None

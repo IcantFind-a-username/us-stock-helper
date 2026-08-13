@@ -265,6 +265,8 @@ export const PriceChart = memo(function PriceChart({
       key: string,
       testID: string,
       label: string,
+      direction: "bullish" | "bearish" | null,
+      mode: "badge" | "series" = "badge",
     ) => {
       // The server names the bar by its index in the snapshot's own candle
       // list. If the point-in-time window dropped that bar there is nothing
@@ -278,12 +280,39 @@ export const PriceChart = memo(function PriceChart({
               key,
               testID,
               x: candle.x,
-              y: Math.max(candle.wickTop - 11, geometry.panels.price.top + 7),
+              y:
+                direction === "bullish"
+                  ? Math.min(
+                      candle.wickBottom + 11,
+                      geometry.panels.price.bottom - 7,
+                    )
+                  : Math.max(
+                      candle.wickTop - 11,
+                      geometry.panels.price.top + 7,
+                    ),
               label,
+              direction,
+              mode,
+              labelTestID:
+                mode === "series" ? "magic-nine-series-label" : undefined,
             },
           ]
         : [];
     };
+    if (snapshot.magicNine.series) {
+      return snapshot.magicNine.series.flatMap((point, sourceIndex) =>
+        point
+          ? markerFor(
+              sourceIndex,
+              `magic-nine-series-${sourceIndex}`,
+              "magic-nine-series-marker",
+              String(point.count),
+              point.direction,
+              "series",
+            )
+          : [],
+      );
+    }
     const current =
       magicNineAvailable && snapshot.magicNine.confirmedAtIndex !== null
         ? markerFor(
@@ -291,6 +320,10 @@ export const PriceChart = memo(function PriceChart({
             "magic-nine-current",
             "magic-nine-marker",
             String(snapshot.magicNine.count),
+            snapshot.magicNine.direction === "bullish" ||
+              snapshot.magicNine.direction === "bearish"
+              ? snapshot.magicNine.direction
+              : null,
           )
         : [];
     const completed = snapshot.magicNine.lastCompleted
@@ -299,6 +332,7 @@ export const PriceChart = memo(function PriceChart({
           "magic-nine-completed",
           "magic-nine-completed-marker",
           "9",
+          snapshot.magicNine.lastCompleted.direction,
         )
       : [];
     return [...completed, ...current];
@@ -310,6 +344,7 @@ export const PriceChart = memo(function PriceChart({
     snapshot.magicNine.confirmedAtIndex,
     snapshot.magicNine.count,
     snapshot.magicNine.lastCompleted,
+    snapshot.magicNine.series,
   ]);
 
   const missingNotes = useMemo(() => {
@@ -504,13 +539,13 @@ const styles = StyleSheet.create({
   },
   eyebrow: {
     color: colors.muted,
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: "800",
     letterSpacing: 0.6,
   },
   probability: {
     color: colors.green,
-    fontSize: 10,
+    fontSize: 12,
     fontVariant: ["tabular-nums"],
     fontWeight: "900",
   },
@@ -525,5 +560,5 @@ const styles = StyleSheet.create({
   chartPress: { justifyContent: "center" },
   chartPressed: { opacity: 0.88 },
   missing: { gap: 2, paddingHorizontal: spacing.xs },
-  missingText: { color: colors.muted, fontSize: 9, fontWeight: "700" },
+  missingText: { color: colors.muted, fontSize: 12, fontWeight: "700" },
 });

@@ -377,6 +377,50 @@ class FailureTests(unittest.TestCase):
         with self.assertRaises(EvidenceUnavailable):
             subject.collect()
 
+    def test_a_partial_read_is_offered_only_together_with_its_failures(
+        self,
+    ) -> None:
+        # Refusing everything when one source times out took every symbol in
+        # the product offline at once, which is a worse answer than a named
+        # gap. The gap is only offered through a call that hands back the
+        # failures in the same breath, so a caller cannot receive a thinner
+        # answer without also receiving the reason it is thinner.
+        subject = EvidenceCollector(
+            (
+                GenericFeedAdapter(
+                    config("working-feed"),
+                    FakeTransport(response(atom(NVDA_ENTRY))),
+                ),
+                GenericFeedAdapter(
+                    config("broken-feed"),
+                    FakeTransport(response(status=503)),
+                ),
+            ),
+            clock=Clock(FIRST_POLL),
+        )
+
+        events, failures = subject.collect_with_failures()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual([failure.source_id for failure in failures], ["broken-feed"])
+
+    def test_every_source_failing_is_still_refused_outright(self) -> None:
+        # Nothing was read at all, so there is no partial answer to qualify —
+        # returning an empty tuple here would be indistinguishable from a quiet
+        # market, which is the confusion this whole design exists to prevent.
+        subject = EvidenceCollector(
+            (
+                GenericFeedAdapter(
+                    config("broken-feed"),
+                    FakeTransport(response(status=503)),
+                ),
+            ),
+            clock=Clock(FIRST_POLL),
+        )
+
+        with self.assertRaises(EvidenceUnavailable):
+            subject.collect_with_failures()
+
     def test_a_collector_without_a_source_cannot_be_built(self) -> None:
         # No source configured is a deployment mistake, and an empty answer
         # would present it as a quiet market.

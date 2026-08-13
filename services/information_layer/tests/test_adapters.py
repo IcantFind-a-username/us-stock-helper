@@ -55,6 +55,14 @@ RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
 </rss>
 """
 
+# The same feed as RSS above, but stamped the way real publishers stamp it.
+# Every source this project polls writes "GMT" rather than a numeric offset,
+# and that difference alone decided whether the entry was read at all.
+RSS_GMT = RSS.replace(
+    b"<pubDate>Sat, 25 Jul 2026 13:50:00 +0000</pubDate>",
+    b"<pubDate>Sat, 25 Jul 2026 13:50:00 GMT</pubDate>",
+)
+
 SEC_ATOM = b"""<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
@@ -162,6 +170,26 @@ class SecurityAndHttpMetadataTests(unittest.TestCase):
             "Sat, 25 Jul 2026 13:00:00 GMT",
         )
         self.assertEqual(batch.metadata.etag, '"next"')
+
+    def test_accept_offers_a_wildcard_fallback_so_a_strict_server_still_answers(
+        self,
+    ) -> None:
+        # apps.bea.gov refuses with 406 unless the Accept header ends in a
+        # wildcard, which took the whole macro source offline. Naming the feed
+        # types first still expresses the preference; the fallback only stops a
+        # server from refusing outright, and a reply that is not a feed is
+        # rejected by the parser as it always was.
+        transport = FakeTransport(response())
+        adapter = GenericFeedAdapter(config(), transport)
+
+        adapter.poll(since=NOW - timedelta(hours=1), until=NOW)
+
+        accept = transport.requests[0].header("Accept")
+        self.assertIn("application/atom+xml", accept)
+        self.assertTrue(
+            accept.rstrip().endswith("*/*;q=0.1"),
+            f"Accept must fall back to a wildcard, got {accept!r}",
+        )
 
     def test_retry_after_and_exponential_backoff_are_reported_not_slept(self) -> None:
         transport = FakeTransport(
@@ -288,6 +316,30 @@ class FeedParsingTests(unittest.TestCase):
         self.assertEqual(item.symbol_relevance, (("MSFT", 0.9),))
         self.assertLessEqual(len(item.summary), 64)
         self.assertNotIn("<p>", item.summary)
+
+    def test_rss_dated_in_gmt_is_read_rather_than_silently_dropped(self) -> None:
+        # An RFC-822 stamp was routed to the ISO-8601 parser whenever it
+        # contained a capital T, which "GMT" always does. Every entry from
+        # every RSS source therefore failed to parse and was discarded without
+        # a failure being recorded anywhere: four of this project's seven
+        # sources looked healthy while delivering nothing.
+        adapter = GenericFeedAdapter(
+            config(
+                adapter_id="example-rss",
+                symbol_mappings=(
+                    KeywordMapping("MSFT", ("microsoft", "msft"), 0.9),
+                ),
+            ),
+            FakeTransport(response(RSS_GMT)),
+        )
+
+        batch = adapter.poll(since=NOW - timedelta(hours=1), until=NOW)
+
+        self.assertEqual(len(batch.events), 1, "a GMT-stamped entry was dropped")
+        self.assertEqual(
+            batch.events[0].published_at,
+            datetime(2026, 7, 25, 13, 50, tzinfo=timezone.utc),
+        )
 
     def test_future_dated_entry_is_not_emitted(self) -> None:
         future_atom = ATOM.replace(

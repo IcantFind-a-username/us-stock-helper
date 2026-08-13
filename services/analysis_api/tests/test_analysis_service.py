@@ -5,6 +5,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from information_layer import ClaimStatus, EvidenceEvent, SourceProvenance
+from information_layer.factors import (
+    FactorInput,
+    FactorReading,
+    FactorSnapshot,
+    FactorUnavailable,
+)
 from us_stock_helper_analysis_api.service import AnalysisService
 from us_stock_helper_core import OHLCVBar
 
@@ -15,13 +21,13 @@ AS_OF = datetime(2026, 7, 25, 16, tzinfo=UTC)
 def bars(count: int = 40, *, flat: bool = False) -> tuple[OHLCVBar, ...]:
     rows = []
     for index in range(count):
-        closed_at = AS_OF - timedelta(minutes=(count - 1 - index) * 5)
+        closed_at = AS_OF - timedelta(days=count - 1 - index)
         price = 100.0 if flat else 100.0 + index * 0.5
         rows.append(
             OHLCVBar(
                 symbol="NVDA",
-                interval="5m",
-                opened_at=closed_at - timedelta(minutes=5),
+                interval="day",
+                opened_at=closed_at - timedelta(days=1),
                 closed_at=closed_at,
                 available_at=closed_at,
                 open=price,
@@ -96,6 +102,55 @@ class Provider:
         return evidence(stamped=self.stamped, stale=self.stale)
 
 
+def measured_factor(name: str, value: float) -> FactorReading:
+    published = AS_OF - timedelta(days=1)
+    return FactorReading.measured(
+        factor=name,
+        method_version=f"{name}-test-v1",
+        as_of=AS_OF,
+        value=value,
+        detail=f"{name} measured from a primary source",
+        inputs=(
+            FactorInput(
+                name=f"{name}_input",
+                value=value,
+                observed_at=published,
+                available_at=published,
+                source_url="https://example.test/factor",
+            ),
+        ),
+    )
+
+
+class ProviderWithFactors(Provider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.factor_queries: list[tuple[str, datetime]] = []
+
+    def factors_for(self, symbol: str, as_of: datetime) -> FactorSnapshot:
+        self.factor_queries.append((symbol, as_of))
+        return FactorSnapshot(
+            symbol=symbol,
+            as_of=as_of,
+            macro=measured_factor("macro", 0.2),
+            geopolitics=FactorReading.unavailable(
+                factor="geopolitics",
+                method_version="abstained-v1",
+                as_of=as_of,
+                reason=FactorUnavailable.NO_QUALIFIED_SOURCE,
+                detail="No qualified source.",
+            ),
+            institutional_flow=FactorReading.unavailable(
+                factor="institutional_flow",
+                method_version="abstained-v1",
+                as_of=as_of,
+                reason=FactorUnavailable.NO_QUALIFIED_SOURCE,
+                detail="No timely source.",
+            ),
+            fundamentals=measured_factor("fundamentals", 0.6),
+        )
+
+
 def service(provider: Provider | None = None) -> AnalysisService:
     return AnalysisService(provider or Provider(), clock=lambda: AS_OF)
 
@@ -116,11 +171,14 @@ def _all_keys(value: object) -> set[str]:
 
 class AnalysisContractTests(unittest.TestCase):
     def test_a_decision_reports_its_score_and_what_it_could_not_see(self) -> None:
-        result = service().decision("NVDA", "short")
+        provider = Provider()
+        result = service(provider).decision("NVDA", "short")
 
         self.assertEqual(result["schemaVersion"], "1")
         self.assertEqual(result["symbol"], "NVDA")
         self.assertEqual(result["horizon"], "short")
+        self.assertEqual(result["interval"], "day")
+        self.assertEqual(provider.queries, [("NVDA", "day")])
         self.assertEqual(result["decisionCutoff"], "2026-07-25T16:00:00Z")
         score = result["score"]
         self.assertGreaterEqual(score["value"], 0.0)
@@ -143,6 +201,21 @@ class AnalysisContractTests(unittest.TestCase):
         )
         self.assertIsNone(unavailable["rawValue"])
         self.assertEqual(unavailable["points"], 0.0)
+
+    def test_public_macro_and_fundamentals_reach_the_score_for_any_symbol(self) -> None:
+        provider = ProviderWithFactors()
+
+        result = service(provider).decision("nvda", "short")
+
+        self.assertEqual(provider.factor_queries, [("NVDA", AS_OF)])
+        self.assertAlmostEqual(result["score"]["factorCoverage"], 0.8)
+        self.assertNotIn("macro", result["score"]["unavailableFactors"])
+        self.assertNotIn("fundamentals", result["score"]["unavailableFactors"])
+        contributions = {
+            item["name"]: item for item in result["score"]["contributions"]
+        }
+        self.assertEqual(contributions["macro"]["rawValue"], 0.2)
+        self.assertEqual(contributions["fundamentals"]["rawValue"], 0.6)
 
     def test_the_forecast_carries_three_scenarios_and_its_disclaimer(self) -> None:
         forecast = service().decision("NVDA", "short")["forecast"]
@@ -282,3 +355,30 @@ class CutoffRaceTests(unittest.TestCase):
         ).decision("NVDA", "short")
 
         self.assertEqual(result["status"], "live")
+
+
+class UnreadableSourceTests(unittest.TestCase):
+    """A partial evidence sweep must be served, and must say it was partial."""
+
+    class PartiallyReadProvider(Provider):
+        def evidence_gaps(self) -> tuple[str, ...]:
+            return ("sec-current-8-k（unreachable）",)
+
+    def test_a_source_that_could_not_be_read_is_named_in_the_notes(self) -> None:
+        # Refusing the whole decision over one slow publisher showed up as
+        # every symbol failing at once, so the decision is served — but a
+        # reader must not mistake a partial sweep of the news for a full one.
+        payload = service(self.PartiallyReadProvider()).decision("NVDA", "short")
+
+        self.assertTrue(
+            any("sec-current-8-k" in note for note in payload["notes"]),
+            f"the unread source was not named: {payload['notes']}",
+        )
+
+    def test_a_complete_sweep_says_nothing_about_gaps(self) -> None:
+        payload = service().decision("NVDA", "short")
+
+        self.assertFalse(
+            any("情报源" in note for note in payload["notes"]),
+            f"a complete sweep invented a gap: {payload['notes']}",
+        )

@@ -97,7 +97,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
   },
-  eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "700" },
+  eyebrow: { color: colors.muted, fontSize: 12, fontWeight: "700" },
   title: { color: colors.ink, fontSize: 15, fontWeight: "900", marginTop: 1 },
   proxyBadge: {
     backgroundColor: colors.amberSoft,
@@ -105,7 +105,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
-  proxyText: { color: "#8B5C08", fontSize: 9, fontWeight: "900" },
+  proxyText: { color: "#8B5C08", fontSize: 12, fontWeight: "900" },
   bar: {
     borderRadius: radius.sm,
     flexDirection: "row",
@@ -116,10 +116,10 @@ const styles = StyleSheet.create({
   retail: { backgroundColor: colors.blue },
   latest: {
     color: colors.ink,
-    fontSize: 10,
+    fontSize: 13,
     fontVariant: ["tabular-nums"],
     fontWeight: "800",
   },
-  note: { color: colors.muted, fontSize: 10, lineHeight: 15 },
-  uncertainty: { color: colors.muted, fontSize: 8, lineHeight: 12 },
+  note: { color: colors.muted, fontSize: 12, lineHeight: 18 },
+  uncertainty: { color: colors.muted, fontSize: 12, lineHeight: 18 },
 });

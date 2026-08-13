@@ -176,10 +176,89 @@ export interface DecisionCitation {
   availableAt: string;
 }
 
+/**
+ * Why a block of adviser output is or is not on the screen.
+ *
+ * Three states, not two, and they are never collapsed. `not-requested` means
+ * nobody paid for the call; `unavailable` means the model was asked and could
+ * not answer. Showing the second as the first would quietly turn a broken
+ * model into "no opinion", which is the reading this whole layer exists to
+ * prevent.
+ */
+export type AdviserBlockStatus = "not-requested" | "available" | "unavailable";
+
+export interface AdviserCitation {
+  /** The frozen evidence entry this quote was resolved against. */
+  evidenceId: string;
+  /** Copied verbatim from the source; the server rejects anything it cannot find there. */
+  quote: string;
+  url: string;
+  publisher: string;
+  availableAt: string;
+  isCounterEvidence: boolean;
+}
+
+export interface AdviserConclusion {
+  statement: string;
+  confidence: string;
+  /** Never empty. A conclusion with no source is refused before it gets here. */
+  citations: AdviserCitation[];
+  counterEvidence: AdviserCitation[];
+}
+
+export interface DecisionNewsInterpretation {
+  headlineSummary: string;
+  crossSourceReading: string;
+  investmentImpact: AdviserConclusion[];
+  /** Questions the evidence cannot answer, stated rather than filled in. */
+  unknowns: string[];
+}
+
+export interface CouncilFrameworkOpinion {
+  frameworkId: string;
+  displayName: string;
+  stance: string;
+  /** What this framework is known to be blind to on this call. */
+  blindSpot: string;
+  conclusions: AdviserConclusion[];
+}
+
+export interface DecisionAdviserCouncil {
+  summary: string;
+  opinions: CouncilFrameworkOpinion[];
+  baselineScore: number;
+  adjustedScore: number;
+  /** Zero whenever a hard gate is up: the council never talks past a gate. */
+  scoreAdjustment: number;
+  objectiveDirection: string;
+  actionable: boolean;
+  blockedBy: string[];
+  disclaimer: string;
+}
+
+export interface AdviserBlock<T> {
+  status: AdviserBlockStatus;
+  /** Set unless the block is available; that is the whole point of it. */
+  reason: string | null;
+  value: T | null;
+}
+
+/** What the call actually spent, read off the response rather than estimated. */
+export interface AdviserUsage {
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  costUsd: number;
+}
+
 export interface Decision {
   status: "live" | "unavailable";
   symbol: string;
   horizon: string;
+  /** Completed-candle interval used by every technical input in this decision. */
+  interval: string;
   decisionCutoff: string;
   /** null when the chain had nothing to score. */
   score: DecisionScore | null;
@@ -187,6 +266,11 @@ export interface Decision {
   forecast: DecisionForecast | null;
   riskPlan: DecisionRiskPlan | null;
   citations: DecisionCitation[];
+  /** null when the server predates the adviser layer and said nothing at all. */
+  newsInterpretation: AdviserBlock<DecisionNewsInterpretation> | null;
+  adviserCouncil: AdviserBlock<DecisionAdviserCouncil> | null;
+  /** null when no model call reported what it spent. */
+  adviserUsage: AdviserUsage | null;
   notes: string[];
 }
 
@@ -453,9 +537,16 @@ export interface CompletedTdSetup {
   barsSince: number;
 }
 
+export interface MagicNineSeriesPoint {
+  direction: "bullish" | "bearish";
+  count: number;
+}
+
 export interface ChartMagicNineSnapshot {
   direction: string | null;
   count: number;
+  /** One server-published TD count per completed candle; null outside a run. */
+  series: (MagicNineSeriesPoint | null)[] | null;
   completed: boolean;
   /** null when the bar 8/9 comparison was not performed. */
   perfected: boolean | null;
@@ -588,6 +679,9 @@ export function toDemoChartSnapshot(stock: StockSnapshot): DemoChartSnapshot {
       ...fixtureMetadata,
       direction: null,
       count: stock.magicNine.count,
+      // The demo fixture has only a latest summary. Reconstructing a run from
+      // closes here would invent a client-side indicator with no provenance.
+      series: null,
       completed: stock.magicNine.complete,
       perfected: false,
       confirmedAtIndex: null,

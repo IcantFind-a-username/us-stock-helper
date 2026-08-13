@@ -76,6 +76,25 @@ class CikTickerRegistry:
     def symbol_relevance_for(self, cik: str | int) -> tuple[tuple[str, float], ...]:
         return tuple((ticker, 1.0) for ticker in self.tickers_for(cik))
 
+    def cik_for(self, ticker: str) -> str | None:
+        """The single filer that trades under this ticker, if there is one.
+
+        The reverse direction of the mapping, needed to ask EDGAR for a
+        company's own financial facts rather than to attribute a filing that
+        already names its filer. A ticker claimed by two filers resolves to
+        neither: picking one would file a company's revenue under another
+        company's symbol, and no fundamentals factor at all is the lesser
+        harm.
+        """
+
+        wanted = ticker.strip().upper()
+        if not wanted:
+            return None
+        matches = [
+            cik for cik, tickers in self._by_cik.items() if wanted in tickers
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def resolve_first(
         self, candidates: tuple[str, ...]
     ) -> tuple[str | None, tuple[tuple[str, float], ...]]:

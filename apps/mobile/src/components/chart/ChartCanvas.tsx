@@ -16,6 +16,9 @@ export type MagicNineMarker = {
   x: number;
   y: number;
   label: string;
+  direction: "bullish" | "bearish" | null;
+  mode: "badge" | "series";
+  labelTestID: string | undefined;
 };
 
 type ChartCanvasProps = {
@@ -63,8 +66,7 @@ export function ChartCanvas({
         <G key={tick.label}>
           <Line
             stroke={chartPalette.grid}
-            strokeDasharray="3 5"
-            strokeWidth={0.7}
+            strokeWidth={1}
             x1={geometry.plotLeft}
             x2={gridRight}
             y1={tick.y}
@@ -72,19 +74,33 @@ export function ChartCanvas({
           />
           <SvgText
             fill={chartPalette.axis}
-            fontSize={9}
+            fontSize={10}
             textAnchor="end"
-            x={width - 4}
-            y={tick.y + 3}>
+            x={width - 5}
+            y={tick.y + 3.5}>
             {tick.label}
           </SvgText>
         </G>
       ))}
 
+      {/* One rule under each time label, so a bar can be traced down the stack
+          to its volume, its MACD column and its participation lean. */}
+      {geometry.timeAxis.map((label) => (
+        <Line
+          key={`time-rule-${label.timestamp}`}
+          stroke={chartPalette.grid}
+          strokeWidth={1}
+          x1={label.x}
+          x2={label.x}
+          y1={panels.price.top}
+          y2={panels.axisY}
+        />
+      ))}
+
       {separators.map((top) => (
         <Line
           key={`separator-${top}`}
-          stroke={chartPalette.grid}
+          stroke={chartPalette.axisLine}
           strokeWidth={0.8}
           x1={geometry.plotLeft}
           x2={gridRight}
@@ -97,7 +113,7 @@ export function ChartCanvas({
       {geometry.sessionBreaks.map((sessionBreak) => (
         <G key={`break-${sessionBreak.timestamp}`}>
           <Line
-            stroke={chartPalette.grid}
+            stroke={chartPalette.axisLine}
             strokeWidth={0.9}
             x1={sessionBreak.x}
             x2={sessionBreak.x}
@@ -106,7 +122,7 @@ export function ChartCanvas({
           />
           <SvgText
             fill={chartPalette.axis}
-            fontSize={8}
+            fontSize={10}
             x={sessionBreak.x + 3}
             y={panels.price.top + 9}>
             {sessionBreak.label}
@@ -176,7 +192,6 @@ export function ChartCanvas({
             <Rect
               fill={candleColor}
               height={candle.bodyHeight}
-              rx={0.6}
               testID="chart-candle"
               width={candle.bodyWidth}
               x={candle.x - candle.bodyWidth / 2}
@@ -185,7 +200,7 @@ export function ChartCanvas({
             {panels.volume ? (
               <Rect
                 fill={candleColor}
-                fillOpacity={0.4}
+                fillOpacity={0.55}
                 height={candle.volumeHeight}
                 width={candle.bodyWidth}
                 x={candle.volumeX}
@@ -199,8 +214,8 @@ export function ChartCanvas({
       {geometry.macd ? (
         <G testID="macd-panel">
           <Line
-            stroke={chartPalette.grid}
-            strokeWidth={0.7}
+            stroke={chartPalette.axisLine}
+            strokeWidth={0.8}
             x1={geometry.plotLeft}
             x2={gridRight}
             y1={geometry.macd.zeroY}
@@ -237,9 +252,9 @@ export function ChartCanvas({
           ) : null}
           <SvgText
             fill={chartPalette.panelLabel}
-            fontSize={8}
+            fontSize={10.5}
             x={geometry.plotLeft + 2}
-            y={geometry.macd.top + 9}>
+            y={geometry.macd.top + 10}>
             {macdLabel}
           </SvgText>
         </G>
@@ -250,9 +265,13 @@ export function ChartCanvas({
           {geometry.rsi.references.map((reference) => (
             <G key={`rsi-${reference.value}`}>
               <Line
-                stroke={chartPalette.grid}
+                stroke={
+                  reference.value === 50
+                    ? chartPalette.grid
+                    : chartPalette.axisLine
+                }
                 strokeDasharray={reference.value === 50 ? "2 4" : "4 4"}
-                strokeWidth={0.7}
+                strokeWidth={0.8}
                 x1={geometry.plotLeft}
                 x2={gridRight}
                 y1={reference.y}
@@ -261,9 +280,9 @@ export function ChartCanvas({
               {reference.value === 50 ? null : (
                 <SvgText
                   fill={chartPalette.axis}
-                  fontSize={8}
+                  fontSize={10.5}
                   textAnchor="end"
-                  x={width - 4}
+                  x={width - 5}
                   y={reference.y + 3}>
                   {String(reference.value)}
                 </SvgText>
@@ -281,9 +300,9 @@ export function ChartCanvas({
           ) : null}
           <SvgText
             fill={chartPalette.panelLabel}
-            fontSize={8}
+            fontSize={10.5}
             x={geometry.plotLeft + 2}
-            y={geometry.rsi.top + 9}>
+            y={geometry.rsi.top + 10}>
             {rsiLabel}
           </SvgText>
         </G>
@@ -292,7 +311,7 @@ export function ChartCanvas({
       {showParticipation && panels.participation ? (
         <G>
           <Line
-            stroke={chartPalette.grid}
+            stroke={chartPalette.axisLine}
             strokeWidth={0.8}
             testID="participation-even-line"
             x1={geometry.plotLeft}
@@ -322,7 +341,7 @@ export function ChartCanvas({
               // An unavailable bar keeps its slot and stays visibly empty; a
               // filled one would read as an even split that was measured.
               <Rect
-                fill={chartPalette.grid}
+                fill={chartPalette.axisLine}
                 height={1.6}
                 key={bar.timestamp}
                 testID="participation-missing"
@@ -338,7 +357,7 @@ export function ChartCanvas({
       {geometry.timeAxis.map((label) => (
         <SvgText
           fill={chartPalette.axis}
-          fontSize={8.5}
+          fontSize={10.5}
           key={`time-${label.timestamp}`}
           testID={`chart-time-label:${label.label}`}
           textAnchor="middle"
@@ -349,23 +368,34 @@ export function ChartCanvas({
       ))}
 
       {markers.map((marker) => (
-        <G key={marker.key}>
-          <Rect
-            fill={chartPalette.magicNine}
-            height={13}
-            rx={3}
-            testID={marker.testID}
-            width={13}
-            x={marker.x - 6.5}
-            y={marker.y - 6.5}
-          />
+        <G
+          key={marker.key}
+          testID={marker.mode === "series" ? marker.testID : undefined}>
+          {marker.mode === "badge" ? (
+            <Rect
+              fill={chartPalette.magicNine}
+              height={15}
+              rx={4}
+              testID={marker.testID}
+              width={15}
+              x={marker.x - 7.5}
+              y={marker.y - 7.5}
+            />
+          ) : null}
           <SvgText
-            fill={chartPalette.surface}
-            fontSize={8}
-            fontWeight="800"
+            fill={
+              marker.mode === "badge"
+                ? chartPalette.surface
+                : marker.direction === "bullish"
+                  ? chartPalette.magicNineBullish
+                  : chartPalette.magicNineBearish
+            }
+            fontSize={marker.mode === "series" ? 11 : 10}
+            fontWeight="900"
+            {...(marker.labelTestID ? { testID: marker.labelTestID } : {})}
             textAnchor="middle"
             x={marker.x}
-            y={marker.y + 3}>
+            y={marker.y + 3.5}>
             {marker.label}
           </SvgText>
         </G>
@@ -375,8 +405,8 @@ export function ChartCanvas({
         <Line
           stroke={chartPalette.crosshair}
           strokeDasharray="2 3"
-          strokeOpacity={0.45}
-          strokeWidth={0.9}
+          strokeOpacity={0.6}
+          strokeWidth={1}
           testID="chart-crosshair"
           x1={selectedX}
           x2={selectedX}

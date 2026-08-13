@@ -6,6 +6,7 @@ export function decisionFixture() {
     status: "live" as "live" | "unavailable",
     symbol: "NVDA",
     horizon: "short",
+    interval: "day",
     decisionCutoff: cutoff,
     score: {
       value: 72.5,
@@ -99,6 +100,93 @@ export function decisionFixture() {
         availableAt: "2026-07-25T15:41:00.000Z",
       },
     ],
+    // The adviser layer costs money, so the deployed default is a request that
+    // never called it. The block still states which of the three states it is
+    // in, because a bare null cannot tell "nobody asked" from "the model was
+    // unreachable".
+    newsInterpretation: {
+      status: "not-requested",
+      reason:
+        "This request did not ask for the adviser layer; add adviser=1 to call the model.",
+      value: null,
+    } as Record<string, unknown> | null,
+    adviserCouncil: {
+      status: "not-requested",
+      reason:
+        "This request did not ask for the adviser layer; add adviser=1 to call the model.",
+      value: null,
+    } as Record<string, unknown> | null,
+    adviserUsage: null as Record<string, unknown> | null,
     notes: ["Scored on 70% of the factor weight; the rest has no source yet."],
+  };
+}
+
+/** One conclusion, sourced, exactly as the traceability layer emits it. */
+export function adviserConclusionFixture() {
+  return {
+    statement: "指引上调支持偏多的解读。",
+    confidence: "medium",
+    citations: [
+      {
+        evidenceId: "a",
+        quote: "raises full-year revenue guidance",
+        url: "https://reuters.example/a",
+        publisher: "reuters",
+        availableAt: "2026-07-25T15:41:00Z",
+        isCounterEvidence: false,
+      },
+    ],
+    counterEvidence: [],
+  };
+}
+
+export function newsInterpretationFixture() {
+  return {
+    status: "available",
+    reason: null,
+    value: {
+      headlineSummary: "两家通讯社都报道了指引上调。",
+      crossSourceReading: "两条报道指向同一件事，来源相互独立。",
+      investmentImpact: [adviserConclusionFixture()],
+      unknowns: ["证据没有说明毛利率如何变化。"],
+    },
+  };
+}
+
+export function adviserCouncilFixture() {
+  return {
+    status: "available",
+    reason: null,
+    value: {
+      summary: "各框架都读到同一条指引上调。",
+      opinions: [
+        {
+          frameworkId: "technical",
+          displayName: "技术结构框架",
+          stance: "bullish",
+          blindSpot: "对基本面突变无感。",
+          conclusions: [adviserConclusionFixture()],
+        },
+      ],
+      baselineScore: 72.5,
+      adjustedScore: 75.5,
+      scoreAdjustment: 3,
+      objectiveDirection: "bullish",
+      actionable: true,
+      blockedBy: [] as string[],
+      disclaimer:
+        "顾问观点是分析建议，不是操作指令；其影响有上限，且任一硬门未通过时一律作废。",
+    },
+  };
+}
+
+export function adviserUsageFixture() {
+  return {
+    model: "claude-opus-4-8",
+    inputTokens: 13000,
+    outputTokens: 3900,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 2000,
+    costUsd: 0.163,
   };
 }

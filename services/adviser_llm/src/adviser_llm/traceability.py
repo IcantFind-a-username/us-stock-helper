@@ -98,10 +98,19 @@ def _resolve_citation(
 
 
 def _grounded_tokens(packet: EvidencePacket) -> tuple[set[str], set[str]]:
+    # The calendar dates belong in the corpus because the packet states them to
+    # the model: an item's publication date is evidence we supplied, so
+    # repeating it cannot be an invention. Leaving them out made every date read
+    # as a number from nowhere, and a single "08" was enough to refuse an entire
+    # council. Only the date is admitted, never the time of day: minutes and
+    # seconds would quietly license most two-digit numbers, and no conclusion
+    # worth stating rests on the minute a wire moved.
     corpus = " ".join(
-        [packet.symbol]
+        [packet.symbol, packet.as_of.date().isoformat()]
         + [
             f"{item.headline} {item.body} {item.publisher} {' '.join(item.symbols)}"
+            f" {item.available_at.date().isoformat()}"
+            f" {item.received_at.date().isoformat()}"
             for item in packet.items
         ]
     )

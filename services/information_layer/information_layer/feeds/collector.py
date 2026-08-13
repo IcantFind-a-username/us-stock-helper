@@ -126,6 +126,13 @@ class EvidenceCollector:
     def refresh(self) -> None:
         """Ask every source once, honouring each source's own poll interval."""
 
+        failures = self._poll_sources()
+        if failures:
+            raise EvidenceUnavailable(failures)
+
+    def _poll_sources(self) -> tuple[SourceFailure, ...]:
+        """Poll every source and report which ones could not be read."""
+
         now = self._clock()
         since = now - self._lookback
         failures: list[SourceFailure] = []
@@ -150,8 +157,7 @@ class EvidenceCollector:
             for item in result.events:
                 self._store[item.event_id] = item
         self._evict(now)
-        if failures:
-            raise EvidenceUnavailable(failures)
+        return tuple(failures)
 
     def evidence(
         self,
@@ -184,6 +190,30 @@ class EvidenceCollector:
     ) -> tuple[EvidenceEvent, ...]:
         self.refresh()
         return self.evidence(symbols=symbols)
+
+    def collect_with_failures(
+        self,
+        *,
+        symbols: Iterable[str] = (),
+    ) -> tuple[tuple[EvidenceEvent, ...], tuple[SourceFailure, ...]]:
+        """What was read, together with the sources that could not be read.
+
+        One source timing out used to refuse the whole request, which took
+        every symbol in the product offline over a single slow publisher. A
+        named gap is a better answer than no answer — but only if the caller
+        is handed the gap, so the failures come back in the same return value
+        rather than being logged and forgotten. Callers that have nowhere to
+        show a gap should keep using `collect`, which still refuses.
+
+        Reading nothing at all is still refused outright: an empty result with
+        no evidence behind it cannot be told apart from a quiet market.
+        """
+
+        failures = self._poll_sources()
+        events = self.evidence(symbols=symbols)
+        if failures and not events:
+            raise EvidenceUnavailable(failures)
+        return events, failures
 
     def _stamped(self, event: EvidenceEvent, as_of: datetime) -> EvidenceEvent:
         age = freshness_seconds(event, as_of)

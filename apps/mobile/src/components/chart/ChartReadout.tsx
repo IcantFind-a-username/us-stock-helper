@@ -99,17 +99,17 @@ const styles = StyleSheet.create({
   },
   primary: {
     color: colors.ink,
-    fontSize: 10,
+    fontSize: 12,
     fontVariant: ["tabular-nums"],
     fontWeight: "700",
-    lineHeight: 14,
+    lineHeight: 18,
   },
   secondary: {
     color: colors.muted,
-    fontSize: 9,
+    fontSize: 12,
     fontVariant: ["tabular-nums"],
     fontWeight: "600",
-    lineHeight: 13,
+    lineHeight: 18,
   },
-  identity: { color: colors.muted, fontSize: 8, fontWeight: "700" },
+  identity: { color: colors.muted, fontSize: 12, fontWeight: "700" },
 });

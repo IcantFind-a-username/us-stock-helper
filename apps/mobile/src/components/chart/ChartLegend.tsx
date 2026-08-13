@@ -76,5 +76,5 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   dot: { borderRadius: 4, height: 6, width: 6 },
-  label: { color: colors.muted, fontSize: 9, fontWeight: "700" },
+  label: { color: colors.muted, fontSize: 12, fontWeight: "700" },
 });

@@ -1,6 +1,14 @@
 import type {
+  AdviserBlock,
+  AdviserBlockStatus,
+  AdviserCitation,
+  AdviserConclusion,
+  AdviserUsage,
+  CouncilFrameworkOpinion,
   Decision,
+  DecisionAdviserCouncil,
   DecisionForecast,
+  DecisionNewsInterpretation,
   DecisionRiskPlan,
   DecisionScore,
   FactorContribution,
@@ -255,6 +263,197 @@ function decodeRiskPlan(value: unknown): DecisionRiskPlan | null {
   };
 }
 
+const ADVISER_STATUSES = ["not-requested", "available", "unavailable"];
+
+function decodeAdviserCitation(value: unknown): AdviserCitation {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("adviser citation must be an object");
+  }
+  const url = requireString(value, "url");
+  if (!url.startsWith("https://")) {
+    throw new DecisionValidationError("adviser citation url must be https");
+  }
+  return {
+    evidenceId: requireString(value, "evidenceId"),
+    quote: requireString(value, "quote"),
+    url,
+    publisher: requireString(value, "publisher"),
+    availableAt: requireString(value, "availableAt"),
+    isCounterEvidence: value.isCounterEvidence === true,
+  };
+}
+
+function decodeAdviserConclusion(value: unknown): AdviserConclusion {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("adviser conclusion must be an object");
+  }
+  if (!Array.isArray(value.citations) || value.citations.length === 0) {
+    // The server refuses an unsourced conclusion before it is serialized. This
+    // is the same rule restated where the rendering happens, because a
+    // sentence on the screen with nothing to open is exactly what the
+    // traceability rule exists to prevent.
+    throw new DecisionValidationError(
+      "an adviser conclusion must carry at least one citation",
+    );
+  }
+  const counter = value.counterEvidence;
+  if (counter !== undefined && !Array.isArray(counter)) {
+    throw new DecisionValidationError("counterEvidence must be an array");
+  }
+  return {
+    statement: requireString(value, "statement"),
+    confidence: requireString(value, "confidence"),
+    citations: value.citations.map(decodeAdviserCitation),
+    counterEvidence: (counter ?? []).map(decodeAdviserCitation),
+  };
+}
+
+/**
+ * Decodes one adviser block, keeping its three states apart.
+ *
+ * A field that is absent entirely means the server has never heard of the
+ * adviser layer, which is neither an error nor an opinion; it decodes to null
+ * and the screen says so in its own words. Anything present has to be
+ * well-formed: a block claiming to be available with nothing inside it, or a
+ * degraded block that will not say why, is refused rather than rendered as an
+ * empty card.
+ */
+function decodeAdviserBlock<T>(
+  value: unknown,
+  decodeValue: (raw: Record<string, unknown>) => T,
+): AdviserBlock<T> | null {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("adviser block must be an object or null");
+  }
+  const status = requireString(value, "status");
+  if (!ADVISER_STATUSES.includes(status)) {
+    throw new DecisionValidationError(`unsupported adviser status: ${status}`);
+  }
+  const reason = value.reason;
+  if (reason !== null && typeof reason !== "string") {
+    throw new DecisionValidationError("adviser reason must be a string or null");
+  }
+  if (status === "available") {
+    if (!isRecord(value.value)) {
+      throw new DecisionValidationError(
+        "an available adviser block must carry its value",
+      );
+    }
+    return {
+      status: status as AdviserBlockStatus,
+      reason: reason ?? null,
+      value: decodeValue(value.value),
+    };
+  }
+  if (value.value !== null && value.value !== undefined) {
+    throw new DecisionValidationError(
+      "an adviser block that is not available must not carry a value",
+    );
+  }
+  if (typeof reason !== "string" || reason.trim() === "") {
+    // Silence here is the failure mode: without a reason the reader cannot
+    // tell an unasked question from an unreachable model.
+    throw new DecisionValidationError(
+      "an adviser block without a value must say why",
+    );
+  }
+  return { status: status as AdviserBlockStatus, reason, value: null };
+}
+
+function decodeNewsInterpretation(
+  value: Record<string, unknown>,
+): DecisionNewsInterpretation {
+  if (
+    !Array.isArray(value.investmentImpact) ||
+    value.investmentImpact.length === 0
+  ) {
+    throw new DecisionValidationError(
+      "a news interpretation must carry its investment impact",
+    );
+  }
+  if (!Array.isArray(value.unknowns)) {
+    throw new DecisionValidationError("unknowns must be an array");
+  }
+  return {
+    headlineSummary: requireString(value, "headlineSummary"),
+    crossSourceReading: requireString(value, "crossSourceReading"),
+    investmentImpact: value.investmentImpact.map(decodeAdviserConclusion),
+    unknowns: value.unknowns.map(String),
+  };
+}
+
+function decodeAdviserCouncil(
+  value: Record<string, unknown>,
+): DecisionAdviserCouncil {
+  if (!Array.isArray(value.opinions) || value.opinions.length === 0) {
+    throw new DecisionValidationError("a council brief must carry its opinions");
+  }
+  if (!Array.isArray(value.blockedBy)) {
+    throw new DecisionValidationError("blockedBy must be an array");
+  }
+  if (typeof value.actionable !== "boolean") {
+    throw new DecisionValidationError("council actionable must be boolean");
+  }
+  return {
+    summary: requireString(value, "summary"),
+    opinions: value.opinions.map((item): CouncilFrameworkOpinion => {
+      if (!isRecord(item)) {
+        throw new DecisionValidationError("council opinion must be an object");
+      }
+      if (!Array.isArray(item.conclusions) || item.conclusions.length === 0) {
+        throw new DecisionValidationError(
+          "a council opinion must carry its conclusions",
+        );
+      }
+      return {
+        frameworkId: requireString(item, "frameworkId"),
+        displayName: requireString(item, "displayName"),
+        stance: requireString(item, "stance"),
+        // A framework that names nothing it cannot see is being presented as
+        // omniscient, which is the failure the council was built to avoid.
+        blindSpot: requireString(item, "blindSpot"),
+        conclusions: item.conclusions.map(decodeAdviserConclusion),
+      };
+    }),
+    baselineScore: requireFiniteNumber(value, "baselineScore"),
+    adjustedScore: requireFiniteNumber(value, "adjustedScore"),
+    scoreAdjustment: requireFiniteNumber(value, "scoreAdjustment"),
+    objectiveDirection: requireString(value, "objectiveDirection"),
+    actionable: value.actionable,
+    blockedBy: value.blockedBy.map(String),
+    disclaimer: requireString(value, "disclaimer"),
+  };
+}
+
+function decodeAdviserUsage(value: unknown): AdviserUsage | null {
+  // Null is "no call reported what it spent". Zeros would claim a call was
+  // measured and cost nothing, which is a different statement about money.
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("adviserUsage must be an object or null");
+  }
+  const cost = requireFiniteNumber(value, "costUsd");
+  if (cost < 0) {
+    throw new DecisionValidationError("adviser cost cannot be negative");
+  }
+  const model = value.model;
+  if (model !== null && model !== undefined && typeof model !== "string") {
+    throw new DecisionValidationError("adviser model must be a string or null");
+  }
+  return {
+    model: typeof model === "string" && model.trim() !== "" ? model : null,
+    inputTokens: requireFiniteNumber(value, "inputTokens"),
+    outputTokens: requireFiniteNumber(value, "outputTokens"),
+    cacheCreationInputTokens: requireFiniteNumber(
+      value,
+      "cacheCreationInputTokens",
+    ),
+    cacheReadInputTokens: requireFiniteNumber(value, "cacheReadInputTokens"),
+    costUsd: cost,
+  };
+}
+
 export function decodeDecisionEnvelope(
   value: unknown,
   { now = new Date() }: { now?: Date } = {},
@@ -300,6 +499,7 @@ export function decodeDecisionEnvelope(
     status,
     symbol: requireString(value, "symbol"),
     horizon: requireString(value, "horizon"),
+    interval: requireString(value, "interval"),
     decisionCutoff: cutoff.toISOString(),
     score,
     forecast: decodeForecast(value.forecast),
@@ -320,6 +520,12 @@ export function decodeDecisionEnvelope(
         availableAt: requireString(item, "availableAt"),
       };
     }),
+    newsInterpretation: decodeAdviserBlock(
+      value.newsInterpretation,
+      decodeNewsInterpretation,
+    ),
+    adviserCouncil: decodeAdviserBlock(value.adviserCouncil, decodeAdviserCouncil),
+    adviserUsage: decodeAdviserUsage(value.adviserUsage),
     notes: value.notes.map(String),
   };
 }
@@ -363,7 +569,13 @@ export type AnalysisSource = {
     symbol: string,
     horizon: Horizon,
     signal?: AbortSignal,
+    options?: AnalysisRequestOptions,
   ): Promise<Decision>;
+};
+
+export type AnalysisRequestOptions = {
+  /** One explicit, single-stock model call. Never set this on list requests. */
+  adviser?: "news";
 };
 
 type AnalysisClientOptions = {
@@ -510,12 +722,13 @@ export function createAnalysisClient({
   }
 
   return {
-    async getDecision(symbol, horizon, signal) {
+    async getDecision(symbol, horizon, signal, options) {
       const normalizedSymbol = normalizeUsSymbol(symbol);
       const query = new URLSearchParams({
         symbol: normalizedSymbol,
         horizon,
       });
+      if (options?.adviser) query.set("adviser", options.adviser);
       try {
         const payload = await fetchJson(`/decision?${query.toString()}`, signal);
         const decision = decodeDecisionEnvelope(payload, { now: now() });

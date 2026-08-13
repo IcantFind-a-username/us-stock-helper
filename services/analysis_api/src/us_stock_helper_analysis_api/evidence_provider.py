@@ -2,8 +2,11 @@
 
 The chain treats thin evidence as a reason to hold back, so the one thing this
 boundary must never do is let an unreadable source look like a quiet market.
-Every failure the collector reports travels outward as an exception; only a
-round of polling where every source answered can produce an empty tuple.
+A round where some sources answered is served, because refusing everything
+over one slow publisher took every symbol offline at once — but never
+silently: the sources behind the gap come back through `evidence_gaps` for the
+decision to name. A round where nothing could be read is still refused, since
+an empty tuple with no evidence behind it reads as a quiet market.
 
 Read-only by construction: this reads public feeds over HTTPS, carries no
 credential, and has no path to a broker.
@@ -12,10 +15,12 @@ credential, and has no path to a broker.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from typing import Mapping, Protocol
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Mapping, Protocol
 
 from information_layer import EvidenceEvent
+from information_layer.factors import FactorSnapshot
 from information_layer.feeds import (
     DEFAULT_LOOKBACK_SECONDS,
     DEFAULT_RETENTION_SECONDS,
@@ -35,21 +40,45 @@ class BarSource(Protocol):
 class EvidenceSource(Protocol):
     def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]: ...
 
+    def evidence_gaps(self) -> tuple[str, ...]: ...
+
+
+class FactorSource(Protocol):
+    def snapshot(self, *, symbol: str, as_of: datetime) -> FactorSnapshot: ...
+
 
 class Collector(Protocol):
-    def collect(
+    def collect_with_failures(
         self,
         *,
         symbols: tuple[str, ...] = (),
-    ) -> tuple[EvidenceEvent, ...]: ...
+    ) -> tuple[tuple[EvidenceEvent, ...], tuple[Any, ...]]: ...
 
 
 @dataclass(frozen=True, slots=True)
 class FeedEvidenceProvider:
+    """Reads evidence, and remembers which sources it could not read.
+
+    A single slow publisher used to refuse the request outright, which showed
+    up in the app as every symbol failing at once. The thinner answer is taken
+    instead, but the sources behind the gap are kept so the decision can say
+    what it was missing rather than presenting a partial read as a full one.
+    """
+
     collector: Collector
+    # A list on a frozen record: the identity of the provider does not change
+    # when a poll does, and the gap has to survive the call to be reported.
+    gaps: list[str] = field(default_factory=list)
 
     def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
-        return self.collector.collect(symbols=(symbol,))
+        events, failures = self.collector.collect_with_failures(symbols=(symbol,))
+        self.gaps[:] = [
+            f"{failure.source_id}（{failure.reason}）" for failure in failures
+        ]
+        return events
+
+    def evidence_gaps(self) -> tuple[str, ...]:
+        return tuple(self.gaps)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,12 +87,19 @@ class CompositeAnalysisProvider:
 
     bars: BarSource
     evidence: EvidenceSource
+    factors: FactorSource
 
     def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
         return self.bars.bars_for(symbol, interval)
 
     def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
         return self.evidence.evidence_for(symbol)
+
+    def evidence_gaps(self) -> tuple[str, ...]:
+        return self.evidence.evidence_gaps()
+
+    def factors_for(self, symbol: str, as_of: datetime) -> FactorSnapshot:
+        return self.factors.snapshot(symbol=symbol, as_of=as_of)
 
 
 def evidence_provider_from_environment(

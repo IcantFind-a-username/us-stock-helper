@@ -7,6 +7,11 @@ render. A third path exists and does exactly one other thing: it exchanges a
 pairing code for a device token, which is where every credential this service
 accepts comes from.
 
+Technical inputs for a composed decision use completed daily candles by
+default. Intraday intervals are chart views, not an implicit basis for every
+short-, swing- and long-horizon conclusion. Each response carries `interval`
+so clients can state the analytical basis instead of guessing it.
+
 ## Safety invariants
 
 - The path allowlist is exactly `GET /health`, `GET /decision` and
@@ -27,9 +32,11 @@ accepts comes from.
 The chain declines to state some things, and those refusals travel to the
 screen rather than being smoothed over in serialization:
 
-- `score.factorCoverage` and `score.unavailableFactors` — macro, geopolitical,
-  institutional-flow and fundamental factors have no feed yet, so a score is
-  explicitly partial rather than quietly averaging in judgements nobody made.
+- `score.factorCoverage` and `score.unavailableFactors` — Treasury data and SEC
+  XBRL fundamentals fill macro and fundamental inputs when public records are
+  available. Geopolitics and institutional flow remain explicit abstentions;
+  unsupported or failed sources reduce coverage instead of becoming fake
+  neutral values.
 - `forecast: null` with a note — when realized volatility cannot be measured
   there is no honest width for a scenario range, and a band of no width shown
   as confidently as a measured one is worse than showing nothing.
@@ -53,6 +60,12 @@ curl --fail --silent --show-error http://127.0.0.1:8770/health
 curl --fail --silent --show-error \
   'http://127.0.0.1:8770/decision?symbol=NVDA&horizon=short'
 ```
+
+The default request above never calls a model. The phone's paid button sends
+`adviser=news`, which performs one traceable news-interpretation call for that
+one symbol and returns measured token usage and cost. `adviser=1` remains the
+explicit full council mode for operator use; it performs the additional,
+larger 13-framework call and is never used by watchlists or automatic refresh.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

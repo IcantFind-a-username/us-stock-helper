@@ -449,6 +449,94 @@ it("maps a published RSI series onto the fixed 0 to 100 panel scale", () => {
   expect(overboughtPoint!.y).toBeCloseTo(references[0]!.y, 10);
 });
 
+it("gives the price panel the larger half of the stack it shares", () => {
+  const stacked = geometryFor({
+    panels: ["volume", "macd", "rsi", "participation"],
+    height: 460,
+  });
+  const height = (panel: { top: number; bottom: number }) =>
+    panel.bottom - panel.top;
+  const indicators = [
+    stacked.panels.volume!,
+    stacked.panels.macd!,
+    stacked.panels.rsi!,
+    stacked.panels.participation!,
+  ].reduce((total, panel) => total + height(panel), 0);
+
+  // The K line is the subject of the screen and the indicators are read
+  // against it; four sub-panels at their own weights took more of the frame
+  // than the bars they describe, and the price flattened into a ribbon.
+  expect(height(stacked.panels.price)).toBeGreaterThan(indicators);
+  expect(height(stacked.panels.price)).toBeGreaterThan(
+    (stacked.panels.axisY - stacked.panels.price.top) * 0.5,
+  );
+});
+
+it("rules the price axis at round levels instead of at the panel's own thirds", () => {
+  const geometry = geometryFor({ height: 420 });
+  const values = geometry.priceTicks.map(({ label }) => Number(label));
+
+  expect(values.length).toBeGreaterThanOrEqual(4);
+  // The step is chosen for a level count near the target, so the axis can land
+  // one line either side of it rather than on it exactly.
+  expect(values.length).toBeLessThanOrEqual(7);
+  const step = values[0]! - values[1]!;
+  const magnitude = 10 ** Math.floor(Math.log10(step));
+  // A level a reader can hold in their head — 142.50, not 141.37, which is
+  // what dividing this window's own range into thirds produces.
+  expect(
+    [1, 2, 2.5, 5].some((nice) => Math.abs(step / magnitude - nice) < 1e-9),
+  ).toBe(true);
+
+  const { top, bottom } = geometry.panels.price;
+  const span = geometry.priceMax - geometry.priceMin;
+  values.forEach((value, index) => {
+    expect(value).toBeGreaterThanOrEqual(geometry.priceMin);
+    expect(value).toBeLessThanOrEqual(geometry.priceMax);
+    expect(Math.abs(value / step - Math.round(value / step))).toBeLessThan(1e-9);
+    // The label has to name the row it is printed on, or the grid line under it
+    // is a price the chart never claimed.
+    expect(geometry.priceTicks[index]!.y).toBeCloseTo(
+      top + ((geometry.priceMax - value) / span) * (bottom - top),
+      6,
+    );
+    if (index > 0) expect(values[index - 1]! - value).toBeCloseTo(step, 9);
+  });
+});
+
+it("still rules the axis when a window spans only a couple of dollars", () => {
+  // The range an intraday window actually has. Rounding the step up to the
+  // next round number left two labelled levels on the whole panel, and a bar
+  // between them could be read to about a dollar.
+  const intraday: Candle[] = Array.from({ length: 40 }, (_, index) => {
+    const timestamp = new Date(Date.UTC(2026, 6, 24, 13, 30 + index * 5)).toISOString();
+    const open = 142 + Math.sin(index / 6) * 1.2;
+    return {
+      timestamp,
+      availableAt: new Date(Date.parse(timestamp) + 1_000).toISOString(),
+      complete: true,
+      open,
+      high: open + 0.4,
+      low: open - 0.4,
+      close: open + 0.1,
+      volume: 1_000 + index,
+    };
+  });
+
+  const geometry = buildChartGeometry({
+    candles: intraday,
+    forecast: null,
+    participationBars: [],
+    decisionCutoff: "2026-07-24T23:00:00.000Z",
+    width: resolveChartWidth(390),
+    height: 460,
+    panels: ["volume", "macd", "rsi"],
+  });
+
+  expect(geometry.priceMax - geometry.priceMin).toBeLessThan(4);
+  expect(geometry.priceTicks.length).toBeGreaterThanOrEqual(4);
+});
+
 it("uses the available phone width while keeping chart geometry bounded", () => {
   expect(resolveChartWidth(375)).toBe(319);
   expect(resolveChartWidth(390)).toBe(334);
@@ -614,7 +702,7 @@ it("draws only the window while keeping every earlier bar reachable", () => {
     ],
   });
 
-  const { size, offset } = geometry.window;
+  const { size, offset, total } = geometry.window;
   expect(geometry.window.total).toBe(201);
   expect(size).toBeLessThan(201);
   expect(geometry.candles).toHaveLength(size);
@@ -635,7 +723,7 @@ it("draws only the window while keeping every earlier bar reachable", () => {
     forecast: { ...forecast, predictedAt: "2026-07-24T10:00:00.000Z" },
     participationBars: [],
     panels: ["participation"],
-    window: { size, offset: 0 },
+    window: { size, offset: 0, total },
     overlays: [
       {
         key: "ma5",

@@ -36,16 +36,56 @@ function citation(
   };
 }
 
+const NOT_REQUESTED_REASON =
+  "This request did not ask for the adviser layer; add adviser=1 to call the model.";
+
+function notRequested(): Decision["newsInterpretation"] {
+  return { status: "not-requested", reason: NOT_REQUESTED_REASON, value: null };
+}
+
+function interpretation(): NonNullable<Decision["newsInterpretation"]> {
+  return {
+    status: "available",
+    reason: null,
+    value: {
+      headlineSummary: "两家通讯社都报道了指引上调。",
+      crossSourceReading: "两条报道指向同一件事，来源相互独立。",
+      investmentImpact: [
+        {
+          statement: "指引上调支持偏多的解读。",
+          confidence: "medium",
+          citations: [
+            {
+              evidenceId: "only",
+              quote: "raises full-year revenue guidance",
+              url: "https://example.com/only",
+              publisher: "发布方 only",
+              availableAt: "2026-08-13T13:27:00.000Z",
+              isCounterEvidence: false,
+            },
+          ],
+          counterEvidence: [],
+        },
+      ],
+      unknowns: ["证据没有说明毛利率如何变化。"],
+    },
+  };
+}
+
 function decision(overrides: Partial<Decision> = {}): Decision {
   return {
     status: "live",
     symbol: "NVDA",
     horizon: "short",
+    interval: "day",
     decisionCutoff: "2026-08-13T13:30:00.000Z",
     score: null,
     forecast: null,
     riskPlan: null,
     citations: [],
+    newsInterpretation: notRequested(),
+    adviserCouncil: notRequested() as Decision["adviserCouncil"],
+    adviserUsage: null,
     notes: [],
     ...overrides,
   };
@@ -165,17 +205,144 @@ describe("the news evidence carried by a real decision", () => {
     expect(view.queryByTestId("decision-news-unavailable")).toBeNull();
   });
 
-  it("keeps the model interpretation absent with a reason, never invented", async () => {
+});
+
+/**
+ * "解读暂不可用" was one message covering three different situations. Nobody
+ * asked for the interpretation, the model was asked and failed, and the server
+ * has no such feature are three different things to do next — pay for it, wait
+ * and retry, upgrade the deployment — and one sentence told the reader none of
+ * them.
+ */
+describe("why the interpretation is not on the screen", () => {
+  const cited = [citation("only", "2026-08-13T13:27:00.000Z")];
+
+  it("says nobody asked for it, rather than that it failed", async () => {
+    const view = await renderSection({
+      decision: decision({ citations: cited }),
+    });
+
+    const notice = view.getByTestId("decision-interpretation-not-requested");
+    expect(notice).toHaveTextContent(/未请求/);
+    expect(view.queryByTestId("decision-interpretation-unavailable")).toBeNull();
+  });
+
+  it("says the model failed, rather than that it had no view", async () => {
     const view = await renderSection({
       decision: decision({
-        citations: [citation("only", "2026-08-13T13:27:00.000Z")],
+        citations: cited,
+        newsInterpretation: {
+          status: "unavailable",
+          reason: "模型请求超时（已尝试 3 次）。",
+          value: null,
+        },
       }),
     });
 
-    expect(view.getByTestId("news-interpretation-unavailable")).toBeTruthy();
-    expect(view.getByTestId("news-interpretation-unavailable")).toHaveTextContent(
-      /解读接口/,
+    const notice = view.getByTestId("decision-interpretation-unavailable");
+    expect(notice).toHaveTextContent(/解读不可用/);
+    expect(notice).toHaveTextContent(/模型请求超时/);
+    // The distinction the whole file exists for: a model that broke is not a
+    // model that looked and found nothing worth saying.
+    expect(notice).toHaveTextContent(/不是「没有观点」/);
+    expect(view.queryByTestId("decision-interpretation-not-requested")).toBeNull();
+  });
+
+  it("says the deployment has no such feature when the field is absent", async () => {
+    const view = await renderSection({
+      decision: decision({ citations: cited, newsInterpretation: null }),
+    });
+
+    expect(
+      view.getByTestId("decision-interpretation-not-deployed"),
+    ).toHaveTextContent(/解读接口/);
+  });
+
+  it("never invents an interpretation while the analysis is still in flight", async () => {
+    const view = await renderSection({ decision: null, errorCategory: null });
+
+    expect(view.getByTestId("decision-interpretation-pending")).toBeTruthy();
+    expect(view.queryByTestId("decision-interpretation-not-requested")).toBeNull();
+  });
+});
+
+describe("an interpretation the model actually produced", () => {
+  const cited = [citation("only", "2026-08-13T13:27:00.000Z")];
+
+  it("shows the cross-source reading and every sourced conclusion", async () => {
+    const view = await renderSection({
+      decision: decision({
+        citations: cited,
+        newsInterpretation: interpretation(),
+      }),
+    });
+
+    expect(view.getByTestId("decision-interpretation-reading")).toHaveTextContent(
+      /相互独立/,
     );
+    expect(view.getByTestId("decision-interpretation-claim-0")).toHaveTextContent(
+      /指引上调支持偏多的解读/,
+    );
+  });
+
+  it("carries the citation and its quote with the conclusion", async () => {
+    const view = await renderSection({
+      decision: decision({
+        citations: cited,
+        newsInterpretation: interpretation(),
+      }),
+    });
+
+    const source = view.getByTestId("decision-interpretation-citation-0-only");
+    expect(source).toHaveTextContent(/发布方 only/);
+    expect(source).toHaveTextContent(/raises full-year revenue guidance/);
+  });
+
+  it("prints what the evidence could not answer instead of dropping it", async () => {
+    const view = await renderSection({
+      decision: decision({
+        citations: cited,
+        newsInterpretation: interpretation(),
+      }),
+    });
+
+    expect(view.getByTestId("decision-interpretation-unknowns")).toHaveTextContent(
+      /毛利率/,
+    );
+  });
+
+  it("states what the model call cost, since it is the reader's money", async () => {
+    const view = await renderSection({
+      decision: decision({
+        citations: cited,
+        newsInterpretation: interpretation(),
+        adviserUsage: {
+          model: "claude-opus-4-8",
+          inputTokens: 13000,
+          outputTokens: 3900,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 2000,
+          costUsd: 0.0993,
+        },
+      }),
+    });
+
+    expect(view.getByTestId("decision-interpretation-cost")).toHaveTextContent(
+      /0\.0993/,
+    );
+  });
+
+  it("does not print a cost when nothing measured one", async () => {
+    const view = await renderSection({
+      decision: decision({
+        citations: cited,
+        newsInterpretation: interpretation(),
+        adviserUsage: null,
+      }),
+    });
+
+    // A zero here would claim the call was measured and was free.
+    expect(view.queryByTestId("decision-interpretation-cost")).toBeNull();
   });
 });
 

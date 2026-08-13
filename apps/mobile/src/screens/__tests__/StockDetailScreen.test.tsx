@@ -27,7 +27,10 @@ import type { Decision, LiveStockSnapshot } from "@/domain/models";
 import { AppStateProvider } from "@/state/AppStateProvider";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
 
-import { decisionFixture } from "../../data/__tests__/decision.fixture";
+import {
+  decisionFixture,
+  newsInterpretationFixture,
+} from "../../data/__tests__/decision.fixture";
 import { stockSnapshotFixture } from "../../data/__tests__/stockSnapshot.fixture";
 import { StockDetailScreen } from "../StockDetailScreen";
 
@@ -178,11 +181,13 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
     "12.50%",
   );
 
-  expect(view.getByText(/未接入基本面数据源/)).toBeTruthy();
-  expect(view.getByText(/未接入宏观与地缘数据源/)).toBeTruthy();
+  expect(view.getByTestId("decision-factor-breakdown")).toHaveTextContent(
+    /技术趋势/,
+  );
   expect(view.queryByText("预测分析")).toBeNull();
-  const adviser = view.getByRole("button", { name: "顾问分析等待大模型凭据" });
-  expect(adviser.props.accessibilityState).toEqual({ disabled: true });
+  expect(
+    view.getByRole("button", { name: "为 NVDA 生成一次 Claude 新闻解读" }),
+  ).toBeTruthy();
   expect(view.getByText("仅供分析与建议 · 不连接券商 · 不会自动下单")).toBeTruthy();
 
   expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
@@ -191,6 +196,46 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.queryByText("概率预测，不是未来价格承诺")).toBeNull();
   expect(view.queryByText("预测区间")).toBeNull();
   expect(view.queryByText("NVIDIA")).toBeNull();
+});
+
+it("calls Claude only after a single-stock button press", async () => {
+  const calls: Array<{ symbol: string; adviser: string | undefined }> = [];
+  const analysis = analysisWith(async (symbol, _horizon, _signal, options) => {
+    calls.push({ symbol, adviser: options?.adviser });
+    return liveDecision((value) => {
+      if (options?.adviser === "news") {
+        value.newsInterpretation = newsInterpretationFixture();
+        value.adviserUsage = {
+          model: "claude-opus-4-8",
+          inputTokens: 4000,
+          outputTokens: 900,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          costUsd: 0.0425,
+        };
+      }
+    });
+  });
+  const view = await renderDetail({ analysis });
+
+  await waitFor(() => expect(calls).toEqual([{ symbol: "NVDA", adviser: undefined }]));
+  await userEvent.setup().press(
+    view.getByRole("button", { name: "为 NVDA 生成一次 Claude 新闻解读" }),
+  );
+
+  await waitFor(() =>
+    expect(calls).toEqual([
+      { symbol: "NVDA", adviser: undefined },
+      { symbol: "NVDA", adviser: "news" },
+    ]),
+  );
+  await waitFor(() =>
+    expect(view.getByTestId("decision-interpretation-reading")).toBeTruthy(),
+  );
+  expect(
+    view.getByTestId("decision-interpretation-reading").props.children,
+  ).toContain("两条报道指向同一件事");
+  expect(view.getByText(/4900 tokens/)).toBeTruthy();
 });
 
 it("hides and restores every participation chart surface with one tool", async () => {
@@ -722,11 +767,12 @@ it("names what each still-dark card is waiting on", async () => {
   // "尚未接入真实分析" was wrong on all three: the analysis service answers,
   // and each of these is short a specific input instead.
   expect(view.queryByText("尚未接入真实分析")).toBeNull();
-  expect(view.getByText(/未接入基本面数据源/)).toBeTruthy();
-  expect(view.getByText(/未接入宏观与地缘数据源/)).toBeTruthy();
+  expect(view.queryByText(/服务端未接入基本面数据源/)).toBeNull();
+  expect(view.queryByText(/服务端未接入宏观与地缘数据源/)).toBeNull();
+  expect(view.getByTestId("decision-factor-breakdown")).toBeTruthy();
   expect(
-    view.getByRole("button", { name: /顾问分析/ }),
-  ).toHaveTextContent(/ANTHROPIC_API_KEY/);
+    view.getByRole("button", { name: "为 NVDA 生成一次 Claude 新闻解读" }),
+  ).toHaveTextContent(/只调用 1 次模型/);
 });
 
 it("keeps the analysis and its news when only the quote feed is down", async () => {

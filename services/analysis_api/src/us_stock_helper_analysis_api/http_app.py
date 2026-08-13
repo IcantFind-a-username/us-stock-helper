@@ -74,11 +74,12 @@ class AnalysisApplication:
         try:
             symbol = _one(query, "symbol")
             horizon = _one(query, "horizon")
+            adviser = _flag(query, "adviser")
         except ValueError as error:
             return 400, headers, _error("INVALID_ARGUMENT", str(error))
 
         try:
-            payload = self.service.decision(symbol, horizon)
+            payload = self.service.decision(symbol, horizon, adviser=adviser)
         except InvalidRequest as error:
             return 400, headers, _error("INVALID_ARGUMENT", str(error))
         except Exception:
@@ -371,6 +372,33 @@ def _one(query: Mapping[str, list[str]], key: str) -> str:
     if len(values) != 1 or not values[0].strip():
         raise ValueError(f"{key} must appear exactly once")
     return values[0].strip()
+
+
+_TRUE = {"1", "true", "yes"}
+_FALSE = {"0", "false", "no", ""}
+
+
+def _flag(query: Mapping[str, list[str]], key: str) -> bool | str:
+    """An absent switch is off; an unreadable one is refused.
+
+    Guessing here is not a neutral act. Read as on, a typo spends the reader's
+    money; read as off, it silently withholds what they asked for. Neither is
+    a defensible default, so the request is rejected instead.
+    """
+
+    values = query.get(key, [])
+    if not values:
+        return False
+    if len(values) != 1:
+        raise ValueError(f"{key} must appear at most once")
+    raw = values[0].strip().lower()
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    if raw == "news":
+        return "news"
+    raise ValueError(f"{key} must be one of 1, 0, true, false, yes, no, news")
 
 
 def _error(code: str, message: str) -> dict[str, Any]:

@@ -13,7 +13,7 @@ import { useNow } from "@/hooks/use-now";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
 import { radius, spacing } from "@/theme/tokens";
 
-import { NewsInterpretationCard } from "./NewsInterpretationCard";
+import { DecisionInterpretationCard } from "./DecisionInterpretationCard";
 import { useNewsPalette } from "./newsPalette";
 
 /**
@@ -149,17 +149,7 @@ export function DecisionNewsSection({
         ) : null}
       </View>
 
-      <NewsInterpretationCard
-        interpretation={{
-          status: "unavailable",
-          reason:
-            "解读接口尚未部署：分析服务只返回结论与引用，不返回逐条消息的模型解读。",
-        }}
-        markers={new Map()}
-        now={now}
-        palette={palette}
-        stories={[]}
-      />
+      <DecisionInterpretationCard decision={decision} palette={palette} />
     </View>
   );
 }
@@ -225,7 +215,7 @@ function CitationRow({
 const styles = StyleSheet.create({
   section: { gap: spacing.sm },
   title: { fontSize: 15, fontWeight: "900" },
-  asOf: { fontSize: 10, fontVariant: ["tabular-nums"], fontWeight: "600" },
+  asOf: { fontSize: 12, fontVariant: ["tabular-nums"], fontWeight: "600" },
   card: {
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
@@ -235,8 +225,8 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 12, fontWeight: "900", letterSpacing: 0.4 },
   notice: { borderRadius: radius.md, gap: spacing.xxs, padding: spacing.sm },
   noticeTitle: { fontSize: 12, fontWeight: "800", lineHeight: 17 },
-  noticeBody: { fontSize: 10, lineHeight: 15 },
-  limits: { fontSize: 10, fontWeight: "700", lineHeight: 14 },
+  noticeBody: { fontSize: 12, lineHeight: 18 },
+  limits: { fontSize: 12, fontWeight: "700", lineHeight: 18 },
   row: {
     borderRadius: radius.md,
     borderWidth: 1,
@@ -247,16 +237,16 @@ const styles = StyleSheet.create({
   marker: {
     borderRadius: radius.pill,
     borderWidth: 1,
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: "900",
     overflow: "hidden",
     paddingHorizontal: 5,
     paddingVertical: 1,
   },
   spacer: { flex: 1 },
-  relative: { fontSize: 11, fontWeight: "800" },
+  relative: { fontSize: 12, fontWeight: "800" },
   headline: { fontSize: 14, fontWeight: "800", lineHeight: 19 },
-  absolute: { fontSize: 10, fontVariant: ["tabular-nums"], lineHeight: 14 },
+  absolute: { fontSize: 12, fontVariant: ["tabular-nums"], lineHeight: 18 },
   source: {
     alignItems: "center",
     flexDirection: "row",

@@ -118,16 +118,22 @@ export type ChartAxisLabel = {
   timestamp: string;
 };
 
+/** A window before it has been put on a series: bar counts, no pixels. */
+export type ChartWindowSlice = { size: number; offset: number };
+
 /**
  * The slice of the point-in-time series that is drawn.
  *
  * `offset` counts bars from the oldest point-in-time bar, so it survives a
  * zoom: the window keeps naming the same bars whatever the pixel width is.
+ *
+ * `total` is how many bars that offset was counted against, and it is what
+ * makes the window re-anchorable. A live series grows while the chart is open,
+ * so an offset alone names a different slice after every refresh: a window that
+ * had been dragged onto the newest bar silently stopped being on the newest
+ * bar, taking the forecast — only ever drawn where the series ends — with it.
  */
-export type ChartWindow = { size: number; offset: number };
-
-/** The window the geometry actually drew, with the range it was cut from. */
-export type ResolvedChartWindow = ChartWindow & { total: number };
+export type ChartWindow = ChartWindowSlice & { total: number };
 
 export type ChartGeometryInput = {
   candles: Candle[];
@@ -165,7 +171,7 @@ export type ChartGeometry = {
   priceMin: number;
   priceMax: number;
   priceTicks: { label: string; y: number }[];
-  window: ResolvedChartWindow;
+  window: ChartWindow;
 };
 
 const inset = { left: 8, right: 44, top: 14 } as const;
@@ -192,11 +198,15 @@ const panelMinimum: Record<ChartPanelKey, number> = {
 const dayMs = 86_400_000;
 
 /**
- * A body narrower than this is indistinguishable from its own wick — both are
- * drawn in the bar's colour — so at that density up and down stop reading.
- * It is the constraint the default window size is solved for, not a taste call.
+ * The body width the default window is solved for.
+ *
+ * A body narrower than its own wick is not a candle: both are drawn in the
+ * bar's colour, so at that density up and down stop reading. Three points
+ * cleared the wick and nothing else — the bars still ran into each other. Four
+ * points against a one-point wick, at the body-to-gap proportion below, is the
+ * density the approved K-line reference draws at.
  */
-export const minReadableBodyWidth = 3;
+export const minReadableBodyWidth = 4;
 /** Pinched all the way in. Fewer bars than this is no longer a chart. */
 export const minWindowBars = 30;
 /**
@@ -223,8 +233,16 @@ export function maxWindowBarsFor(width: number) {
   );
 }
 
-const bodyWidthRatio = 0.62;
-const maxBodyWidth = 9;
+/**
+ * Body against slot, so a little under half of every slot stays empty.
+ *
+ * The gap is what separates one bar from the next; the approved K-line
+ * reference draws a 12pt body on a 22pt slot, and at 0.62 the bodies were
+ * closing that gap to under two points and reading as a solid block.
+ */
+const bodyWidthRatio = 0.55;
+/** Few bars on a landscape chart get the reference's own body, not a slab. */
+const maxBodyWidth = 12;
 
 const clampNumber = (value: number, low: number, high: number) =>
   Math.min(Math.max(value, low), high);
@@ -248,21 +266,105 @@ export function readableWindowSize(width: number, reservedSlots = 0) {
   return clampNumber(affordable, minWindowBars, maxWindowBarsFor(width));
 }
 
+const wholeBars = (value: number) =>
+  Number.isFinite(value) ? Math.round(value) : 0;
+
 /**
  * Fits a window to the data: whole bars, never wider than the series, never
  * scrolled past either end. The pinch limits are not applied here — a caller
  * that asks for an exact slice gets it, and only {@link zoomChartWindow}
  * enforces how far a finger may take it.
+ *
+ * An empty series yields an empty window rather than a one-bar one: "no bar
+ * passed the decision cutoff" and "one bar is on screen" are different facts.
  */
 export function clampChartWindow(
+  window: ChartWindowSlice,
+  total: number,
+): ChartWindow {
+  const series = Math.max(wholeBars(total), 0);
+  const size = clampNumber(wholeBars(window.size), Math.min(1, series), series);
+  return {
+    size,
+    offset: clampNumber(wholeBars(window.offset), 0, Math.max(series - size, 0)),
+    total: series,
+  };
+}
+
+/** Whether the window's right edge is sitting on the last bar it knows of. */
+const followsLatest = (window: ChartWindow) =>
+  window.offset + window.size >= window.total;
+
+/**
+ * Moves a window measured against one series length onto another.
+ *
+ * A window whose right edge was on the last bar belongs to a reader standing
+ * at the live edge, so it keeps ending on the last bar as new ones close.
+ * A window parked in history keeps the bars it was showing, because dragging
+ * back to a particular hour is a request for that hour, not for whatever is
+ * newest. Bars only ever arrive at the newest end of a point-in-time series,
+ * which is what makes the second case a plain offset again.
+ */
+export function reanchorChartWindow(
   window: ChartWindow,
   total: number,
 ): ChartWindow {
-  const size = clampNumber(Math.round(window.size), 1, Math.max(total, 1));
-  return {
-    size,
-    offset: clampNumber(Math.round(window.offset), 0, Math.max(total - size, 0)),
-  };
+  // A window can only have been measured against a series it fits inside, so a
+  // recorded total shorter than the window itself is not one; its own extent
+  // stands in, which leaves it at the live edge rather than collapsing it.
+  const previous = clampChartWindow(
+    window,
+    Math.max(
+      wholeBars(window.total),
+      wholeBars(window.offset) + wholeBars(window.size),
+    ),
+  );
+  return clampChartWindow(
+    followsLatest(previous)
+      ? { size: previous.size, offset: wholeBars(total) - previous.size }
+      : previous,
+    total,
+  );
+}
+
+/**
+ * Puts a window the reader left behind back on the chart being drawn now.
+ *
+ * The window outlives both the series it was cut from and the layout it was
+ * pinched at: bars close while the chart is open, and a rotation hands the same
+ * bar count a different span. Neither is consent to lose the live edge or to
+ * draw hairlines, so a window that no longer fits is re-anchored and narrowed
+ * rather than obeyed literally.
+ */
+export function resolveChartWindow({
+  window,
+  total,
+  width,
+  reservedSlots = 0,
+}: {
+  window: ChartWindow | null;
+  total: number;
+  width: number;
+  /** Slots the forecast takes on the same axis; they narrow every bar. */
+  reservedSlots?: number;
+}): ChartWindow {
+  const series = Math.max(wholeBars(total), 0);
+  if (!window || !(window.size > 0)) {
+    const size = readableWindowSize(width, reservedSlots);
+    return clampChartWindow({ size, offset: series - size }, series);
+  }
+  const anchored = reanchorChartWindow(window, series);
+  const affordable = maxWindowBarsFor(width);
+  if (anchored.size <= affordable) return anchored;
+  return clampChartWindow(
+    {
+      size: affordable,
+      // Narrowing keeps the edge the reader was reading from: at the live edge
+      // the newest bar stays on screen, in history the oldest bar in view does.
+      offset: followsLatest(anchored) ? series - affordable : anchored.offset,
+    },
+    series,
+  );
 }
 
 /**
@@ -286,16 +388,19 @@ export function zoomChartWindow({
   focusRatio: number;
   width: number;
 }): ChartWindow {
-  const bounded = clampChartWindow(window, total);
+  const bounded = reanchorChartWindow(window, total);
   const ratio = clampNumber(Number.isFinite(focusRatio) ? focusRatio : 0.5, 0, 1);
   const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
   const size = clampNumber(
     Math.round(bounded.size / safeScale),
     minWindowBars,
-    Math.min(maxWindowBarsFor(width), Math.max(total, 1)),
+    Math.min(maxWindowBarsFor(width), Math.max(bounded.total, 1)),
   );
   const focusBar = bounded.offset + ratio * bounded.size;
-  return clampChartWindow({ size, offset: focusBar - ratio * size }, total);
+  return clampChartWindow(
+    { size, offset: focusBar - ratio * size },
+    bounded.total,
+  );
 }
 
 /** Slides the window along the series; both ends are hard stops. */
@@ -308,11 +413,11 @@ export function panChartWindow({
   total: number;
   barDelta: number;
 }): ChartWindow {
-  const bounded = clampChartWindow(window, total);
+  const bounded = reanchorChartWindow(window, total);
   const delta = Number.isFinite(barDelta) ? barDelta : 0;
   return clampChartWindow(
     { size: bounded.size, offset: bounded.offset + delta },
-    total,
+    bounded.total,
   );
 }
 
@@ -345,6 +450,58 @@ const dateLabel = (timestamp: number) => {
 
 const utcDay = (timestamp: number) => Math.floor(timestamp / dayMs);
 
+/** How many multiples of `step` fall inside the drawn range. */
+const levelsIn = (min: number, max: number, step: number) =>
+  Math.floor(max / step + 1e-9) - Math.ceil(min / step - 1e-9) + 1;
+
+/**
+ * 1, 2, 2.5 or 5 × 10ⁿ: steps a reader adds up without doing arithmetic.
+ *
+ * The candidate is the one whose count of levels lands closest to what the
+ * panel has room for, a tie going to the finer step — an extra line costs a
+ * hairline, while too few make the reader interpolate. Rounding the step up to
+ * the next round number instead ruled a two-dollar intraday window with a
+ * single line, which is a price axis only in that it has a number on it.
+ */
+const niceStep = (min: number, max: number, target: number) => {
+  const magnitude = 10 ** Math.floor(Math.log10((max - min) / target));
+  const distance = (step: number) => Math.abs(levelsIn(min, max, step) - target);
+  return [1, 2, 2.5, 5, 10]
+    .map((factor) => factor * magnitude)
+    .reduce((best, step) => (distance(step) < distance(best) ? step : best));
+};
+
+/** Just enough decimals to print the step exactly, so no two levels collide. */
+const stepDecimals = (step: number) => {
+  for (let digits = 0; digits < 6; digits += 1) {
+    const scaled = step * 10 ** digits;
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-9) return digits;
+  }
+  return 6;
+};
+
+/**
+ * Round price levels inside the drawn range, the way a paper chart is ruled.
+ *
+ * Dividing the panel into equal thirds labels whatever price happens to land
+ * there — 141.37 against 143.62 — and the reader has to do the subtraction
+ * themselves to place a bar between two lines.
+ */
+function priceAxisTicks(min: number, max: number, target: number) {
+  const span = max - min;
+  if (!(span > 0) || !(target > 0)) return [];
+  const step = niceStep(min, max, target);
+  const decimals = stepDecimals(step);
+  const first = Math.ceil(min / step) * step;
+  const levels: { value: number; label: string }[] = [];
+  for (let index = 0; first + step * index <= max + step * 1e-9; index += 1) {
+    const value = first + step * index;
+    levels.push({ value, label: value.toFixed(decimals) });
+  }
+  // Highest first, so the ticks run down the panel the way they are drawn.
+  return levels.reverse();
+}
+
 function layoutPanels(height: number, requested: readonly ChartPanelKey[]): ChartPanels {
   const active = panelOrder.filter((key) => requested.includes(key));
   const axisY = Math.max(height - axisHeight, inset.top + 1);
@@ -353,9 +510,11 @@ function layoutPanels(height: number, requested: readonly ChartPanelKey[]): Char
     Math.max(panelMinimum[key], height * panelWeight[key]),
   );
   const rawTotal = raw.reduce((total, value) => total + value, 0);
-  // The price panel is the subject of the chart, so the stack never squeezes it
-  // below a third of the frame; the rest scale down together instead.
-  const subtotalCap = usable * 0.62;
+  // The price panel is the subject of the chart and the indicators are read
+  // against it, so it always keeps the larger half of the stack; the rest
+  // scale down together instead. At their own weights four sub-panels took
+  // more of the frame than the bars they describe.
+  const subtotalCap = usable * 0.42;
   const scale = rawTotal > subtotalCap ? subtotalCap / rawTotal : 1;
   const heights = raw.map((value) => value * scale);
   const priceHeight = usable - heights.reduce((total, value) => total + value, 0);
@@ -384,7 +543,7 @@ const emptyGeometry = (
   width: number,
   height: number,
   requested: readonly ChartPanelKey[],
-  window: ResolvedChartWindow,
+  window: ChartWindow,
 ): ChartGeometry => {
   const { left: plotLeft, right: plotRight } = plotBounds(width);
   return {
@@ -500,23 +659,20 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
   const totalBars = decided.length;
   // Every bar stays in memory to be dragged back into view; only the window is
   // turned into geometry, because that is what density costs.
-  const defaultSize = readableWindowSize(width, publishedForecast.length);
-  const resolvedWindow = clampChartWindow(
-    requestedWindow ?? { size: defaultSize, offset: totalBars - defaultSize },
-    totalBars,
-  );
-  const window: ResolvedChartWindow = { ...resolvedWindow, total: totalBars };
+  const window = resolveChartWindow({
+    window: requestedWindow,
+    total: totalBars,
+    width,
+    reservedSlots: publishedForecast.length,
+  });
   const pointInTime = decided.slice(
-    resolvedWindow.offset,
-    resolvedWindow.offset + resolvedWindow.size,
+    window.offset,
+    window.offset + window.size,
   );
   const pointInTimeCandles = pointInTime.map(({ candle }) => candle);
   // The forecast continues from the newest bar. Dragged back into history it
   // has nothing to continue from, so it is not drawn there.
-  const forecastPoints =
-    resolvedWindow.offset + resolvedWindow.size >= totalBars
-      ? publishedForecast
-      : [];
+  const forecastPoints = followsLatest(window) ? publishedForecast : [];
 
   if (!pointInTimeCandles.length && !forecastPoints.length) {
     return emptyGeometry(width, height, requestedPanels, window);
@@ -754,27 +910,36 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
     };
   });
 
-  const priceTicks = Array.from({ length: 4 }, (_, index) => {
-    const ratio = index / 3;
-    const value = priceMax - priceRange * ratio;
-    return {
-      label: value.toFixed(value >= 100 ? 0 : 1),
-      y: panels.price.top + (panels.price.bottom - panels.price.top) * ratio,
-    };
-  });
+  // One rule every 50 points or so: closer and the labels crowd each other,
+  // further apart and the reader is interpolating across a third of the panel.
+  const tickTarget = clampNumber(
+    Math.round((panels.price.bottom - panels.price.top) / 50),
+    3,
+    6,
+  );
+  const priceTicks = priceAxisTicks(priceMin, priceMax, tickTarget).map(
+    ({ value, label }) => ({ label, y: mapY(value) }),
+  );
 
   const times = pointInTimeCandles.map(({ timestamp }) => Date.parse(timestamp));
   const deltas = times.slice(1).map((time, index) => time - times[index]!).sort((a, b) => a - b);
   const medianDelta = deltas.length ? deltas[Math.floor(deltas.length / 2)]! : null;
   const intraday = medianDelta === null || medianDelta < dayMs;
-  const labelBudget = Math.max(2, Math.min(5, Math.floor((plotRight - plotLeft) / 76)));
+  const labelBudget = clampNumber(
+    Math.round((plotRight - plotLeft) / 64),
+    2,
+    6,
+  );
   const labelIndices =
     times.length <= labelBudget
       ? times.map((_, index) => index)
       : Array.from(
           new Set(
-            Array.from({ length: labelBudget }, (_, index) =>
-              Math.round((index * (times.length - 1)) / (labelBudget - 1)),
+            // Half a slot in from each end: a label centred on the first or the
+            // last bar hangs off the plot and is clipped by the price gutter,
+            // and a clipped time is worse than one bar further in.
+            Array.from({ length: labelBudget }, (_, slot) =>
+              Math.round(((slot + 0.5) / labelBudget) * (times.length - 1)),
             ),
           ),
         );

@@ -56,7 +56,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     borderRadius: radius.pill,
     color: colors.ink,
-    fontSize: 9,
+    fontSize: 12,
     fontVariant: ["tabular-nums"],
     fontWeight: "800",
     overflow: "hidden",

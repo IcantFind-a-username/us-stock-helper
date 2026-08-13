@@ -185,6 +185,18 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertEqual(magic_nine["direction"], "bearish")
         self.assertEqual(magic_nine["methodVersion"], "td-setup-close-4-v2")
         self.assertEqual(
+            magic_nine["series"],
+            [None] * 4
+            + [
+                {"direction": "bearish", "count": count}
+                for count in range(1, 10)
+            ]
+            + [
+                {"direction": "bearish", "count": count}
+                for count in range(1, 8)
+            ],
+        )
+        self.assertEqual(
             magic_nine["lastCompleted"],
             {
                 "direction": "bearish",

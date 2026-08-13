@@ -86,6 +86,47 @@ class StatementGroundingTest(unittest.TestCase):
         with self.assertRaises(FabricatedFactError):
             trace_conclusion(conclusion, self.packet)
 
+    def test_a_date_this_packet_supplied_is_not_treated_as_fabricated(self) -> None:
+        # The publication time of each item is handed to the model as part of
+        # the packet, so quoting it back is the opposite of inventing a fact.
+        # Only the headline, body, publisher and symbols were being counted as
+        # grounded, which made the two-digit month of any date read as a number
+        # from nowhere. In production this refused the whole council on "08".
+        conclusion = Conclusion(
+            statement="该消息于 2026-08-12 发布，指引上调 12%",
+            confidence="medium",
+            citations=[Citation(evidence_id="ev-1", quote="指引上调 12%")],
+        )
+
+        traced = trace_conclusion(conclusion, self.packet)
+
+        self.assertEqual(traced.statement, conclusion.statement)
+
+    def test_a_date_the_packet_never_supplied_is_still_a_fabrication(self) -> None:
+        # Exempting dates must not become an exemption for any two-digit number
+        # that happens to sit next to a hyphen. A date nobody supplied is as
+        # much an invented fact as an invented percentage.
+        conclusion = Conclusion(
+            statement="该消息于 2031-03-04 发布",
+            confidence="medium",
+            citations=[Citation(evidence_id="ev-1", quote="指引上调 12%")],
+        )
+
+        with self.assertRaises(FabricatedFactError):
+            trace_conclusion(conclusion, self.packet)
+
+    def test_exempting_dates_does_not_admit_an_invented_measurement(self) -> None:
+        # The packet's timestamp contains "08" and "12"; that must not license
+        # a percentage the evidence never stated.
+        conclusion = Conclusion(
+            statement="2026-08-12 的公告显示指引上调 45%",
+            confidence="medium",
+            citations=[Citation(evidence_id="ev-1", quote="指引上调 12%")],
+        )
+
+        with self.assertRaises(FabricatedFactError):
+            trace_conclusion(conclusion, self.packet)
+
     def test_numbers_present_in_the_evidence_pass(self) -> None:
         conclusion = Conclusion(
             statement="数据中心收入指引上调 12%",

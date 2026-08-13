@@ -30,6 +30,7 @@ import { serviceTextLabel, snapshotSourceLabel } from "@/i18n/serverVocabulary";
 import { useAppState } from "@/state/AppStateProvider";
 import {
   type MarketDataState,
+  useAdviserDecision,
   useDecision,
   useStockSnapshot,
 } from "@/state/MarketDataProvider";
@@ -167,6 +168,8 @@ export function StockDetailScreen() {
     candleCountForInterval(chartInterval),
   );
   const decision = useDecision(symbol, horizon);
+  const adviserDecision = useAdviserDecision(symbol, horizon);
+  const displayedDecision = adviserDecision.data ?? decision.data;
   const stock =
     market.status === "demo"
       ? toDemoChartSnapshot(fixtureRepository.getStock(symbol, horizon))
@@ -195,11 +198,11 @@ export function StockDetailScreen() {
           market={market as MarketDataState<ChartSnapshot>}
           onBack={() => router.back()}
         />
-        {decision.data ? (
+        {displayedDecision ? (
           <>
-            <DecisionCard decision={decision.data} />
+            <DecisionCard decision={displayedDecision} />
             <DecisionNewsSection
-              decision={decision.data}
+              decision={displayedDecision}
               errorCategory={null}
               symbol={symbol}
             />
@@ -399,8 +402,8 @@ export function StockDetailScreen() {
             title="预测分析"
           />
         )
-      ) : decision.data ? (
-        <DecisionCard decision={decision.data} />
+      ) : displayedDecision ? (
+        <DecisionCard decision={displayedDecision} />
       ) : (
         <DecisionState decision={decision} />
       )}
@@ -411,7 +414,7 @@ export function StockDetailScreen() {
           gets no news section rather than a fixture-filled one. */}
       {stock.demoData ? null : (
         <DecisionNewsSection
-          decision={decision.data}
+          decision={displayedDecision}
           errorCategory={
             decision.status === "unavailable"
               ? decision.error?.category ?? "offline"
@@ -420,15 +423,6 @@ export function StockDetailScreen() {
           symbol={symbol}
         />
       )}
-      <DisabledAnalysisCard
-        missing="服务端未接入基本面数据源，评分已把它列入未接入因子。"
-        title="基本面与形态"
-      />
-      <DisabledAnalysisCard
-        missing="服务端未接入宏观与地缘数据源，评分已把它列入未接入因子。"
-        title="市场环境"
-      />
-
       <Pressable
         accessibilityLabel="查看完整图表"
         accessibilityRole="button"
@@ -444,18 +438,38 @@ export function StockDetailScreen() {
         ]}>
         <Text style={styles.secondaryText}>查看大图</Text>
       </Pressable>
-      <Pressable
-        accessibilityLabel="顾问分析等待大模型凭据"
-        accessibilityRole="button"
-        accessibilityState={{ disabled: true }}
-        disabled
-        style={styles.disabledButton}>
-        <Text style={styles.disabledButtonTitle}>顾问分析</Text>
-        <Text style={styles.disabledButtonText}>
-          等待配置大模型凭据（环境变量 ANTHROPIC_API_KEY）·
-          顾问层没有凭据，上面结论里的顾问调整固定为 0
-        </Text>
-      </Pressable>
+      {stock.demoData ? null : (
+        <Pressable
+          accessibilityLabel={`为 ${symbol} 生成一次 Claude 新闻解读`}
+          accessibilityRole="button"
+          accessibilityState={{
+            disabled: adviserDecision.status === "loading",
+          }}
+          disabled={adviserDecision.status === "loading"}
+          onPress={adviserDecision.request}
+          style={({ pressed }) => [
+            styles.adviserButton,
+            adviserDecision.status === "loading" &&
+              styles.adviserButtonLoading,
+            pressed && styles.pressed,
+          ]}>
+          <Text style={styles.adviserButtonTitle}>
+            {adviserDecision.status === "loading"
+              ? "Claude 正在解读…"
+              : adviserDecision.status === "live"
+                ? "重新生成一次 Claude 新闻解读"
+                : "生成一次 Claude 新闻解读"}
+          </Text>
+          <Text style={styles.adviserButtonText}>
+            仅当前 {symbol} · 每次点击只调用 1 次模型 · 不会批量分析自选股
+          </Text>
+          {adviserDecision.error ? (
+            <Text style={styles.adviserButtonError}>
+              本次未生成：{adviserDecision.error.message}
+            </Text>
+          ) : null}
+        </Pressable>
+      )}
       <Text style={styles.boundary}>
         仅供分析与建议 · 不连接券商 · 不会自动下单
       </Text>
@@ -473,7 +487,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: spacing.md,
   },
-  demoBannerText: { color: "#8B5C08", fontSize: 11, fontWeight: "900" },
+  demoBannerText: { color: "#8B5C08", fontSize: 13, fontWeight: "900" },
   staleBanner: {
     alignItems: "center",
     backgroundColor: colors.amberSoft,
@@ -483,14 +497,14 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingLeft: spacing.md,
   },
-  staleText: { color: "#8B5C08", fontSize: 9, fontWeight: "800" },
+  staleText: { color: "#8B5C08", fontSize: 12, fontWeight: "800" },
   refreshButton: {
     alignItems: "center",
     justifyContent: "center",
     minHeight: 44,
     minWidth: 56,
   },
-  refreshText: { color: colors.blue, fontSize: 10, fontWeight: "900" },
+  refreshText: { color: colors.blue, fontSize: 12, fontWeight: "900" },
   summary: {
     backgroundColor: colors.card,
     borderColor: colors.line,
@@ -499,7 +513,7 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     padding: spacing.md,
   },
-  eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "800" },
+  eyebrow: { color: colors.muted, fontSize: 12, fontWeight: "800" },
   summaryTitle: {
     color: colors.ink,
     fontSize: 15,
@@ -508,22 +522,22 @@ const styles = StyleSheet.create({
   },
   disclosureText: {
     color: colors.muted,
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: "600",
-    lineHeight: 15,
+    lineHeight: 18,
   },
   summaryMeta: {
     color: colors.muted,
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: "600",
-    lineHeight: 14,
+    lineHeight: 18,
   },
   warnings: { gap: 2, marginTop: 2 },
   warning: {
     color: colors.amber,
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: "600",
-    lineHeight: 13,
+    lineHeight: 18,
   },
   tools: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   tool: {
@@ -535,7 +549,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   toolActive: { backgroundColor: colors.navyRaised },
-  toolText: { color: colors.muted, fontSize: 9, fontWeight: "800" },
+  toolText: { color: colors.muted, fontSize: 12, fontWeight: "800" },
   toolTextActive: { color: colors.card },
   disabledCard: {
     backgroundColor: colors.card,
@@ -546,8 +560,13 @@ const styles = StyleSheet.create({
     opacity: 0.72,
     padding: spacing.md,
   },
-  disabledTitle: { color: colors.ink, fontSize: 11, fontWeight: "800" },
-  disabledText: { color: colors.muted, fontSize: 9, fontWeight: "700" },
+  disabledTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  disabledText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
   decisionState: {
     backgroundColor: colors.card,
     borderColor: colors.line,
@@ -557,13 +576,13 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   decisionStateText: { color: colors.muted, fontSize: 12, fontWeight: "800" },
-  decisionStateBody: { color: colors.muted, fontSize: 10, lineHeight: 15 },
+  decisionStateBody: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   decisionRetry: {
     alignItems: "flex-start",
     justifyContent: "center",
     minHeight: 44,
   },
-  decisionRetryText: { color: colors.blue, fontSize: 11, fontWeight: "900" },
+  decisionRetryText: { color: colors.blue, fontSize: 12, fontWeight: "900" },
   secondaryButton: {
     alignItems: "center",
     backgroundColor: colors.card,
@@ -574,21 +593,34 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   secondaryText: { color: colors.ink, fontSize: 12, fontWeight: "800" },
-  disabledButton: {
+  adviserButton: {
     alignItems: "center",
     backgroundColor: colors.blueSoft,
     borderRadius: radius.md,
     gap: 2,
     justifyContent: "center",
     minHeight: 48,
-    opacity: 0.72,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
-  disabledButtonTitle: { color: colors.blue, fontSize: 12, fontWeight: "900" },
-  disabledButtonText: { color: colors.muted, fontSize: 9, fontWeight: "700" },
+  adviserButtonLoading: { opacity: 0.72 },
+  adviserButtonTitle: { color: colors.blue, fontSize: 13, fontWeight: "900" },
+  adviserButtonText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  adviserButtonError: {
+    color: colors.red,
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "center",
+  },
   pressed: { opacity: 0.68 },
   boundary: {
     color: colors.muted,
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: "700",
     textAlign: "center",
   },
@@ -607,7 +639,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   stateTitle: { color: colors.ink, fontSize: 16, fontWeight: "900" },
-  stateBody: { color: colors.muted, fontSize: 10, lineHeight: 16 },
+  stateBody: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   retryButton: {
     alignItems: "center",
     backgroundColor: colors.blue,
@@ -615,5 +647,5 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 44,
   },
-  retryText: { color: colors.card, fontSize: 11, fontWeight: "900" },
+  retryText: { color: colors.card, fontSize: 12, fontWeight: "900" },
 });

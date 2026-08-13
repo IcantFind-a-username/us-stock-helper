@@ -204,7 +204,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 44,
   },
-  demoBannerText: { color: "#8B5C08", fontSize: 11, fontWeight: "900" },
+  demoBannerText: { color: "#8B5C08", fontSize: 13, fontWeight: "900" },
   header: {
     alignItems: "center",
     flexDirection: "row",
@@ -219,8 +219,8 @@ const styles = StyleSheet.create({
   backText: { color: colors.blue, fontSize: 13, fontWeight: "900" },
   titleWrap: { alignItems: "center" },
   title: { color: colors.ink, fontSize: 17, fontWeight: "900" },
-  demo: { color: "#8B5C08", fontSize: 9, marginTop: 2 },
-  live: { color: colors.blue, fontSize: 9, fontWeight: "700", marginTop: 2 },
+  demo: { color: "#8B5C08", fontSize: 12, marginTop: 2 },
+  live: { color: colors.blue, fontSize: 12, fontWeight: "700", marginTop: 2 },
   staleBanner: {
     alignItems: "center",
     backgroundColor: colors.amberSoft,
@@ -230,14 +230,14 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingLeft: spacing.md,
   },
-  staleText: { color: "#8B5C08", fontSize: 9, fontWeight: "800" },
+  staleText: { color: "#8B5C08", fontSize: 12, fontWeight: "800" },
   refreshButton: {
     alignItems: "center",
     justifyContent: "center",
     minHeight: 44,
     minWidth: 56,
   },
-  refreshText: { color: colors.blue, fontSize: 10, fontWeight: "900" },
+  refreshText: { color: colors.blue, fontSize: 12, fontWeight: "900" },
   factCard: {
     backgroundColor: colors.card,
     borderColor: colors.line,
@@ -246,11 +246,11 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     padding: spacing.md,
   },
-  factMeta: { color: colors.muted, fontSize: 9, fontWeight: "600" },
-  noteBody: { color: colors.muted, fontSize: 10, lineHeight: 15 },
+  factMeta: { color: colors.muted, fontSize: 12, fontWeight: "600" },
+  noteBody: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   boundary: {
     color: colors.muted,
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: "700",
     textAlign: "center",
   },
@@ -268,7 +268,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   stateTitle: { color: colors.ink, fontSize: 16, fontWeight: "900" },
-  stateBody: { color: colors.muted, fontSize: 10, lineHeight: 16 },
+  stateBody: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   retryButton: {
     alignItems: "center",
     backgroundColor: colors.blue,
@@ -276,5 +276,5 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 44,
   },
-  retryText: { color: colors.card, fontSize: 11, fontWeight: "900" },
+  retryText: { color: colors.card, fontSize: 12, fontWeight: "900" },
 });

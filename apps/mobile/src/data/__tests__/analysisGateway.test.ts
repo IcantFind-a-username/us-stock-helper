@@ -2,7 +2,12 @@ import { describe, expect, it, jest } from "@jest/globals";
 
 import { createAnalysisClient, decodeDecisionEnvelope } from "../analysisGateway";
 
-import { decisionFixture } from "./decision.fixture";
+import {
+  adviserCouncilFixture,
+  adviserUsageFixture,
+  decisionFixture,
+  newsInterpretationFixture,
+} from "./decision.fixture";
 
 const now = new Date("2026-07-25T16:00:10.000Z");
 
@@ -22,6 +27,7 @@ describe("decision envelope validation", () => {
       status: "live",
       symbol: "NVDA",
       horizon: "short",
+      interval: "day",
       decisionCutoff: "2026-07-25T16:00:00.000Z",
     });
     expect(decision.score).toMatchObject({
@@ -144,6 +150,24 @@ describe("analysis client transport", () => {
       horizon: "short",
     });
     expect(decision.score?.factorCoverage).toBe(0.7);
+  });
+
+  it("adds news adviser mode only to an explicit single-stock request", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse(decisionFixture()),
+    ) as unknown as typeof fetch;
+    const client = createAnalysisClient({
+      baseUrl: "http://127.0.0.1:8788",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await client.getDecision("nvda", "short", undefined, { adviser: "news" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8788/decision?symbol=NVDA&horizon=short&adviser=news",
+      expect.any(Object),
+    );
   });
 
   it("requires an ephemeral token before connecting to a LAN analysis service", () => {
@@ -528,5 +552,190 @@ describe("analysis failure classification", () => {
     );
 
     expect(new Set(kinds).size).toBe(codes.length);
+  });
+});
+
+/**
+ * The adviser layer is optional and it costs money, so its two blocks have
+ * three states rather than two. A block that merely arrived null could mean
+ * nobody asked for it, the model was unreachable, or the server predates the
+ * feature entirely — and the screen renders those three differently.
+ */
+describe("the adviser layer's two blocks", () => {
+  it("keeps a block nobody asked for distinct from one that failed", () => {
+    const quiet = decodeDecisionEnvelope(decisionFixture(), { now });
+
+    const failed = decisionFixture();
+    failed.newsInterpretation = {
+      status: "unavailable",
+      reason: "模型请求超时。",
+      value: null,
+    };
+
+    expect(quiet.newsInterpretation?.status).toBe("not-requested");
+    expect(quiet.newsInterpretation?.value).toBeNull();
+    expect(quiet.newsInterpretation?.reason).toBeTruthy();
+    expect(
+      decodeDecisionEnvelope(failed, { now }).newsInterpretation?.status,
+    ).toBe("unavailable");
+  });
+
+  it("reads a server that has never heard of these fields as null", () => {
+    // An older deployment answers without them. That is not a malformed
+    // payload and must not take the whole decision down with it.
+    const value = decisionFixture() as Record<string, unknown>;
+    delete value.newsInterpretation;
+    delete value.adviserCouncil;
+    delete value.adviserUsage;
+
+    const decision = decodeDecisionEnvelope(value, { now });
+
+    expect(decision.newsInterpretation).toBeNull();
+    expect(decision.adviserCouncil).toBeNull();
+    expect(decision.adviserUsage).toBeNull();
+    expect(decision.status).toBe("live");
+  });
+
+  it("decodes an interpretation with every citation intact", () => {
+    const value = decisionFixture();
+    value.newsInterpretation = newsInterpretationFixture();
+
+    const block = decodeDecisionEnvelope(value, { now }).newsInterpretation;
+
+    expect(block?.status).toBe("available");
+    expect(block?.value?.crossSourceReading).toContain("相互独立");
+    const conclusion = block?.value?.investmentImpact[0];
+    expect(conclusion?.statement).toBeTruthy();
+    expect(conclusion?.citations[0]).toMatchObject({
+      evidenceId: "a",
+      quote: "raises full-year revenue guidance",
+      url: "https://reuters.example/a",
+      publisher: "reuters",
+      availableAt: "2026-07-25T15:41:00Z",
+    });
+    expect(block?.value?.unknowns).toHaveLength(1);
+  });
+
+  it("decodes the council's stance, blind spot and gated score", () => {
+    const value = decisionFixture();
+    value.adviserCouncil = adviserCouncilFixture();
+
+    const block = decodeDecisionEnvelope(value, { now }).adviserCouncil;
+
+    expect(block?.status).toBe("available");
+    const opinion = block?.value?.opinions[0];
+    expect(opinion?.frameworkId).toBe("technical");
+    expect(opinion?.stance).toBe("bullish");
+    // A framework that never names what it cannot see is being sold as
+    // omniscient, which is the thing the council exists to avoid.
+    expect(opinion?.blindSpot).toBeTruthy();
+    expect(block?.value?.baselineScore).toBe(72.5);
+    expect(block?.value?.adjustedScore).toBe(75.5);
+    expect(block?.value?.disclaimer).toBeTruthy();
+  });
+
+  it("decodes what the call actually spent", () => {
+    const value = decisionFixture();
+    value.adviserUsage = adviserUsageFixture();
+
+    const usage = decodeDecisionEnvelope(value, { now }).adviserUsage;
+
+    expect(usage?.costUsd).toBeCloseTo(0.163, 6);
+    expect(usage?.inputTokens).toBe(13000);
+    expect(usage?.cacheReadInputTokens).toBe(2000);
+    expect(usage?.model).toBe("claude-opus-4-8");
+  });
+
+  it.each([
+    [
+      "a block claiming to be available with nothing in it",
+      (value: ReturnType<typeof decisionFixture>) => {
+        value.newsInterpretation = {
+          status: "available",
+          reason: null,
+          value: null,
+        };
+      },
+    ],
+    [
+      "a degraded block that does not say why",
+      (value: ReturnType<typeof decisionFixture>) => {
+        value.newsInterpretation = {
+          status: "unavailable",
+          reason: null,
+          value: null,
+        };
+      },
+    ],
+    [
+      "a status this app does not know",
+      (value: ReturnType<typeof decisionFixture>) => {
+        value.newsInterpretation = {
+          status: "pending",
+          reason: "稍后再看",
+          value: null,
+        };
+      },
+    ],
+    [
+      "a conclusion with no citation behind it",
+      (value: ReturnType<typeof decisionFixture>) => {
+        const block = newsInterpretationFixture();
+        block.value.investmentImpact[0]!.citations = [];
+        value.newsInterpretation = block;
+      },
+    ],
+    [
+      "a citation with no source link",
+      (value: ReturnType<typeof decisionFixture>) => {
+        const block = newsInterpretationFixture();
+        block.value.investmentImpact[0]!.citations[0]!.url = "";
+        value.newsInterpretation = block;
+      },
+    ],
+    [
+      "a citation the reader would open over plain http",
+      (value: ReturnType<typeof decisionFixture>) => {
+        const block = newsInterpretationFixture();
+        block.value.investmentImpact[0]!.citations[0]!.url =
+          "http://reuters.example/a";
+        value.newsInterpretation = block;
+      },
+    ],
+    [
+      "a conclusion whose citation quotes nothing",
+      (value: ReturnType<typeof decisionFixture>) => {
+        const block = newsInterpretationFixture();
+        block.value.investmentImpact[0]!.citations[0]!.quote = "";
+        value.newsInterpretation = block;
+      },
+    ],
+    [
+      "an interpretation with no investment impact at all",
+      (value: ReturnType<typeof decisionFixture>) => {
+        const block = newsInterpretationFixture();
+        block.value.investmentImpact = [];
+        value.newsInterpretation = block;
+      },
+    ],
+    [
+      "a usage line reporting a negative cost",
+      (value: ReturnType<typeof decisionFixture>) => {
+        value.adviserUsage = { ...adviserUsageFixture(), costUsd: -1 };
+      },
+    ],
+    [
+      "a council opinion that names no blind spot",
+      (value: ReturnType<typeof decisionFixture>) => {
+        const block = adviserCouncilFixture();
+        block.value.opinions[0]!.blindSpot = "";
+        value.adviserCouncil = block;
+      },
+    ],
+  ])("refuses %s", (_label, mutate) => {
+    const value = decisionFixture();
+    mutate(value);
+
+    expect(() => decodeDecisionEnvelope(value, { now })).toThrow();
   });
 });

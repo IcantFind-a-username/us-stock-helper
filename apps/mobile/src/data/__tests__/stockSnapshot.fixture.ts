@@ -157,6 +157,10 @@ export function stockSnapshotFixture() {
       magicNine: {
         direction: "bullish",
         count: 2,
+        series: [
+          { direction: "bullish", count: 1 },
+          { direction: "bullish", count: 2 },
+        ] as ({ direction: string; count: number } | null)[],
         completed: false,
         perfected: false as boolean | null,
         confirmedAtIndex: null,

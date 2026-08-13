@@ -50,15 +50,23 @@ def event(event_id: str = "e1") -> EvidenceEvent:
 
 
 class FakeCollector:
-    def __init__(self, *, raises: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        raises: Exception | None = None,
+        failures: tuple[SourceFailure, ...] = (),
+    ) -> None:
         self.raises = raises
+        self.failures = failures
         self.requests: list[tuple[str, ...]] = []
 
-    def collect(self, *, symbols: tuple[str, ...] = ()) -> tuple[EvidenceEvent, ...]:
+    def collect_with_failures(
+        self, *, symbols: tuple[str, ...] = ()
+    ) -> tuple[tuple[EvidenceEvent, ...], tuple[SourceFailure, ...]]:
         self.requests.append(tuple(symbols))
         if self.raises is not None:
             raise self.raises
-        return (event(),)
+        return (event(),), self.failures
 
 
 class FakeBars:
@@ -68,6 +76,16 @@ class FakeBars:
     def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
         self.queries.append((symbol, interval))
         return ()
+
+
+class FakeFactors:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, datetime]] = []
+        self.answer = object()
+
+    def snapshot(self, *, symbol: str, as_of: datetime) -> object:
+        self.queries.append((symbol, as_of))
+        return self.answer
 
 
 class EvidenceProviderTests(unittest.TestCase):
@@ -96,16 +114,21 @@ class CompositeProviderTests(unittest.TestCase):
     def test_candles_and_evidence_keep_their_own_sources(self) -> None:
         bars = FakeBars()
         collector = FakeCollector()
+        factors = FakeFactors()
         provider = CompositeAnalysisProvider(
             bars=bars,
             evidence=FeedEvidenceProvider(collector),
+            factors=factors,
         )
 
         provider.bars_for("NVDA", "5m")
         provider.evidence_for("NVDA")
+        answer = provider.factors_for("NVDA", AS_OF)
 
         self.assertEqual(bars.queries, [("NVDA", "5m")])
         self.assertEqual(collector.requests, [("NVDA",)])
+        self.assertIs(answer, factors.answer)
+        self.assertEqual(factors.queries, [("NVDA", AS_OF)])
 
 
 class ProviderConfigTests(unittest.TestCase):

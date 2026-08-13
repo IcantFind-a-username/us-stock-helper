@@ -118,7 +118,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   demoSourceBadge: { backgroundColor: colors.amberSoft },
-  sourceText: { color: colors.blue, fontSize: 9, fontWeight: "900" },
+  sourceText: { color: colors.blue, fontSize: 12, fontWeight: "900" },
   demoSourceText: { color: "#8B5C08" },
   quoteRow: {
     alignItems: "flex-end",
@@ -138,6 +138,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   meta: { alignItems: "flex-end", gap: 2 },
-  interval: { color: colors.ink, fontSize: 10, fontWeight: "800" },
-  asOf: { color: colors.muted, fontSize: 9, fontWeight: "600" },
+  interval: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  asOf: { color: colors.muted, fontSize: 12, fontWeight: "600" },
 });

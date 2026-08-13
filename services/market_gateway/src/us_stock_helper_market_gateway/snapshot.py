@@ -371,8 +371,10 @@ def _indicators(
         },
         "magicNine": {
             **base,
+            **_SERIES_ALIGNMENT,
             "direction": magic.direction.value if magic else None,
             "count": magic.count if magic else 0,
+            "series": _magic_nine_series(setup),
             "completed": magic.completed if magic else False,
             "perfected": magic.perfected if magic else None,
             "confirmedAtIndex": magic.confirmed_at_index if magic else None,
@@ -427,6 +429,29 @@ def _last_completed_setup(setup: TDSetupResult | None) -> dict[str, Any] | None:
         "perfected": last.perfected,
         "barsSince": len(setup.bullish_counts) - 1 - last.confirmed_at_index,
     }
+
+
+def _magic_nine_series(
+    setup: TDSetupResult | None,
+) -> list[dict[str, Any] | None]:
+    """Serialize every computed TD count against its completed candle.
+
+    The domain keeps bullish and bearish counters separately because only one
+    can be active on a bar. The wire combines them so the phone never has to
+    infer a direction from a sign or reconstruct counts from closes.
+    """
+
+    if setup is None:
+        return []
+    result: list[dict[str, Any] | None] = []
+    for bullish, bearish in zip(setup.bullish_counts, setup.bearish_counts):
+        if bullish:
+            result.append({"direction": "bullish", "count": bullish})
+        elif bearish:
+            result.append({"direction": "bearish", "count": bearish})
+        else:
+            result.append(None)
+    return result
 
 
 def _provenance(

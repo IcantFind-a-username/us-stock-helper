@@ -4,6 +4,7 @@ import type { Decision } from "@/domain/models";
 import {
   factorLabel,
   gateLabel,
+  intervalLabel,
   planActionLabel,
   scenarioLabel,
   scoreDirectionLabel,
@@ -28,6 +29,9 @@ export function DecisionCard({ decision }: { decision: Decision }) {
     return (
       <View style={styles.card} testID="decision-card">
         <Text style={styles.eyebrow}>综合结论</Text>
+        <Text style={styles.interval} testID="decision-interval">
+          分析周期 · {intervalLabel(decision.interval)}
+        </Text>
         <Text style={styles.unavailable}>暂不可用</Text>
         {decision.notes.map((note) => (
           <Text key={note} style={styles.note}>
@@ -39,10 +43,18 @@ export function DecisionCard({ decision }: { decision: Decision }) {
   }
 
   const { score } = decision;
+  const measuredFactors = score.contributions.filter(
+    (contribution) => contribution.rawValue !== null,
+  );
   return (
     <View style={styles.card} testID="decision-card">
       <View style={styles.header}>
-        <Text style={styles.eyebrow}>综合结论</Text>
+        <View>
+          <Text style={styles.eyebrow}>综合结论</Text>
+          <Text style={styles.interval} testID="decision-interval">
+            分析周期 · {intervalLabel(decision.interval)}
+          </Text>
+        </View>
         <Text style={styles.coverage} testID="decision-coverage">
           因子覆盖 {(score.factorCoverage * 100).toFixed(0)}%
         </Text>
@@ -77,6 +89,31 @@ export function DecisionCard({ decision }: { decision: Decision }) {
         <Text style={styles.missing} testID="decision-missing-factors">
           未接入因子：{score.unavailableFactors.map(factorLabel).join("、")}
         </Text>
+      ) : null}
+      {measuredFactors.length ? (
+        <View style={styles.factors} testID="decision-factor-breakdown">
+          <Text style={styles.factorSectionTitle}>分析因子明细</Text>
+          {measuredFactors.map((contribution) => (
+            <View key={contribution.name} style={styles.factorRow}>
+              <View style={styles.factorHeader}>
+                <Text style={styles.factorName}>
+                  {factorLabel(contribution.name)}
+                </Text>
+                <Text style={styles.factorPoints}>
+                  贡献 {contribution.points >= 0 ? "+" : ""}
+                  {contribution.points.toFixed(2)}
+                </Text>
+              </View>
+              <Text style={styles.factorMeta}>
+                输入 {contribution.rawValue!.toFixed(2)} · 权重{" "}
+                {(contribution.weight * 100).toFixed(0)}%
+              </Text>
+              <Text style={styles.factorExplanation}>
+                {serviceTextLabel(contribution.explanation)}
+              </Text>
+            </View>
+          ))}
+        </View>
       ) : null}
       {decision.forecast ? (
         <View style={styles.scenarios} testID="decision-scenarios">
@@ -133,8 +170,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
   },
-  eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "800", letterSpacing: 0.6 },
-  coverage: { color: colors.amber, fontSize: 10, fontWeight: "800" },
+  eyebrow: { color: colors.muted, fontSize: 12, fontWeight: "800", letterSpacing: 0.6 },
+  interval: { color: colors.ink, fontSize: 12, fontWeight: "800", marginTop: 2 },
+  coverage: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   score: { color: colors.ink, fontSize: 26, fontWeight: "900" },
   direction: { color: colors.muted, fontSize: 12, fontWeight: "800" },
   blocked: {
@@ -143,14 +181,41 @@ const styles = StyleSheet.create({
     gap: 2,
     padding: spacing.xs,
   },
-  blockedTitle: { color: colors.ink, fontSize: 11, fontWeight: "900" },
-  blockedReason: { color: colors.ink, fontSize: 10, lineHeight: 14 },
-  missing: { color: colors.amber, fontSize: 10, fontWeight: "700", lineHeight: 15 },
+  blockedTitle: { color: colors.ink, fontSize: 13, fontWeight: "900" },
+  blockedReason: { color: colors.ink, fontSize: 12, lineHeight: 18 },
+  missing: { color: colors.amber, fontSize: 12, fontWeight: "700", lineHeight: 18 },
+  factors: { gap: spacing.xs, marginTop: spacing.xs },
+  factorSectionTitle: { color: colors.ink, fontSize: 13, fontWeight: "900" },
+  factorRow: {
+    backgroundColor: colors.background,
+    borderRadius: radius.sm,
+    gap: 3,
+    padding: spacing.sm,
+  },
+  factorHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  factorName: { color: colors.ink, fontSize: 12, fontWeight: "900" },
+  factorPoints: {
+    color: colors.blue,
+    fontSize: 12,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "900",
+  },
+  factorMeta: {
+    color: colors.muted,
+    fontSize: 12,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "700",
+  },
+  factorExplanation: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   unavailable: { color: colors.muted, fontSize: 14, fontWeight: "800" },
   scenarios: { gap: 2, marginTop: 2 },
-  scenario: { color: colors.ink, fontSize: 11, fontVariant: ["tabular-nums"] },
+  scenario: { color: colors.ink, fontSize: 12, fontVariant: ["tabular-nums"] },
   plan: { gap: 2, marginTop: 2 },
-  planLine: { color: colors.ink, fontSize: 11, fontWeight: "700" },
-  warning: { color: colors.muted, fontSize: 9, lineHeight: 13 },
-  note: { color: colors.muted, fontSize: 9, lineHeight: 13 },
+  planLine: { color: colors.ink, fontSize: 12, fontWeight: "700", lineHeight: 18 },
+  warning: { color: colors.muted, fontSize: 12, lineHeight: 18 },
+  note: { color: colors.muted, fontSize: 12, lineHeight: 18 },
 });

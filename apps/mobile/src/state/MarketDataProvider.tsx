@@ -486,6 +486,76 @@ export function useDecision(
   });
 }
 
+export type AdviserDecisionState = {
+  status: "idle" | "loading" | "live" | "unavailable";
+  data: Decision | null;
+  error: MarketDataError | null;
+  request(): void;
+};
+
+/**
+ * The only paid analysis path in the mobile app.
+ *
+ * It deliberately has no mount effect and no list variant: one tap asks for
+ * one news interpretation for one symbol. Leaving the screen cancels it.
+ */
+export function useAdviserDecision(
+  symbol: string,
+  horizon: Horizon,
+): AdviserDecisionState {
+  const { analysis } = useMarketDataContext();
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const scope = `${normalizedSymbol}|${horizon}`;
+  const requestRef = useRef<AbortController | null>(null);
+  const [state, setState] = useState<{
+    scope: string;
+    status: AdviserDecisionState["status"];
+    data: Decision | null;
+    error: MarketDataError | null;
+  }>({ scope, status: "idle", data: null, error: null });
+
+  useEffect(() => () => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+  }, [scope]);
+
+  const request = useCallback(() => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    setState({ scope, status: "loading", data: null, error: null });
+    void analysis
+      .getDecision(normalizedSymbol, horizon, controller.signal, {
+        adviser: "news",
+      })
+      .then((data) => {
+        if (requestRef.current !== controller) return;
+        requestRef.current = null;
+        setState({ scope, status: "live", data, error: null });
+      })
+      .catch((error: unknown) => {
+        if (
+          requestRef.current !== controller ||
+          (error instanceof Error && error.name === "AbortError")
+        ) {
+          return;
+        }
+        requestRef.current = null;
+        setState({
+          scope,
+          status: "unavailable",
+          data: null,
+          error: toMarketError(error),
+        });
+      });
+  }, [analysis, horizon, normalizedSymbol, scope]);
+
+  if (state.scope !== scope) {
+    return { status: "idle", data: null, error: null, request };
+  }
+  return { ...state, request };
+}
+
 export type WatchlistDecisionStatus =
   | "loading"
   | "scored"

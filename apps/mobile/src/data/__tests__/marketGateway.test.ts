@@ -435,6 +435,26 @@ describe("schema-v2 stock snapshot validation", () => {
     expect(snapshot.magicNine.perfected).toBeNull();
   });
 
+  it("keeps every index-aligned TD count instead of only the latest one", () => {
+    const snapshot = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
+
+    expect(snapshot.magicNine.series).toEqual([
+      { direction: "bullish", count: 1 },
+      { direction: "bullish", count: 2 },
+    ]);
+  });
+
+  it.each([
+    [[{ direction: "bullish", count: 1 }], "wrong length"],
+    [[null, { direction: "sideways", count: 2 }], "unknown direction"],
+    [[null, { direction: "bullish", count: 10 }], "count beyond nine"],
+  ])("rejects a TD series with %s", (series) => {
+    const value = stockSnapshotFixture();
+    value.indicators.magicNine.series = series as typeof value.indicators.magicNine.series;
+
+    expect(() => decodeStockSnapshotEnvelope(value, { now })).toThrow(/magic nine series/i);
+  });
+
   it("keeps a completed TD setup visible after counting restarts", () => {
     const value = stockSnapshotFixture();
     value.indicators.magicNine.lastCompleted = {
