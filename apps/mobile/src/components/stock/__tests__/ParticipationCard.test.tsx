@@ -31,7 +31,7 @@ it("groups the missing bars by reason instead of printing one line each", async 
     unavailableBar("capital flow unavailable"),
   );
 
-  const view = await render(<ParticipationCard bars={bars} holdings={[]} />);
+  const view = await render(<ParticipationCard bars={bars} />);
 
   const caption = view.getByTestId("participation-missing-summary");
   expect(caption).toHaveTextContent(/199 根缺失/);
@@ -49,7 +49,7 @@ it("keeps distinct reasons distinct and counts each", async () => {
     unavailableBar(null),
   ];
 
-  const view = await render(<ParticipationCard bars={bars} holdings={[]} />);
+  const view = await render(<ParticipationCard bars={bars} />);
 
   const caption = view.getByTestId("participation-missing-summary");
   expect(caption).toHaveTextContent(/4 根缺失/);

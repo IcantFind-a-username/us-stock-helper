@@ -139,7 +139,10 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
 
   await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
 
-  expect(queries).toEqual([{ symbol: "NVDA", interval: "5m", count: 200 }]);
+  expect(queries).toEqual([{ symbol: "NVDA", interval: "day", count: 250 }]);
+  expect(
+    view.getByRole("tab", { name: "日K" }).props.accessibilityState,
+  ).toEqual({ selected: true });
   expect(view.getAllByText("NVDA")).toHaveLength(1);
   expect(view.getByText("实时只读")).toBeTruthy();
   expect(view.getByText("+2.40%")).toBeTruthy();
@@ -170,10 +173,10 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.getByText("主力代理 60.0% · 散户代理 40.0%")).toBeTruthy();
   // A reason this app has no translation for still has to reach the reader.
   expect(view.getByText(/1 根缺失 · 本次快照没有资金流数据/)).toBeTruthy();
-  expect(view.getByText("机构持仓披露 · 延迟数据")).toBeTruthy();
-  expect(view.getByText(/moomoo 延迟机构披露/)).toBeTruthy();
-  expect(view.getByText("2026-Q1 · 12.50% · 100 家机构")).toBeTruthy();
-  expect(view.getByText(/报告期 2026-03-31 00:00:00 UTC/)).toBeTruthy();
+  expect(view.getByTestId("institutional-holdings-card")).toBeTruthy();
+  expect(view.getByTestId("institutional-holdings-percent")).toHaveTextContent(
+    "12.50%",
+  );
 
   expect(view.getByText(/未接入基本面数据源/)).toBeTruthy();
   expect(view.getByText(/未接入宏观与地缘数据源/)).toBeTruthy();

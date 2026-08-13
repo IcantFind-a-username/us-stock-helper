@@ -1,20 +1,14 @@
 import { StyleSheet, Text, View } from "react-native";
 
 import type {
-  DelayedInstitutionalHolding,
   ParticipationBar,
 } from "@/domain/models";
-import { serviceTextLabel, snapshotSourceLabel } from "@/i18n/serverVocabulary";
+import { serviceTextLabel } from "@/i18n/serverVocabulary";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 type ParticipationCardProps = {
   bars: ParticipationBar[];
-  holdings: DelayedInstitutionalHolding[];
 };
-
-function formatUtc(value: string) {
-  return value.replace("T", " ").replace(".000Z", " UTC");
-}
 
 /** One line per distinct reason, with how many bars gave it. */
 function summariseMissing(missing: readonly ParticipationBar[]) {
@@ -30,10 +24,7 @@ function summariseMissing(missing: readonly ParticipationBar[]) {
     .join("；");
 }
 
-export function ParticipationCard({
-  bars,
-  holdings,
-}: ParticipationCardProps) {
+export function ParticipationCard({ bars }: ParticipationCardProps) {
   const latestAvailable = [...bars]
     .reverse()
     .find(
@@ -45,8 +36,6 @@ export function ParticipationCard({
   const missing = bars.filter(
     ({ qualityStatus }) => qualityStatus === "unavailable",
   );
-  const latestHolding = holdings[0];
-
   return (
     <View style={styles.card} testID="participation-summary">
       <View style={styles.header}>
@@ -90,29 +79,6 @@ export function ParticipationCard({
         </Text>
       ) : null}
 
-      <View style={styles.divider} />
-      <View style={styles.reportedHeader}>
-        <Text style={styles.reportedTitle}>机构持仓披露 · 延迟数据</Text>
-        <Text style={styles.date}>独立于盘中活动</Text>
-      </View>
-      {latestHolding ? (
-        <>
-          <Text style={styles.ownership}>
-            {latestHolding.period} · {latestHolding.holdingPercent.toFixed(2)}% ·{" "}
-            {latestHolding.institutionCount} 家机构
-          </Text>
-          <Text style={styles.uncertainty}>
-            报告期 {formatUtc(latestHolding.reportedAt)} · 可用时间{" "}
-            {formatUtc(latestHolding.availableAt)}
-          </Text>
-          <Text style={styles.uncertainty}>
-            {snapshotSourceLabel(latestHolding.source)} ·{" "}
-            {latestHolding.methodVersion}
-          </Text>
-        </>
-      ) : (
-        <Text style={styles.uncertainty}>暂无延迟申报持仓</Text>
-      )}
     </View>
   );
 }
@@ -156,18 +122,4 @@ const styles = StyleSheet.create({
   },
   note: { color: colors.muted, fontSize: 10, lineHeight: 15 },
   uncertainty: { color: colors.muted, fontSize: 8, lineHeight: 12 },
-  divider: { backgroundColor: colors.line, height: StyleSheet.hairlineWidth },
-  reportedHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  reportedTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
-  date: { color: colors.muted, fontSize: 9, fontWeight: "700" },
-  ownership: {
-    color: colors.ink,
-    fontSize: 10,
-    fontVariant: ["tabular-nums"],
-    fontWeight: "700",
-  },
 });

@@ -3,9 +3,15 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { PriceChart } from "@/components/chart/PriceChart";
+import {
+  candleCountForInterval,
+  ChartIntervalSwitch,
+  type ChartDisplayInterval,
+} from "@/components/chart/ChartIntervalSwitch";
 import { DecisionNewsSection } from "@/components/news/DecisionNewsSection";
 import { DecisionCard } from "@/components/stock/DecisionCard";
 import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
+import { InstitutionalHoldingsCard } from "@/components/stock/InstitutionalHoldingsCard";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { StockHeader } from "@/components/stock/StockHeader";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
@@ -154,7 +160,12 @@ export function StockDetailScreen() {
     ? params.symbol[0]
     : params.symbol;
   const symbol = (symbolParam ?? "NVDA").toUpperCase();
-  const market = useStockSnapshot(symbol, "5m", 200);
+  const [chartInterval, setChartInterval] = useState<ChartDisplayInterval>("day");
+  const market = useStockSnapshot(
+    symbol,
+    chartInterval,
+    candleCountForInterval(chartInterval),
+  );
   const decision = useDecision(symbol, horizon);
   const stock =
     market.status === "demo"
@@ -272,6 +283,13 @@ export function StockDetailScreen() {
         </View>
       ) : null}
 
+      {stock.demoData ? null : (
+        <ChartIntervalSwitch
+          onChange={setChartInterval}
+          value={chartInterval}
+        />
+      )}
+
       <PriceChart
         compact
         dataStatus={dataStatus}
@@ -368,11 +386,11 @@ export function StockDetailScreen() {
       </View>
 
       {visibleTools.participation ? (
-        <ParticipationCard
-          bars={stock.participationBars}
-          holdings={liveStock?.institutionalHoldings ?? []}
-        />
+        <ParticipationCard bars={stock.participationBars} />
       ) : null}
+      <InstitutionalHoldingsCard
+        holdings={liveStock?.institutionalHoldings ?? []}
+      />
 
       {stock.demoData ? (
         stock.forecast ? null : (

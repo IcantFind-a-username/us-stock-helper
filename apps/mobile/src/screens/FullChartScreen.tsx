@@ -1,9 +1,16 @@
+import { useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { PriceChart } from "@/components/chart/PriceChart";
+import {
+  candleCountForInterval,
+  ChartIntervalSwitch,
+  type ChartDisplayInterval,
+} from "@/components/chart/ChartIntervalSwitch";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
 import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
+import { InstitutionalHoldingsCard } from "@/components/stock/InstitutionalHoldingsCard";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { Disclosure } from "@/components/ui/Disclosure";
 import { Screen } from "@/components/ui/Screen";
@@ -76,7 +83,12 @@ export function FullChartScreen() {
     ? params.symbol[0]
     : params.symbol;
   const symbol = (symbolParam ?? "NVDA").toUpperCase();
-  const market = useStockSnapshot(symbol, "5m", 200);
+  const [chartInterval, setChartInterval] = useState<ChartDisplayInterval>("day");
+  const market = useStockSnapshot(
+    symbol,
+    chartInterval,
+    candleCountForInterval(chartInterval),
+  );
   const stock =
     market.status === "demo"
       ? toDemoChartSnapshot(fixtureRepository.getStock(symbol, horizon))
@@ -144,6 +156,13 @@ export function FullChartScreen() {
         </View>
       ) : null}
 
+      {stock.demoData ? null : (
+        <ChartIntervalSwitch
+          onChange={setChartInterval}
+          value={chartInterval}
+        />
+      )}
+
       <PriceChart dataStatus={dataStatus} stock={stock} />
       <View style={styles.factCard}>
         <IndicatorFactRow
@@ -165,8 +184,8 @@ export function FullChartScreen() {
           仅展示已完成 K 线与服务端发布的版本化指标序列，手机端不推算任何指标。活动占比不代表真实机构账户身份；延迟持仓披露独立展示。
         </Text>
       </Disclosure>
-      <ParticipationCard
-        bars={stock.participationBars}
+      <ParticipationCard bars={stock.participationBars} />
+      <InstitutionalHoldingsCard
         holdings={liveStock?.institutionalHoldings ?? []}
       />
       <Text style={styles.boundary}>

@@ -126,6 +126,24 @@ it("renders the same live snapshot with selectable candles and both indicators",
   expect(view.getByLabelText(/NVDA 收盘时间 2026-07-25T15:50:00.000Z/)).toBeTruthy();
 });
 
+it("starts on daily candles and loads intraday only after the reader asks", async () => {
+  const queries: { symbol: string; interval: string; count: number }[] = [];
+  const repository = repositoryWithSnapshot(async (query) => {
+    queries.push(query);
+    return liveSnapshot();
+  });
+  const view = await renderChart({ repository });
+
+  await waitFor(() => expect(queries).toEqual([
+    { symbol: "NVDA", interval: "day", count: 250 },
+  ]));
+  await userEvent.setup().press(view.getByRole("tab", { name: "5分" }));
+  await waitFor(() => expect(queries).toEqual([
+    { symbol: "NVDA", interval: "day", count: 250 },
+    { symbol: "NVDA", interval: "5m", count: 200 },
+  ]));
+});
+
 it("always renders unavailable Magic Nine as unavailable without a zero marker", async () => {
   const view = await renderChart({
     repository: repositoryWithSnapshot(async () =>
