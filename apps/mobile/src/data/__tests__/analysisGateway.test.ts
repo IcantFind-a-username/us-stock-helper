@@ -411,3 +411,25 @@ it("rejects an unavailable decision that still carries a score", () => {
 
   expect(() => decodeDecisionEnvelope(value, { now })).toThrow();
 });
+
+it("tolerates the clock skew between this device and the service", () => {
+  // The service stamps the cutoff at the instant it answers, so by the time
+  // the payload lands here that instant is a few milliseconds old — or a few
+  // milliseconds in the future if this device's clock lags. Rejecting on that
+  // turns every decision into "malformed" for no reason. The check exists to
+  // catch a service claiming to know the future, which is minutes, not
+  // milliseconds.
+  const value = decisionFixture();
+  value.decisionCutoff = new Date(now.getTime() + 3_000).toISOString();
+
+  const decision = decodeDecisionEnvelope(value, { now });
+
+  expect(decision.decisionCutoff).toBe(value.decisionCutoff);
+});
+
+it("still refuses a cutoff that is meaningfully in the future", () => {
+  const value = decisionFixture();
+  value.decisionCutoff = new Date(now.getTime() + 20 * 60_000).toISOString();
+
+  expect(() => decodeDecisionEnvelope(value, { now })).toThrow(/future/);
+});

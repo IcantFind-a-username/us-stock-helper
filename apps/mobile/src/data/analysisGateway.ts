@@ -16,6 +16,8 @@ import type {
  * a quietly dropped field, because the screen renders directly from this.
  */
 
+const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
+
 const ORDER_FIELDS = [
   "submitOrder",
   "orderId",
@@ -257,7 +259,12 @@ export function decodeDecisionEnvelope(
     requireString(value, "decisionCutoff"),
     "decisionCutoff",
   );
-  if (cutoff.getTime() > now.getTime()) {
+  // The service stamps this at the instant it answers, so it arrives a few
+  // milliseconds old — or a few milliseconds ahead if this device's clock
+  // lags behind the service's. Rejecting on that rejected every decision.
+  // The check is here to catch a service claiming to know the future, and
+  // that claim is measured in minutes.
+  if (cutoff.getTime() - now.getTime() > CLOCK_SKEW_TOLERANCE_MS) {
     throw new DecisionValidationError("decision cutoff is in the future");
   }
   const score = value.score === null ? null : decodeScore(value.score);
