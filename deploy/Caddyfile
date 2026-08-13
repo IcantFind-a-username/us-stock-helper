@@ -1,0 +1,102 @@
+# The only public listener on this host.
+#
+# One upstream is reachable from here and it is the read-only analysis API on
+# loopback. The market gateway and OpenD are deliberately absent: a second
+# reverse_proxy line pointing at either would put the broker session's own data
+# path, and in OpenD's case its control port, on the public internet. Anything
+# that adds one is a defect, and deploy/tests guards against it.
+#
+# Replace stock.example.com and ops@example.com before installing. preflight.sh
+# refuses a deployed file that still carries the placeholders.
+
+{
+	# The admin endpoint reconfigures the running server and asks for no
+	# credential, so any local account could repoint the upstream.
+	admin off
+	# Port 80 is never opened by the firewall, so a redirect vhost would only
+	# advertise a listener that is dropped, and the HTTP-01 challenge cannot
+	# complete. TLS-ALPN on 443 is the challenge that works here.
+	auto_https disable_redirects
+	servers {
+		# HTTP/3 would listen on UDP 443, which the firewall does not open.
+		# Keeping the protocol list to TCP keeps the listeners and the
+		# firewall rules describing the same surface.
+		protocols h1 h2
+		timeouts {
+			read_body 10s
+			read_header 10s
+			write 30s
+			idle 2m
+		}
+	}
+}
+
+stock.example.com {
+	tls {
+		issuer acme {
+			email ops@example.com
+			disable_http_challenge
+		}
+	}
+
+	# Both routes are GET-only reads, so a body is always unexpected and is
+	# refused here rather than streamed to the service.
+	request_body {
+		max_size 4KB
+	}
+
+	header {
+		# preload is deliberately omitted. It commits the whole domain to a
+		# browser-shipped list that is slow and awkward to leave, and that is
+		# the operator's decision to make, not this file's.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+		Cross-Origin-Resource-Policy "same-origin"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+		-Server
+	}
+
+	# The service already refuses every write method. Refusing them here too
+	# means a write never reaches the process that holds the market session.
+	@disallowed_method not method GET
+	handle @disallowed_method {
+		header Allow "GET"
+		respond 405
+	}
+
+	# This list must equal the service's own path allowlist; a test ties the
+	# two together so neither can grow a path the other does not know about.
+	@api path /health /decision
+	handle @api {
+		reverse_proxy 127.0.0.1:8770
+	}
+
+	handle {
+		respond 404
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		# The bearer token is the phone's entire identity, so it must not be
+		# written to a file that survives a log rotation and a backup. The
+		# client address is masked because the log would otherwise record
+		# where the user physically is, request by request.
+		format filter {
+			wrap console
+			fields {
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+			}
+		}
+	}
+}

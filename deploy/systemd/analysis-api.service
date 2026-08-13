@@ -1,0 +1,62 @@
+[Unit]
+Description=Read-only decision-chain HTTP boundary for us-stock-helper
+Documentation=file:///opt/us-stock-helper/services/analysis_api/README.md
+# Ordered after the gateway but not dependent on it. When the gateway is down
+# this service still answers, and answering "unavailable" is the contract.
+After=market-gateway.service
+Wants=market-gateway.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=usstock-api
+Group=usstock-api
+# The bearer token lives in this file rather than in an Environment= line
+# because Environment= is readable by any local account through
+# `systemctl show`, while a file read by the manager at exec time is not.
+EnvironmentFile=/etc/us-stock-helper/analysis-api.env
+WorkingDirectory=/opt/us-stock-helper
+ExecStart=/usr/bin/python3 -m us_stock_helper_analysis_api
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=us-stock-helper-analysis-api
+
+# Caddy reaches this service over loopback and the service reaches the gateway
+# over loopback. Nothing else is legitimate, so nothing else is permitted.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+# This service is the standard library only, so write-execute memory has no
+# legitimate use here and is refused outright.
+MemoryDenyWriteExecution=yes
+
+[Install]
+WantedBy=multi-user.target

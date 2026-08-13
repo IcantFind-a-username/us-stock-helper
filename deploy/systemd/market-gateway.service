@@ -1,0 +1,65 @@
+[Unit]
+Description=Read-only moomoo market gateway for us-stock-helper
+Documentation=file:///opt/us-stock-helper/services/market_gateway/README.md
+# Ordered after OpenD but not dependent on it. A hard dependency would stop
+# this service whenever OpenD stops, and its classified OPEND_OFFLINE answer is
+# exactly what the phone needs to see at that moment instead of a timeout.
+After=opend.service
+Wants=opend.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=usstock-gateway
+Group=usstock-gateway
+EnvironmentFile=/etc/us-stock-helper/market-gateway.env
+# `python -m` puts the working directory at the front of sys.path, so this must
+# be a tree the service account cannot write to.
+WorkingDirectory=/opt/us-stock-helper
+ExecStart=/opt/us-stock-helper/services/market_gateway/.venv/bin/python -m us_stock_helper_market_gateway
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=us-stock-helper-gateway
+
+# This process speaks only to OpenD on loopback and listens only on loopback.
+# Denying every other address is a kernel-level guarantee that no dependency,
+# and no future edit, can turn the read-only gateway into a client of anything
+# that could accept an order.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+# MemoryDenyWriteExecution is deliberately absent: the moomoo SDK pulls in
+# numpy, pandas and pycryptodome, and none of them has been verified under it
+# on the target host. The verification step is in deploy/README.md; claiming a
+# protection that has not been tested is worse than not claiming it.
+
+[Install]
+WantedBy=multi-user.target

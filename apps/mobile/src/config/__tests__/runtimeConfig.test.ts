@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it } from "@jest/globals";
 
 import {
   getAnalysisRuntimeConfig,
+  getDeviceSessionRuntimeConfig,
   getMarketRuntimeConfig,
 } from "../runtimeConfig";
 
@@ -155,4 +156,129 @@ it("fails closed when an analysis development token is present in production", (
   expect(() => getAnalysisRuntimeConfig()).toThrow(
     "development token is forbidden in production configuration",
   );
+});
+
+it("rejects a plain-HTTP analysis origin in production", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "http://analysis.example.com";
+
+  expect(() => getAnalysisRuntimeConfig()).toThrow(
+    "a production build requires an https API origin",
+  );
+});
+
+it("rejects a loopback analysis origin in production", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "http://127.0.0.1:8788";
+
+  // The loopback exemption exists only because a development machine serves the
+  // gateway over the loopback interface; a shipped build has no such server.
+  expect(() => getAnalysisRuntimeConfig()).toThrow(
+    "a production build requires an https API origin",
+  );
+});
+
+it("accepts an HTTPS cloud analysis origin in production", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = " https://api.example.com ";
+
+  expect(getAnalysisRuntimeConfig()).toEqual({
+    apiUrl: "https://api.example.com",
+  });
+});
+
+it("rejects a production origin that carries embedded credentials", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "https://user:secret@api.example.com";
+
+  expect(() => getAnalysisRuntimeConfig()).toThrow(
+    "API origin must not carry embedded credentials",
+  );
+});
+
+it("rejects an unparseable production origin instead of treating it as absent", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "api.example.com";
+
+  expect(() => getAnalysisRuntimeConfig()).toThrow("API origin is not a valid URL");
+});
+
+it("rejects a plain-HTTP market origin in production", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_MARKET_API_URL = "http://192.168.1.20:8765";
+
+  expect(() => getMarketRuntimeConfig()).toThrow(
+    "a production build requires an https API origin",
+  );
+});
+
+it("still allows a plain-HTTP loopback origin in development", () => {
+  setDevelopment(true);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "http://127.0.0.1:8788";
+
+  expect(getAnalysisRuntimeConfig()).toEqual({ apiUrl: "http://127.0.0.1:8788" });
+});
+
+it("requires pairing in a production build", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "https://api.example.com";
+
+  expect(getDeviceSessionRuntimeConfig()).toEqual({
+    apiUrl: "https://api.example.com",
+    pairingRequired: true,
+  });
+});
+
+it("requires pairing in production even when the origin is a loopback tunnel", () => {
+  setDevelopment(false);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "https://localhost:8788";
+
+  // A shipped build reached through a local tunnel is still a shipped build:
+  // nothing about the hostname makes it a machine the developer controls.
+  expect(getDeviceSessionRuntimeConfig()).toEqual({
+    apiUrl: "https://localhost:8788",
+    pairingRequired: true,
+  });
+});
+
+it("does not require pairing against a development loopback service", () => {
+  setDevelopment(true);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "http://127.0.0.1:8788";
+
+  expect(getDeviceSessionRuntimeConfig()).toEqual({
+    apiUrl: "http://127.0.0.1:8788",
+    pairingRequired: false,
+  });
+});
+
+it("does not require pairing when a development LAN token is configured", () => {
+  setDevelopment(true);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "http://192.168.1.20:8788";
+  process.env.EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN = "lan-secret";
+
+  expect(getDeviceSessionRuntimeConfig()).toEqual({
+    apiUrl: "http://192.168.1.20:8788",
+    pairingRequired: false,
+  });
+});
+
+it("requires pairing for a development LAN service that has no token", () => {
+  setDevelopment(true);
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "http://192.168.1.20:8788";
+
+  expect(getDeviceSessionRuntimeConfig()).toEqual({
+    apiUrl: "http://192.168.1.20:8788",
+    pairingRequired: true,
+  });
+});
+
+it("requires pairing when no analysis origin is configured at all", () => {
+  setDevelopment(false);
+
+  // An absent origin is reported as null rather than guessed, and the device is
+  // still unpaired: the screen has to say so instead of rendering nothing.
+  expect(getDeviceSessionRuntimeConfig()).toEqual({
+    apiUrl: null,
+    pairingRequired: true,
+  });
 });

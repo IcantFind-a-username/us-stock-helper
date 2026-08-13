@@ -226,13 +226,20 @@ class AnalysisServerConfigTests(unittest.TestCase):
         self.assertTrue(lan.allows_client("192.168.50.8"))
         self.assertFalse(lan.allows_client("192.168.51.8"))
 
-    def test_a_loopback_deployment_never_asks_for_a_token(self) -> None:
-        config = AnalysisServerConfig.from_environment(
-            {"ANALYSIS_API_TOKEN": LAN_TOKEN}
+    def test_a_loopback_deployment_asks_for_a_token_only_if_one_is_set(
+        self,
+    ) -> None:
+        # Discarding a configured token was the old behaviour. It made the
+        # cloud topology — loopback behind Caddy — an unauthenticated public
+        # API while the operator believed the token protected it.
+        self.assertTrue(
+            AnalysisServerConfig.from_environment({}).authorizes(None)
         )
-
-        self.assertIsNone(config.token)
-        self.assertTrue(config.authorizes(None))
+        self.assertFalse(
+            AnalysisServerConfig.from_environment(
+                {"ANALYSIS_API_TOKEN": LAN_TOKEN}
+            ).authorizes(None)
+        )
 
     def test_lan_mode_requires_a_matching_bearer_token(self) -> None:
         config = AnalysisServerConfig.from_environment(
@@ -253,6 +260,49 @@ class AnalysisServerConfigTests(unittest.TestCase):
         # crashes the handler thread before authentication and prints a stack
         # trace containing absolute paths.
         self.assertFalse(config.authorizes("Bearer Ünicöde-Ünicöde-Ünicöde-Ünico"))
+
+
+class ReverseProxyTests(unittest.TestCase):
+    """Loopback stops being evidence of trust the moment something proxies to it.
+
+    The deployment binds this service to 127.0.0.1 and puts Caddy in front of
+    it, so every public request arrives from loopback. Treating that as
+    authenticated would publish the whole decision chain to the internet, and
+    discarding a token the operator did configure is worse still: they would
+    believe they were protected.
+    """
+
+    def test_a_configured_token_is_never_discarded(self) -> None:
+        config = AnalysisServerConfig.from_environment(
+            {"ANALYSIS_API_TOKEN": LAN_TOKEN}
+        )
+
+        self.assertEqual(config.token, LAN_TOKEN)
+        self.assertFalse(config.authorizes(None))
+        self.assertTrue(config.authorizes(f"Bearer {LAN_TOKEN}"))
+
+    def test_a_proxied_deployment_must_demand_a_token(self) -> None:
+        with self.assertRaisesRegex(ValueError, "token"):
+            AnalysisServerConfig.from_environment(
+                {"ANALYSIS_API_TRUST_PROXY": "1"}
+            )
+
+        config = AnalysisServerConfig.from_environment(
+            {"ANALYSIS_API_TRUST_PROXY": "1", "ANALYSIS_API_TOKEN": LAN_TOKEN}
+        )
+
+        self.assertEqual(config.host, "127.0.0.1")
+        self.assertFalse(config.authorizes(None))
+        self.assertFalse(config.authorizes("Bearer " + "x" * 32))
+        self.assertTrue(config.authorizes(f"Bearer {LAN_TOKEN}"))
+
+    def test_an_unconfigured_loopback_deployment_still_needs_no_token(self) -> None:
+        # A developer running this on their own machine with nothing in front
+        # of it is the one case where loopback really does mean trusted.
+        config = AnalysisServerConfig.from_environment({})
+
+        self.assertIsNone(config.token)
+        self.assertTrue(config.authorizes(None))
 
 
 def loopback_config(**overrides: Any) -> AnalysisServerConfig:

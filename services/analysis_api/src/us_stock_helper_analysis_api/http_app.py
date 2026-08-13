@@ -93,6 +93,11 @@ class AnalysisServerConfig:
             "true",
             "yes",
         }
+        trust_proxy = env.get("ANALYSIS_API_TRUST_PROXY", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         host = env.get("ANALYSIS_API_HOST", "127.0.0.1")
         try:
             port = int(env.get("ANALYSIS_API_PORT", "8770"))
@@ -123,10 +128,17 @@ class AnalysisServerConfig:
                 raise ValueError(
                     "Non-loopback binding requires ANALYSIS_API_ALLOW_LAN=1"
                 )
-            # A token configured but never demanded reads as protection that
-            # does not exist, so a loopback deployment drops it outright.
             clients = ("127.0.0.0/8", "::1/128")
-            token = None
+            # Loopback stops being evidence of trust the moment a reverse
+            # proxy fronts it: every public request then arrives from
+            # 127.0.0.1. The cloud deployment is exactly that shape, so a
+            # proxied service must demand a token, and a token the operator
+            # configured is never discarded — believing you are protected when
+            # you are not is worse than knowing you are open.
+            if trust_proxy and (not token or len(token) < 32):
+                raise ValueError(
+                    "ANALYSIS_API_TRUST_PROXY=1 requires a 32+ character token"
+                )
 
         return cls(
             host=host,
@@ -147,7 +159,9 @@ class AnalysisServerConfig:
         )
 
     def authorizes(self, authorization: str | None) -> bool:
-        if not self.allow_lan:
+        # Enforcement follows the token, not the binding. Nothing else can
+        # tell a private loopback from one behind a public proxy.
+        if self.token is None:
             return True
         prefix = "Bearer "
         supplied = (

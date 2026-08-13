@@ -1,0 +1,66 @@
+[Unit]
+Description=moomoo OpenD quote session for us-stock-helper
+Documentation=https://openapi.moomoo.com/moomoo-api-doc/intro/intro.html
+Documentation=file:///opt/us-stock-helper/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+# A unit that gives up permanently turns a transient fault into an outage only
+# a human can clear, and this host is meant to run unattended from another
+# country. Restarting forever is safe here because RestartSec is long.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=usstock-opend
+Group=usstock-opend
+# Arguments are readable by every local process through /proc, so this variable
+# must never carry login material. It exists so the operator can pin the exact
+# flags their OpenD build accepts without editing the unit.
+EnvironmentFile=/etc/us-stock-helper/opend.env
+WorkingDirectory=/opt/opend
+ExecStart=/opt/opend/OpenD $OPEND_ARGS
+Restart=always
+# moomoo rate-limits failed logins and locks an account that is hit repeatedly.
+# A five-second retry loop against a broker is an attack on your own account.
+RestartSec=30
+StateDirectory=us-stock-helper-opend
+StateDirectoryMode=0700
+
+# OpenD writes its own log files, and those name the account. Nothing this
+# service produces on stdout belongs anywhere but journald, which is already
+# restricted to root and the systemd-journal group.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=us-stock-helper-opend
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# This binary must reach moomoo's quote servers over the public internet, which
+# is why it is the one unit without an outbound address restriction, and why it
+# runs as its own account that cannot read the other services' secrets.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

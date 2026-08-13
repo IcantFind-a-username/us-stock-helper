@@ -74,6 +74,7 @@ type MarketDataProviderProps = PropsWithChildren<{
   initialDemoMode?: boolean;
   demoWatchlist?: WatchlistQuote[];
   retryDelaysMs?: readonly number[];
+  deviceToken?: string | null;
 }>;
 
 const defaultRetryDelaysMs = [1_000, 2_000, 4_000, 8_000, 30_000] as const;
@@ -113,6 +114,7 @@ export function MarketDataProvider({
   initialDemoMode = false,
   demoWatchlist = [],
   retryDelaysMs = defaultRetryDelaysMs,
+  deviceToken = null,
 }: MarketDataProviderProps) {
   if (initialDemoMode && !development) {
     throw new Error("demo mode is developer-only");
@@ -133,16 +135,18 @@ export function MarketDataProvider({
       if (!config.apiUrl) {
         throw new Error("EXPO_PUBLIC_ANALYSIS_API_URL is not configured");
       }
+      // The paired device token outranks any development token: once a device
+      // has been bound to the server, that binding is the identity every later
+      // request is answered against.
+      const token = deviceToken ?? config.authorizationToken;
       return createAnalysisClient({
         baseUrl: config.apiUrl,
-        ...(config.authorizationToken
-          ? { authorizationToken: config.authorizationToken }
-          : {}),
+        ...(token ? { authorizationToken: token } : {}),
       });
     } catch (error) {
       return unavailableAnalysis(error);
     }
-  }, [analysis]);
+  }, [analysis, deviceToken]);
   const [demoMode, setDemoModeState] = useState(initialDemoMode);
   const setDemoMode = useCallback(
     (value: boolean) => {

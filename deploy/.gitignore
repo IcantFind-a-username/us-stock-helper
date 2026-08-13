@@ -1,0 +1,8 @@
+# A real environment file carries the bearer token, and opend.conf may carry
+# the moomoo login. Only the templates belong in the repository. The negation
+# is defensive rather than load-bearing — `*.env` does not match a name ending
+# in `.env.example` — and it must stay below the pattern it exempts, because
+# git honours the last matching rule.
+*.env
+!*.env.example
+opend.conf

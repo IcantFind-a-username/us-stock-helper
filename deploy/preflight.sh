@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+#
+# Pre-deployment self-check for the Singapore host.
+#
+# The rule this script is built around: it never prints PASS for something it
+# could not actually look at. A check whose tool is missing, or whose output
+# needs privileges this shell does not have, reports UNKNOWN and the run exits
+# non-zero. An operator who reads a green run must be able to believe it.
+#
+#   exit 0  every check ran and passed
+#   exit 1  at least one check failed
+#   exit 2  nothing failed, but at least one check could not be performed
+#
+# The paths are overridable so the deploy tests can point the real script at a
+# fixture tree instead of at /etc.
+
+set -euo pipefail
+
+ENV_DIR="${PREFLIGHT_ENV_DIR:-/etc/us-stock-helper}"
+UNIT_DIR="${PREFLIGHT_UNIT_DIR:-/etc/systemd/system}"
+CADDYFILE="${PREFLIGHT_CADDYFILE:-/etc/caddy/Caddyfile}"
+EXPECTED_OWNER="${PREFLIGHT_EXPECTED_OWNER:-root}"
+PROC_DIR="${PREFLIGHT_PROC_DIR:-/proc}"
+
+ENV_FILES="opend.env market-gateway.env analysis-api.env"
+UNIT_FILES="opend.service market-gateway.service analysis-api.service"
+# OpenD's control port, the market gateway and the analysis API. None of the
+# three may answer on anything but loopback.
+INTERNAL_PORTS="11111 8765 8770"
+PUBLIC_RULES="443/tcp 443 OpenSSH 22/tcp 22 ssh"
+
+failures=0
+unknowns=0
+
+pass() { printf 'PASS %s %s\n' "$1" "$2"; }
+fail() { printf 'FAIL %s %s\n' "$1" "$2"; failures=$((failures + 1)); }
+unknown() { printf 'UNKNOWN %s %s\n' "$1" "$2"; unknowns=$((unknowns + 1)); }
+
+# GNU and BSD stat disagree on their flags, and this script is written on one
+# platform and run on the other.
+file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true; }
+file_owner() { stat -c '%U' "$1" 2>/dev/null || stat -f '%Su' "$1" 2>/dev/null || true; }
+
+check_environment_files() {
+	local name path mode owner
+	for name in $ENV_FILES; do
+		path="$ENV_DIR/$name"
+		if [ ! -f "$path" ]; then
+			fail environment-file-mode "$path is missing"
+			continue
+		fi
+		mode="$(file_mode "$path")"
+		owner="$(file_owner "$path")"
+		if [ -z "$mode" ] || [ -z "$owner" ]; then
+			unknown environment-file-mode "$path could not be inspected"
+		elif [ "$mode" != "600" ]; then
+			fail environment-file-mode "$path is mode $mode, expected 600"
+		elif [ "$owner" != "$EXPECTED_OWNER" ]; then
+			fail environment-file-mode "$path is owned by $owner, expected $EXPECTED_OWNER"
+		else
+			pass environment-file-mode "$path"
+		fi
+	done
+}
+
+check_issued_token() {
+	local path line value
+	path="$ENV_DIR/analysis-api.env"
+	line="$(grep -E '^ANALYSIS_API_TOKEN=' "$path" 2>/dev/null || true)"
+	value="${line#ANALYSIS_API_TOKEN=}"
+	if [ -z "$value" ]; then
+		fail environment-file-token "no token is issued, so the analysis API will refuse to start"
+	elif [ "${#value}" -lt 32 ]; then
+		fail environment-file-token "the issued token is shorter than the 32 characters the service demands"
+	else
+		pass environment-file-token "a token is issued and long enough"
+	fi
+}
+
+check_unit_secrets() {
+	local name path
+	for name in $UNIT_FILES; do
+		path="$UNIT_DIR/$name"
+		if [ ! -f "$path" ]; then
+			fail unit-plaintext-secret "$path is missing"
+		elif grep -Eq '^[[:space:]]*Environment=' "$path"; then
+			# Environment= is disclosed by `systemctl show` to any local
+			# account, which is exactly what EnvironmentFile= avoids.
+			fail unit-plaintext-secret "$path sets Environment= inline"
+		elif grep -Eq '[0-9a-fA-F]{32,}' "$path"; then
+			fail unit-plaintext-secret "$path contains something shaped like a secret"
+		else
+			pass unit-plaintext-secret "$path"
+		fi
+	done
+}
+
+check_unit_syntax() {
+	local name path
+	if ! command -v systemd-analyze >/dev/null 2>&1; then
+		unknown unit-syntax "systemd-analyze is unavailable, so no unit was parsed"
+		return
+	fi
+	for name in $UNIT_FILES; do
+		path="$UNIT_DIR/$name"
+		if systemd-analyze verify "$path" >/dev/null 2>&1; then
+			pass unit-syntax "$path"
+		else
+			fail unit-syntax "$path does not verify"
+		fi
+	done
+}
+
+check_caddyfile_ports() {
+	if [ ! -f "$CADDYFILE" ]; then
+		fail caddyfile-internal-port "$CADDYFILE is missing"
+	elif grep -Eq '\b(8765|11111)\b' "$CADDYFILE"; then
+		fail caddyfile-internal-port "$CADDYFILE addresses the gateway or OpenD"
+	else
+		pass caddyfile-internal-port "only the analysis API is reachable from the edge"
+	fi
+}
+
+check_caddyfile_placeholder() {
+	if [ ! -f "$CADDYFILE" ]; then
+		fail caddyfile-placeholder "$CADDYFILE is missing"
+	elif grep -q 'example\.com' "$CADDYFILE"; then
+		fail caddyfile-placeholder "$CADDYFILE still carries the placeholder domain or email"
+	else
+		pass caddyfile-placeholder "the site address has been set"
+	fi
+}
+
+check_caddyfile_syntax() {
+	if ! command -v caddy >/dev/null 2>&1; then
+		unknown caddyfile-syntax "caddy is unavailable, so the config was not parsed"
+	elif caddy validate --adapter caddyfile --config "$CADDYFILE" >/dev/null 2>&1; then
+		pass caddyfile-syntax "$CADDYFILE"
+	else
+		fail caddyfile-syntax "$CADDYFILE does not validate"
+	fi
+}
+
+is_loopback_address() {
+	case "$1" in
+	127.*) return 0 ;;
+	::1 | '[::1]') return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+check_port_exposure() {
+	local listeners line local_address address port exposed=""
+	if ! command -v ss >/dev/null 2>&1; then
+		unknown port-exposure "ss is unavailable, so nothing is known about who can reach these ports"
+		return
+	fi
+	listeners="$(ss -H -ltn 2>/dev/null || true)"
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		local_address="$(printf '%s\n' "$line" | awk '{print $4}')"
+		[ -n "$local_address" ] || continue
+		port="${local_address##*:}"
+		address="${local_address%:*}"
+		case " $INTERNAL_PORTS " in
+		*" $port "*) ;;
+		*) continue ;;
+		esac
+		if ! is_loopback_address "$address"; then
+			exposed="$exposed $address:$port"
+		fi
+	done <<EOF
+$listeners
+EOF
+	if [ -n "$exposed" ]; then
+		fail port-exposure "an internal service answers off loopback:$exposed"
+	else
+		pass port-exposure "no internal service answers off loopback"
+	fi
+}
+
+check_firewall() {
+	local status opened rule
+	if ! command -v ufw >/dev/null 2>&1; then
+		unknown firewall "ufw is not installed, so the firewall was not verified"
+		return
+	fi
+	status="$(ufw status 2>/dev/null || true)"
+	if [ -z "$status" ]; then
+		unknown firewall "ufw status could not be read, which usually means this check needs root"
+		return
+	fi
+	case "$status" in
+	*"Status: inactive"*)
+		fail firewall "the firewall is inactive on a host with a public address"
+		return
+		;;
+	*"Status: active"*) ;;
+	*)
+		unknown firewall "ufw reported a status this check does not recognise"
+		return
+		;;
+	esac
+	opened="$(printf '%s\n' "$status" | awk '/ALLOW/ {print $1}' | sort -u)"
+	for rule in $opened; do
+		case " $PUBLIC_RULES " in
+		*" $rule "*) ;;
+		*)
+			fail firewall "the firewall opens $rule, which belongs to no public service here"
+			return
+			;;
+		esac
+	done
+	pass firewall "only HTTPS and SSH are open"
+}
+
+check_opend_command_line() {
+	local entry cmdline found=0 leaked=""
+	if [ ! -d "$PROC_DIR" ]; then
+		unknown opend-cmdline "$PROC_DIR is unavailable, so no command line was read"
+		return
+	fi
+	for entry in "$PROC_DIR"/[0-9]*; do
+		[ -r "$entry/cmdline" ] || continue
+		cmdline="$(tr '\0' ' ' <"$entry/cmdline" 2>/dev/null || true)"
+		case "$cmdline" in
+		*OpenD*) ;;
+		*) continue ;;
+		esac
+		found=1
+		# A command line is readable by every local process, so login material
+		# here is already disclosed and rotating it is the only remedy.
+		case "$cmdline" in
+		*login_pwd* | *login_account* | *passwd* | *password* | *token*)
+			leaked="$entry"
+			;;
+		esac
+	done
+	if [ -n "$leaked" ]; then
+		fail opend-cmdline "an OpenD command line carries login material and is readable by every local process"
+	elif [ "$found" -eq 1 ]; then
+		pass opend-cmdline "the running OpenD exposes no login material in its arguments"
+	else
+		pass opend-cmdline "no OpenD process is running, so no argument is exposed"
+	fi
+}
+
+check_environment_files
+check_issued_token
+check_unit_secrets
+check_unit_syntax
+check_caddyfile_ports
+check_caddyfile_placeholder
+check_caddyfile_syntax
+check_port_exposure
+check_firewall
+check_opend_command_line
+
+if [ "$failures" -gt 0 ]; then
+	printf '\n%d check(s) failed; %d could not be performed.\n' "$failures" "$unknowns"
+	exit 1
+fi
+if [ "$unknowns" -gt 0 ]; then
+	printf '\nNo check failed, but %d could not be performed. This host is not verified.\n' "$unknowns"
+	exit 2
+fi
+printf '\nEvery check ran and passed.\n'
+exit 0

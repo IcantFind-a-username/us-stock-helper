@@ -19,10 +19,12 @@ import {
   decodeStockSnapshotEnvelope,
   GatewayRequestError,
 } from "@/data/marketGateway";
+import { decisionFixture } from "@/data/__tests__/decision.fixture";
 import { stockSnapshotFixture } from "@/data/__tests__/stockSnapshot.fixture";
 import type { LiveStockSnapshot, WatchlistQuote } from "@/domain/models";
 import {
   MarketDataProvider,
+  useDecision,
   useMarketWatchlist,
   useStockSnapshot,
 } from "../MarketDataProvider";
@@ -862,5 +864,90 @@ it("retries an offline watchlist while a consumer remains mounted", async () => 
     expect(loadWatchlist).toHaveBeenCalledTimes(2);
   } finally {
     jest.useRealTimers();
+  }
+});
+
+function DecisionProbe() {
+  const result = useDecision("NVDA", "short");
+  return (
+    <View>
+      <Text testID="decision-status">{result.status}</Text>
+      <Text testID="decision-error">{result.error?.message ?? "none"}</Text>
+    </View>
+  );
+}
+
+it("attaches the paired device token to every analysis request it makes", async () => {
+  const originalUrl = process.env.EXPO_PUBLIC_ANALYSIS_API_URL;
+  const originalFetch = globalThis.fetch;
+  const deviceToken = "8f4c1d2e6b7a09835c4d1e2f6a7b8c9d0e1f2a3b4c5d6e7f";
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "https://api.example.com";
+  const fetchImpl = jest.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => decisionFixture(),
+  })) as unknown as typeof fetch;
+  globalThis.fetch = fetchImpl;
+  try {
+    const repository = repositoryWith(async () => liveSnapshot());
+    const view = await render(
+      <MarketDataProvider deviceToken={deviceToken} repository={repository}>
+        <DecisionProbe />
+      </MarketDataProvider>,
+    );
+
+    await waitFor(() =>
+      expect(view.getByTestId("decision-status").props.children).toBe("live"),
+    );
+    const [, init] = (fetchImpl as jest.Mock).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      `Bearer ${deviceToken}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) {
+      delete process.env.EXPO_PUBLIC_ANALYSIS_API_URL;
+    } else {
+      process.env.EXPO_PUBLIC_ANALYSIS_API_URL = originalUrl;
+    }
+  }
+});
+
+it("sends no authorization at all when no device has been paired", async () => {
+  const originalUrl = process.env.EXPO_PUBLIC_ANALYSIS_API_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.EXPO_PUBLIC_ANALYSIS_API_URL = "https://api.example.com";
+  const fetchImpl = jest.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => decisionFixture(),
+  })) as unknown as typeof fetch;
+  globalThis.fetch = fetchImpl;
+  try {
+    const repository = repositoryWith(async () => liveSnapshot());
+    const view = await render(
+      <MarketDataProvider repository={repository}>
+        <DecisionProbe />
+      </MarketDataProvider>,
+    );
+
+    // Without a token the client refuses the origin outright rather than
+    // sending an anonymous request that the server would answer with a 401.
+    await waitFor(() =>
+      expect(view.getByTestId("decision-status").props.children).toBe(
+        "unavailable",
+      ),
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) {
+      delete process.env.EXPO_PUBLIC_ANALYSIS_API_URL;
+    } else {
+      process.env.EXPO_PUBLIC_ANALYSIS_API_URL = originalUrl;
+    }
   }
 });
