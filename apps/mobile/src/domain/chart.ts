@@ -199,8 +199,29 @@ const dayMs = 86_400_000;
 export const minReadableBodyWidth = 3;
 /** Pinched all the way in. Fewer bars than this is no longer a chart. */
 export const minWindowBars = 30;
-/** Pinched all the way out, and the widest window the density rule allows. */
-export const maxWindowBars = 200;
+/**
+ * Zoomed all the way out, a body may narrow to this but no further.
+ *
+ * Pinching out is a request for more history, not for a chart that can no
+ * longer be read: at two pixels the body is still distinguishable from its
+ * wick, and below that up and down stop reading — the same failure the
+ * default window is solved away from. Earlier bars stay reachable by
+ * dragging rather than by thinning every bar on screen.
+ */
+export const minZoomedOutBodyWidth = 2;
+
+/**
+ * Pinched all the way out. Derived from the density floor above rather than
+ * chosen: a hand-picked 200 put the body back at one pixel on a 390pt phone,
+ * which is where this whole exercise started.
+ */
+export function maxWindowBarsFor(width: number) {
+  const { left, right } = plotBounds(width);
+  return Math.max(
+    minWindowBars,
+    Math.floor((right - left) / (minZoomedOutBodyWidth / bodyWidthRatio)),
+  );
+}
 
 const bodyWidthRatio = 0.62;
 const maxBodyWidth = 9;
@@ -224,7 +245,7 @@ export function readableWindowSize(width: number, reservedSlots = 0) {
   const affordable =
     Math.floor((right - left) / (minReadableBodyWidth / bodyWidthRatio)) -
     reservedSlots;
-  return clampNumber(affordable, minWindowBars, maxWindowBars);
+  return clampNumber(affordable, minWindowBars, maxWindowBarsFor(width));
 }
 
 /**
@@ -257,11 +278,13 @@ export function zoomChartWindow({
   total,
   scale,
   focusRatio,
+  width,
 }: {
   window: ChartWindow;
   total: number;
   scale: number;
   focusRatio: number;
+  width: number;
 }): ChartWindow {
   const bounded = clampChartWindow(window, total);
   const ratio = clampNumber(Number.isFinite(focusRatio) ? focusRatio : 0.5, 0, 1);
@@ -269,7 +292,7 @@ export function zoomChartWindow({
   const size = clampNumber(
     Math.round(bounded.size / safeScale),
     minWindowBars,
-    Math.min(maxWindowBars, Math.max(total, 1)),
+    Math.min(maxWindowBarsFor(width), Math.max(total, 1)),
   );
   const focusBar = bounded.offset + ratio * bounded.size;
   return clampChartWindow({ size, offset: focusBar - ratio * size }, total);

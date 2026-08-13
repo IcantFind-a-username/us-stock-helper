@@ -6,9 +6,10 @@ import {
   buildChartGeometry,
   clampChartWindow,
   focusRatioForX,
-  maxWindowBars,
+  maxWindowBarsFor,
   minReadableBodyWidth,
   minWindowBars,
+  minZoomedOutBodyWidth,
   panChartWindow,
   resolveChartWidth,
   zoomChartWindow,
@@ -100,7 +101,7 @@ it("draws a body wide enough to read direction on every real phone width", () =>
       minReadableBodyWidth,
     );
     expect(geometry.window.size).toBeGreaterThanOrEqual(minWindowBars);
-    expect(geometry.window.size).toBeLessThanOrEqual(maxWindowBars);
+    expect(geometry.window.size).toBeLessThanOrEqual(maxWindowBarsFor(resolveChartWidth(390)));
     expect(geometry.candles).toHaveLength(geometry.window.size);
   });
 });
@@ -143,6 +144,7 @@ it("zooms around the pinch centre instead of around the newest bar", () => {
     total,
     scale: 2,
     focusRatio,
+    width: resolveChartWidth(390),
   });
 
   expect(zoomedIn.size).toBe(50);
@@ -160,9 +162,11 @@ it("zooms around the pinch centre instead of around the newest bar", () => {
     total,
     scale: 0.5,
     focusRatio,
+    width: resolveChartWidth(390),
   });
 
-  expect(zoomedOut.size).toBe(200);
+  // The ceiling is derived from the density floor, so it depends on width.
+  expect(zoomedOut.size).toBe(maxWindowBarsFor(resolveChartWidth(390)));
   expect(
     Math.abs(zoomedOut.offset + focusRatio * zoomedOut.size - focusBar),
   ).toBeLessThanOrEqual(0.5);
@@ -173,6 +177,7 @@ it("zooms around the pinch centre instead of around the newest bar", () => {
     total,
     scale: 2,
     focusRatio: 0.5,
+    width: resolveChartWidth(390)
   });
   expect(centred).toEqual({ size: 50, offset: 125 });
 });
@@ -183,18 +188,22 @@ it("holds the zoom between a readable and a whole-screen window", () => {
     total,
     scale: 40,
     focusRatio: 0.5,
+    width: resolveChartWidth(390),
   });
   const widest = zoomChartWindow({
     window: { size: 60, offset: 100 },
     total,
     scale: 0.01,
     focusRatio: 0.5,
+    width: resolveChartWidth(390),
   });
 
   expect(minWindowBars).toBe(30);
-  expect(maxWindowBars).toBe(200);
+  // Derived from the density floor rather than picked: a hand-chosen 200 put
+  // the body back at one pixel, which is where this started.
+  expect(maxWindowBarsFor(resolveChartWidth(390))).toBeGreaterThan(minWindowBars);
   expect(tightest.size).toBe(minWindowBars);
-  expect(widest.size).toBe(maxWindowBars);
+  expect(widest.size).toBe(maxWindowBarsFor(resolveChartWidth(390)));
   expect(widest.offset).toBeGreaterThanOrEqual(0);
   expect(widest.offset + widest.size).toBeLessThanOrEqual(total);
 });
@@ -205,6 +214,7 @@ it("never zooms out past the data that exists", () => {
     total: 45,
     scale: 0.1,
     focusRatio: 0.5,
+    width: resolveChartWidth(390),
   });
 
   expect(zoomed.size).toBe(45);
@@ -349,4 +359,24 @@ it("stops continuing the forecast once the newest bar is off screen", () => {
   expect(history.band50).toBe("");
   expect(history.band80).toBe("");
   expect(history.medianPath).toBe("");
+});
+
+it("never zooms out into the hairlines the default window exists to avoid", () => {
+  // Pinching out is the reader asking for more history, not for a chart he can
+  // no longer read. At 200 bars on a 390pt phone the body measured 1.00px —
+  // body and wick the same width in the same colour, which is precisely the
+  // state the default window was solved away from.
+  phoneWidths.forEach((viewportWidth) => {
+    const geometry = geometryFor({
+      width: resolveChartWidth(viewportWidth),
+      window: {
+        size: maxWindowBarsFor(resolveChartWidth(viewportWidth)),
+        offset: 0,
+      },
+    });
+
+    expect(geometry.candles[0]!.bodyWidth).toBeGreaterThanOrEqual(
+      minZoomedOutBodyWidth,
+    );
+  });
 });

@@ -162,6 +162,9 @@ export const PriceChart = memo(function PriceChart({
     step: geometry.step,
     plotLeft: geometry.plotLeft,
     plotRight: geometry.plotRight,
+    // The zoom ceiling is solved from the drawing span, so it moves with the
+    // width the chart was actually laid out at.
+    width: chartWidth,
   });
   useEffect(() => {
     viewport.current = {
@@ -169,6 +172,7 @@ export const PriceChart = memo(function PriceChart({
       step: geometry.step,
       plotLeft: geometry.plotLeft,
       plotRight: geometry.plotRight,
+      width: chartWidth,
     };
   });
 
@@ -227,6 +231,7 @@ export const PriceChart = memo(function PriceChart({
           total: viewport.current.window.total,
           scale: scale / start.scale,
           focusRatio: start.focusRatio,
+          width: viewport.current.width,
         }),
       );
     };
