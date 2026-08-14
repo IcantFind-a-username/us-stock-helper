@@ -2,6 +2,8 @@
 
 美股投资决策辅助系统：只读行情 + 可解释分析库 + 原生 iOS App。现状与开发顺序以 `docs/roadmap-to-delivery.md` 为准，待办队列在 `docs/backlog.md`。
 
+本文件是唯一的 agent 记忆（`AGENTS.md` 是指向它的符号链接，Claude Code 与 Codex 读写同一份）。注意：Stop hook 门禁只在 Claude Code 中自动生效，其他工具必须自觉执行迭代规则第 3 条。
+
 ## 仓库地图
 
 - `services/` — 8 个独立 Python 包（各有 pyproject + tests）：`analysis_core` 分析原语（零依赖、严禁未来函数）、`analysis_api` HTTP 服务、`market_gateway` 行情网关、`adviser_llm`/`adviser_layer` LLM 顾问、`decision_engine`、`device_auth`、`information_layer`
