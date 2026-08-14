@@ -1,4 +1,7 @@
-import type { DelayedInstitutionalHolding } from "@/domain/models";
+import type {
+  DelayedInstitutionalHolding,
+  SnapshotSection,
+} from "@/domain/models";
 
 /**
  * The institutional disclosure exactly as the market gateway served it for
@@ -446,3 +449,20 @@ export const sofiInstitutionalHoldings: DelayedInstitutionalHolding[] = [
     qualityStatus: "delayed",
   },
 ];
+
+export const sofiInstitutionalHoldingsSection: SnapshotSection<
+  DelayedInstitutionalHolding[]
+> = {
+  availabilityStatus: "delayed",
+  qualityStatus: "validated",
+  source: "moomoo-delayed-institutional-disclosure",
+  asOf: "2026-06-30T20:00:00.000Z",
+  availableAt: "2026-08-13T17:54:28.000Z",
+  receivedAt: "2026-08-13T17:54:28.000Z",
+  data: sofiInstitutionalHoldings,
+  errorCode: null,
+  reason: null,
+  warnings: [],
+  anomalies: [],
+  methodVersion: "reported-holdings-v2-anomaly-aware",
+};

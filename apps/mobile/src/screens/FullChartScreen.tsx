@@ -10,7 +10,10 @@ import {
 } from "@/components/chart/ChartIntervalSwitch";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
 import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
-import { InstitutionalHoldingsCard } from "@/components/stock/InstitutionalHoldingsCard";
+import {
+  adaptDemoHoldingsSection,
+  InstitutionalHoldingsCard,
+} from "@/components/stock/InstitutionalHoldingsCard";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { Disclosure } from "@/components/ui/Disclosure";
 import { Screen } from "@/components/ui/Screen";
@@ -107,6 +110,9 @@ export function FullChartScreen() {
     ? null
     : (stock as LiveStockSnapshot);
   const dataStatus = getChartDataStatus(market.status, stock.demoData);
+  const holdingsSection = stock.demoData
+    ? adaptDemoHoldingsSection(stock.institutionalHoldings ?? [])
+    : liveStock!.sections.holdings;
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>
@@ -185,9 +191,7 @@ export function FullChartScreen() {
         </Text>
       </Disclosure>
       <ParticipationCard bars={stock.participationBars} />
-      <InstitutionalHoldingsCard
-        holdings={stock.institutionalHoldings ?? []}
-      />
+      <InstitutionalHoldingsCard section={holdingsSection} />
       <Text style={styles.boundary}>
         仅供分析与建议 · 不连接券商 · 不会自动下单
       </Text>

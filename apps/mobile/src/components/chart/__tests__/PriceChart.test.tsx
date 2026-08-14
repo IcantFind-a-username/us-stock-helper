@@ -693,15 +693,39 @@ it("labels a stale chart without also claiming live data", async () => {
   expect(view.queryByText("5 分钟 · 实时只读")).toBeNull();
 });
 
-it("states that a candles-only snapshot has no real-time quote", async () => {
-  const candlesOnly: ChartSnapshot = { ...snapshot, quote: null };
+it("names the final completed close as its candles-only price basis", async () => {
+  const candlesOnly: ChartSnapshot = {
+    ...snapshot,
+    interval: "day",
+    quote: null,
+  };
   const view = await render(<PriceChart stock={candlesOnly} />);
 
-  expect(
-    view.getByRole("button", {
-      name: /NVDA 图表摘要.*实时报价不可用/,
-    }),
-  ).toBeTruthy();
+  const chart = view.getByRole("button", { name: /NVDA 图表摘要/ });
+  expect(chart.props.accessibilityLabel).toContain("最新日K收盘 141.50");
+  expect(chart.props.accessibilityLabel).toContain("实时报价不可用");
+  expect(chart.props.accessibilityLabel).not.toContain("涨跌");
+  expect(chart.props.accessibilityLabel).not.toMatch(/NaN|Infinity/);
+});
+
+it("shows an honest non-interactive state when only a quote is available", async () => {
+  const quoteOnly: ChartSnapshot = {
+    ...snapshot,
+    interval: "day",
+    candles: [],
+    participationBars: [],
+  };
+  const view = await render(<PriceChart stock={quoteOnly} />);
+
+  expect(view.getByText("暂无已完成日K")).toBeTruthy();
+  const empty = view.getByTestId("price-chart-empty");
+  expect(empty.props.accessibilityLabel).toContain("暂无已完成日K");
+  expect(empty.props.accessibilityLabel).toContain("当前报价 141.50");
+  expect(empty.props.accessibilityLabel).not.toMatch(/NaN|Infinity/);
+  expect(view.queryByRole("button", { name: /图表摘要/ })).toBeNull();
+  renderedValues(view.toJSON()).forEach((value) => {
+    expect(value).not.toMatch(/NaN|Infinity/);
+  });
 });
 
 it("selects the nearest candle by tap with exact accessible detail", async () => {

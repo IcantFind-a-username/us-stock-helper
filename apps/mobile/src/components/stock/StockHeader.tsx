@@ -27,6 +27,10 @@ export function StockHeader({
   onBack,
 }: StockHeaderProps) {
   const quote = stock.quote;
+  const latestCompletedCandle = stock.candles
+    .filter(({ complete }) => complete)
+    .at(-1);
+  const displayedPrice = quote?.price ?? latestCompletedCandle?.close ?? null;
   const positive = quote ? quote.changePercent >= 0 : null;
   const resolvedStatus =
     dataStatus ??
@@ -35,7 +39,10 @@ export function StockHeader({
       : stock.source.status === "stale"
         ? "stale"
         : "live");
-  const sourceLabel = chartStatusLabel(resolvedStatus);
+  const sourceLabel =
+    !quote && latestCompletedCandle && resolvedStatus === "live"
+      ? "已完成K线"
+      : chartStatusLabel(resolvedStatus);
 
   return (
     <View style={styles.wrap}>
@@ -73,7 +80,9 @@ export function StockHeader({
       <View style={styles.quoteRow}>
         <View>
           <Text style={styles.price}>
-            {quote ? `$${quote.price.toFixed(2)}` : "报价不可用"}
+            {displayedPrice === null
+              ? "报价不可用"
+              : `$${displayedPrice.toFixed(2)}`}
           </Text>
           <Text
             style={[
@@ -89,7 +98,11 @@ export function StockHeader({
             ]}>
             {quote
               ? `${positive ? "+" : ""}${quote.changePercent.toFixed(2)}%`
-              : "仅显示已完成 K 线"}
+              : latestCompletedCandle
+                ? stock.interval === "day"
+                  ? "最新日K收盘"
+                  : "最新已完成K线收盘"
+                : "暂无已完成日K"}
           </Text>
         </View>
         <View style={styles.meta}>
@@ -97,7 +110,10 @@ export function StockHeader({
             {intervalLabel(stock.interval)}
           </Text>
           <Text style={styles.asOf}>
-            截止 {formatUtc(quote?.asOf ?? stock.source.asOf)}
+            截止{" "}
+            {formatUtc(
+              quote?.asOf ?? latestCompletedCandle?.timestamp ?? stock.source.asOf,
+            )}
           </Text>
         </View>
       </View>

@@ -11,7 +11,10 @@ import {
 import { DecisionNewsSection } from "@/components/news/DecisionNewsSection";
 import { DecisionCard } from "@/components/stock/DecisionCard";
 import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
-import { InstitutionalHoldingsCard } from "@/components/stock/InstitutionalHoldingsCard";
+import {
+  adaptDemoHoldingsSection,
+  InstitutionalHoldingsCard,
+} from "@/components/stock/InstitutionalHoldingsCard";
 import { ParticipationCard } from "@/components/stock/ParticipationCard";
 import { StockHeader } from "@/components/stock/StockHeader";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
@@ -233,12 +236,16 @@ export function StockDetailScreen() {
         stock.magicNine.completed ? "序列完成" : "尚未完成"
       }${lastCompletedSummary}`
     : `九转 暂不可用${lastCompletedSummary}`;
-  const snapshotWarnings = liveStock?.warnings ?? [];
+  const snapshotWarnings =
+    liveStock?.compatibility === "v3" ? [] : liveStock?.warnings ?? [];
   const realizedVolatility = liveStock?.indicators.volatility.value ?? null;
   const latestCandle = stock.candles.at(-1);
+  const holdingsSection = stock.demoData
+    ? adaptDemoHoldingsSection(stock.institutionalHoldings ?? [])
+    : liveStock!.sections.holdings;
   const toolOptions: { key: VisibleTool; label: string }[] = [
     { key: "ma5", label: "MA5" },
-    { key: "magicNine", label: "九转" },
+    { key: "magicNine", label: "神奇九转" },
     { key: "macd", label: "MACD" },
     { key: "rsi", label: "RSI" },
     { key: "participation", label: "参与结构" },
@@ -359,7 +366,9 @@ export function StockDetailScreen() {
             ? "演示事实摘要"
             : dataStatus === "stale"
               ? "缓存事实摘要"
-              : "实时事实摘要"}
+              : stock.quote
+                ? "实时事实摘要"
+                : "日K事实摘要"}
         </Text>
         <Text style={styles.summaryTitle}>
           {latestCandle
@@ -391,9 +400,7 @@ export function StockDetailScreen() {
       {visibleTools.participation ? (
         <ParticipationCard bars={stock.participationBars} />
       ) : null}
-      <InstitutionalHoldingsCard
-        holdings={stock.institutionalHoldings ?? []}
-      />
+      <InstitutionalHoldingsCard section={holdingsSection} />
 
       {stock.demoData ? (
         stock.forecast ? null : (

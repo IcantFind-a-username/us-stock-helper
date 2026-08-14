@@ -16,6 +16,7 @@ import {
 } from "@/data/analysisGateway";
 import {
   decodeStockSnapshotEnvelope,
+  decodeStockSnapshotV3Envelope,
 } from "@/data/marketGateway";
 import {
   createMarketRepository,
@@ -32,13 +33,15 @@ import {
   newsInterpretationFixture,
 } from "../../data/__tests__/decision.fixture";
 import { stockSnapshotFixture } from "../../data/__tests__/stockSnapshot.fixture";
+import { stockSnapshotV3Fixture } from "../../data/__tests__/stockSnapshotV3.fixture";
 import { StockDetailScreen } from "../StockDetailScreen";
 
 const mockBack = jest.fn();
 const mockPush = jest.fn();
+let mockRouteSymbol = "NVDA";
 
 jest.mock("expo-router", () => ({
-  useLocalSearchParams: () => ({ symbol: "NVDA" }),
+  useLocalSearchParams: () => ({ symbol: mockRouteSymbol }),
   useRouter: () => ({ back: mockBack, push: mockPush }),
 }));
 
@@ -46,12 +49,80 @@ beforeEach(async () => {
   await AsyncStorage.clear();
   mockBack.mockClear();
   mockPush.mockClear();
+  mockRouteSymbol = "NVDA";
 });
 
 function liveSnapshot() {
   return decodeStockSnapshotEnvelope(stockSnapshotFixture(), {
     now: new Date("2026-07-25T16:00:00.000Z"),
   });
+}
+
+type V3PriceMode = "both" | "candles-only" | "quote-only" | "neither";
+
+function unavailableV3Section(errorCode: string, reason: string) {
+  return {
+    availabilityStatus: "unavailable",
+    qualityStatus: "invalid",
+    source: null,
+    asOf: null,
+    availableAt: null,
+    receivedAt: null,
+    data: null,
+    errorCode,
+    reason,
+    warnings: [] as string[],
+    anomalies: [] as { code: string; reason: string; rowIndex?: number }[],
+    methodVersion: "unavailable-v1",
+  };
+}
+
+function liveV3Snapshot(
+  symbol: string,
+  {
+    holdingsAvailable = true,
+    priceMode = "both",
+  }: { holdingsAvailable?: boolean; priceMode?: V3PriceMode } = {},
+) {
+  const payload = stockSnapshotV3Fixture();
+  payload.symbol = symbol;
+  payload.interval = "day";
+  payload.count = 250;
+  const sections = payload.sections as unknown as Record<string, unknown>;
+
+  if (priceMode === "candles-only" || priceMode === "neither") {
+    sections.quote = unavailableV3Section(
+      "QUOTE_UNAVAILABLE",
+      "实时报价不可用",
+    );
+  }
+  if (priceMode === "quote-only" || priceMode === "neither") {
+    sections.candles = unavailableV3Section(
+      "CANDLES_UNAVAILABLE",
+      "已完成蜡烛图数据不可用",
+    );
+    sections.technical = unavailableV3Section(
+      "CANDLES_UNAVAILABLE",
+      "技术指标需要已验证的蜡烛图数据",
+    );
+  }
+  if (!holdingsAvailable) {
+    sections.holdings = unavailableV3Section(
+      "HOLDINGS_UNAVAILABLE",
+      "机构持仓数据不可用",
+    );
+  } else {
+    payload.sections.holdings.warnings.push(
+      "provider RuntimeError token=secret",
+    );
+    payload.sections.holdings.anomalies.push({
+      code: "UNKNOWN_PROVIDER_ANOMALY",
+      reason: "异常 token=secret",
+      rowIndex: 9,
+    });
+  }
+  payload.status = priceMode === "neither" ? "unavailable" : "partial";
+  return decodeStockSnapshotV3Envelope(payload);
 }
 
 function deferred<T>() {
@@ -196,6 +267,116 @@ it("renders one schema-v2 live snapshot without fixture analysis", async () => {
   expect(view.queryByText("概率预测，不是未来价格承诺")).toBeNull();
   expect(view.queryByText("预测区间")).toBeNull();
   expect(view.queryByText("NVIDIA")).toBeNull();
+});
+
+const formerlyFailingSymbols = [
+  "CRCL",
+  "AVGO",
+  "GRRR",
+  "SMTC",
+  "LULU",
+  "PTON",
+  "ETSY",
+  "GPCR",
+] as const;
+const aggregateHoldingsWarning =
+  "供应商返回的聚合持仓比例超过 100%，不能按唯一股份占比直接解释";
+
+it.each(formerlyFailingSymbols)(
+  "keeps %s on a real daily v3 snapshot with anomalous holdings",
+  async (symbol) => {
+    mockRouteSymbol = symbol;
+    const queries: { symbol: string; interval: string; count: number }[] = [];
+    const view = await renderDetail({
+      repository: repositoryWithSnapshot(async (query) => {
+        queries.push(query);
+        return liveV3Snapshot(symbol);
+      }),
+    });
+
+    await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+
+    expect(queries).toEqual([{ symbol, interval: "day", count: 250 }]);
+    expect(view.getByText(symbol)).toBeTruthy();
+    expect(
+      view.getByRole("tab", { name: "日K" }).props.accessibilityState,
+    ).toEqual({ selected: true });
+    expect(view.getByText("日线")).toBeTruthy();
+    expect(view.getByText(/日线 · 实时只读/)).toBeTruthy();
+    expect(view.queryByText(/5 分钟/)).toBeNull();
+    expect(view.getByText("神奇九转")).toBeTruthy();
+    expect(view.getByText(aggregateHoldingsWarning)).toBeTruthy();
+    expect(view.getByTestId("institutional-holdings-percent")).toHaveTextContent(
+      "345.937%",
+    );
+    expect(view.queryByTestId("stock-state-body")).toBeNull();
+    expect(view.queryByText(/行情不可用 · 数据被拒/)).toBeNull();
+    expect(view.queryByText(/演示数据/)).toBeNull();
+    expect(view.toJSON()).not.toHaveTextContent(
+      /RuntimeError|UNKNOWN_PROVIDER_ANOMALY|token=secret|异常 token/,
+    );
+  },
+);
+
+it("keeps quote and daily candles visible when holdings are unavailable", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      liveV3Snapshot("NVDA", { holdingsAvailable: false }),
+    ),
+  });
+
+  await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+  expect(view.getByText(/日线 · 实时只读/)).toBeTruthy();
+  expect(view.getByText("机构持仓数据不可用")).toBeTruthy();
+  expect(view.queryByTestId("institutional-holdings-percent")).toBeNull();
+  expect(view.queryByTestId("stock-state-body")).toBeNull();
+});
+
+it("uses the final daily close when a v3 snapshot has candles only", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      liveV3Snapshot("NVDA", { priceMode: "candles-only" }),
+    ),
+  });
+
+  await waitFor(() => expect(view.getByText("$141.50")).toBeTruthy());
+  expect(view.getByText("最新日K收盘")).toBeTruthy();
+  expect(view.queryByText("+2.40%")).toBeNull();
+  expect(view.queryByText("实时只读")).toBeNull();
+  expect(view.queryByText("实时事实摘要")).toBeNull();
+  const chart = view.getByRole("button", { name: /NVDA 图表摘要/ });
+  expect(chart.props.accessibilityLabel).toContain("最新日K收盘 141.50");
+  expect(chart.props.accessibilityLabel).toContain("实时报价不可用");
+  expect(chart.props.accessibilityLabel).not.toMatch(/NaN|Infinity/);
+  expect(view.queryByTestId("stock-state-body")).toBeNull();
+});
+
+it("keeps the quote and removes the empty chart interaction with quote only", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      liveV3Snapshot("NVDA", { priceMode: "quote-only" }),
+    ),
+  });
+
+  await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+  expect(view.getByText("+2.40%")).toBeTruthy();
+  expect(view.getByText("暂无已完成日K")).toBeTruthy();
+  expect(view.getByTestId("price-chart-empty")).toBeTruthy();
+  expect(view.queryByRole("button", { name: /图表摘要/ })).toBeNull();
+  expect(view.queryByTestId("stock-state-body")).toBeNull();
+});
+
+it("keeps the typed full-page unavailable state when neither price source exists", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      liveV3Snapshot("NVDA", { priceMode: "neither" }),
+    ),
+  });
+
+  await waitFor(() => expect(view.getByText(/行情不可用 ·/)).toBeTruthy());
+  expect(view.getByTestId("stock-state-body")).toBeTruthy();
+  expect(view.queryByTestId("stock-chart-card")).toBeNull();
+  expect(view.queryByText(/演示数据/)).toBeNull();
 });
 
 it("calls Claude only after a single-stock button press", async () => {

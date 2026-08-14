@@ -422,10 +422,27 @@ export const PriceChart = memo(function PriceChart({
     geometry.window.total > geometry.candles.length
       ? `，共 ${geometry.window.total} 根，双指缩放或横向拖动查看其余`
       : "";
+  const latestCompletedCandle = snapshot.candles
+    .filter(
+      ({ complete, timestamp }) =>
+        complete && Date.parse(timestamp) <= Date.parse(snapshot.source.decisionCutoff),
+    )
+    .at(-1);
   const quoteSummary = snapshot.quote
     ? `当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%`
-    : "实时报价不可用";
+    : latestCompletedCandle
+      ? `${snapshot.interval === "day" ? "最新日K收盘" : "最新已完成K线收盘"} ${latestCompletedCandle.close.toFixed(2)}，实时报价不可用`
+      : "实时报价与已完成K线均不可用";
   const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线${windowSummary}，${quoteSummary}${participationSummary}；轻点或长按选择最近的 K 线`;
+  const emptySummary = `${snapshot.symbol} 图表摘要，暂无已完成日K，${
+    snapshot.quote
+      ? `当前报价 ${snapshot.quote.price.toFixed(2)}`
+      : "实时报价不可用"
+  }`;
+  const displayedStatusLabel =
+    !snapshot.quote && geometry.candles.length > 0 && resolvedStatus === "live"
+      ? "已完成K线"
+      : chartStatusLabel(resolvedStatus);
   const detailLabel = selectedCandle
     ? `${snapshot.symbol} 收盘时间 ${selectedCandle.timestamp}；开 ${selectedCandle.open.toFixed(2)}，高 ${selectedCandle.high.toFixed(2)}，低 ${selectedCandle.low.toFixed(2)}，收 ${selectedCandle.close.toFixed(2)}，成交量 ${selectedCandle.volume}${
         showParticipation
@@ -454,7 +471,7 @@ export const PriceChart = memo(function PriceChart({
     <View style={styles.card} testID="stock-chart-card">
       <View style={styles.header}>
         <Text style={styles.eyebrow}>
-          {intervalLabel(snapshot.interval)} · {chartStatusLabel(resolvedStatus)}
+          {intervalLabel(snapshot.interval)} · {displayedStatusLabel}
         </Text>
         {hasForecast ? (
           <Text style={styles.probability}>
@@ -472,41 +489,54 @@ export const PriceChart = memo(function PriceChart({
         />
       </View>
 
-      <GestureDetector gesture={gesture}>
-        <Pressable
-          accessibilityLabel={summary}
-          accessibilityRole="button"
-          onLongPress={selectNearestCandle}
-          onPress={selectNearestCandle}
-          style={({ pressed }) => [
-            styles.chartPress,
-            { minHeight: height },
-            pressed && styles.chartPressed,
-          ]}>
-          <ChartCanvas
-            geometry={geometry}
-            height={height}
-            macdLabel={macdPanelLabel(snapshot.indicators.macd)}
-            markers={markers}
-            rsiLabel={
-              snapshot.indicators.rsi.value === null
-                ? `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} 暂不可用`
-                : `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} ${snapshot.indicators.rsi.value.toFixed(1)}`
-            }
-            selectedX={selectedX}
-            showForecast={hasForecast}
-            showParticipation={showParticipation}
-            width={chartWidth}
-          />
-        </Pressable>
-      </GestureDetector>
+      {geometry.candles.length === 0 ? (
+        <View
+          accessibilityLabel={emptySummary}
+          accessible
+          style={styles.emptyChart}
+          testID="price-chart-empty">
+          <Text style={styles.emptyTitle}>暂无已完成日K</Text>
+          <Text style={styles.emptyBody}>图表将在已完成日K可用后显示</Text>
+        </View>
+      ) : (
+        <>
+          <GestureDetector gesture={gesture}>
+            <Pressable
+              accessibilityLabel={summary}
+              accessibilityRole="button"
+              onLongPress={selectNearestCandle}
+              onPress={selectNearestCandle}
+              style={({ pressed }) => [
+                styles.chartPress,
+                { minHeight: height },
+                pressed && styles.chartPressed,
+              ]}>
+              <ChartCanvas
+                geometry={geometry}
+                height={height}
+                macdLabel={macdPanelLabel(snapshot.indicators.macd)}
+                markers={markers}
+                rsiLabel={
+                  snapshot.indicators.rsi.value === null
+                    ? `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} 暂不可用`
+                    : `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} ${snapshot.indicators.rsi.value.toFixed(1)}`
+                }
+                selectedX={selectedX}
+                showForecast={hasForecast}
+                showParticipation={showParticipation}
+                width={chartWidth}
+              />
+            </Pressable>
+          </GestureDetector>
 
-      <ChartReadout
-        candle={selectedCandle}
-        detailLabel={detailLabel}
-        participation={selectedParticipation}
-        showParticipation={showParticipation}
-      />
+          <ChartReadout
+            candle={selectedCandle}
+            detailLabel={detailLabel}
+            participation={selectedParticipation}
+            showParticipation={showParticipation}
+          />
+        </>
+      )}
 
       {missingNotes.length ? (
         <View style={styles.missing} testID="chart-series-missing">
@@ -562,6 +592,17 @@ const styles = StyleSheet.create({
   },
   chartPress: { justifyContent: "center" },
   chartPressed: { opacity: 0.88 },
+  emptyChart: {
+    alignItems: "center",
+    backgroundColor: colors.backgroundRaised,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+    justifyContent: "center",
+    minHeight: 128,
+    padding: spacing.lg,
+  },
+  emptyTitle: { color: colors.ink, fontSize: 16, fontWeight: "900" },
+  emptyBody: { color: colors.muted, fontSize: 13, lineHeight: 20 },
   missing: { gap: 2, paddingHorizontal: spacing.xs },
   missingText: { color: colors.muted, fontSize: 12, fontWeight: "700" },
 });
