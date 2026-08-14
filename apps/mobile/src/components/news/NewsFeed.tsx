@@ -92,6 +92,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 12, fontWeight: "900", letterSpacing: 0.4 },
   notice: { borderRadius: radius.md, gap: spacing.xxs, padding: spacing.sm },
   noticeTitle: { fontSize: 12, fontWeight: "800", lineHeight: 17 },
-  noticeBody: { fontSize: 10, lineHeight: 15 },
-  hidden: { fontSize: 10, fontWeight: "700", lineHeight: 14 },
+  noticeBody: { fontSize: 11, lineHeight: 15 },
+  hidden: { fontSize: 11, fontWeight: "700", lineHeight: 14 },
 });

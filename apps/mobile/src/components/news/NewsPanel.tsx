@@ -79,5 +79,5 @@ export function NewsPanel({ briefing }: { briefing: NewsBriefing }) {
 const styles = StyleSheet.create({
   panel: { gap: spacing.sm },
   title: { fontSize: 15, fontWeight: "900" },
-  asOf: { fontSize: 10, fontVariant: ["tabular-nums"], fontWeight: "600" },
+  asOf: { fontSize: 11, fontVariant: ["tabular-nums"], fontWeight: "600" },
 });

@@ -136,7 +136,7 @@ const styles = StyleSheet.create({
   marker: {
     borderRadius: radius.pill,
     borderWidth: 1,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "900",
     overflow: "hidden",
     paddingHorizontal: 5,
@@ -144,7 +144,7 @@ const styles = StyleSheet.create({
   },
   status: {
     borderRadius: radius.pill,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
     overflow: "hidden",
     paddingHorizontal: spacing.sm,
@@ -153,7 +153,7 @@ const styles = StyleSheet.create({
   sourceCount: {
     borderRadius: radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
     overflow: "hidden",
     paddingHorizontal: spacing.sm,
@@ -162,8 +162,8 @@ const styles = StyleSheet.create({
   spacer: { flex: 1 },
   relative: { fontSize: 11, fontWeight: "800" },
   headline: { fontSize: 14, fontWeight: "800", lineHeight: 19 },
-  cited: { fontSize: 10, fontWeight: "800" },
-  absolute: { fontSize: 10, fontVariant: ["tabular-nums"], lineHeight: 14 },
+  cited: { fontSize: 11, fontWeight: "800" },
+  absolute: { fontSize: 11, fontVariant: ["tabular-nums"], lineHeight: 14 },
   source: {
     alignItems: "center",
     flexDirection: "row",
@@ -173,6 +173,6 @@ const styles = StyleSheet.create({
   },
   sourceText: { flexShrink: 1, fontSize: 12, fontWeight: "700" },
   sourceArrow: { fontSize: 14, fontWeight: "800" },
-  omitted: { fontSize: 10, fontWeight: "700", lineHeight: 14 },
+  omitted: { fontSize: 11, fontWeight: "700", lineHeight: 14 },
   pressed: { opacity: 0.68 },
 });

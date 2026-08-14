@@ -50,7 +50,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   title: { color: colors.ink, fontSize: 11, fontWeight: "800" },
-  action: { color: colors.blue, fontSize: 10, fontWeight: "800" },
+  action: { color: colors.blue, fontSize: 11, fontWeight: "800" },
   pressed: { opacity: 0.68 },
   body: { gap: spacing.xs, paddingBottom: spacing.md },
 });

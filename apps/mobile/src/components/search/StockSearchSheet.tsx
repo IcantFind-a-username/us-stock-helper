@@ -137,7 +137,7 @@ const styles = StyleSheet.create({
   },
   eyebrow: {
     color: colors.muted,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
   },
   title: {
@@ -205,7 +205,7 @@ const styles = StyleSheet.create({
   },
   company: {
     color: colors.muted,
-    fontSize: 10,
+    fontSize: 11,
     marginTop: spacing.xxs,
   },
   quote: {
@@ -218,7 +218,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   change: {
-    fontSize: 10,
+    fontSize: 11,
     fontVariant: ["tabular-nums"],
     fontWeight: "800",
     marginTop: spacing.xxs,

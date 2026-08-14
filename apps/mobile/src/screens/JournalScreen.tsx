@@ -148,8 +148,8 @@ function formatPnl(value: number) {
 const styles = StyleSheet.create({
   screen: { gap: spacing.md, paddingTop: spacing.xs },
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
-  demoLabel: { color: colors.amber, fontSize: 8, fontWeight: "900" },
-  eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "800", marginTop: 2 },
+  demoLabel: { color: colors.amber, fontSize: 11, fontWeight: "900" },
+  eyebrow: { color: colors.muted, fontSize: 11, fontWeight: "800", marginTop: 2 },
   title: { color: colors.ink, fontSize: 23, fontWeight: "900", marginTop: spacing.xxs },
   addButton: {
     alignItems: "center",
@@ -159,7 +159,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: spacing.md,
   },
-  addText: { color: colors.card, fontSize: 10, fontWeight: "900" },
+  addText: { color: colors.card, fontSize: 11, fontWeight: "900" },
   summary: {
     backgroundColor: colors.navy,
     borderRadius: radius.lg,
@@ -168,7 +168,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   summaryMetric: { maxWidth: "25%" },
-  summaryLabel: { color: colors.navyMuted, fontSize: 7, fontWeight: "800" },
+  summaryLabel: { color: colors.navyMuted, fontSize: 11, fontWeight: "800" },
   summaryValue: { color: colors.card, fontSize: 11, fontWeight: "900", marginTop: 3 },
   firewall: {
     backgroundColor: colors.blueSoft,
@@ -177,9 +177,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     padding: spacing.md,
   },
-  firewallTitle: { color: colors.blue, fontSize: 10, fontWeight: "900" },
-  firewallBody: { color: colors.ink, fontSize: 9, lineHeight: 14, marginTop: 3 },
-  sectionEyebrow: { color: colors.muted, fontSize: 8, fontWeight: "900" },
+  firewallTitle: { color: colors.blue, fontSize: 11, fontWeight: "900" },
+  firewallBody: { color: colors.ink, fontSize: 11, lineHeight: 14, marginTop: 3 },
+  sectionEyebrow: { color: colors.muted, fontSize: 11, fontWeight: "900" },
   sectionTitle: { color: colors.ink, fontSize: 15, fontWeight: "900", marginTop: 2 },
   empty: {
     alignItems: "center",
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   emptyTitle: { color: colors.ink, fontSize: 12, fontWeight: "900" },
-  emptyBody: { color: colors.muted, fontSize: 9, lineHeight: 14, marginTop: 4, textAlign: "center" },
+  emptyBody: { color: colors.muted, fontSize: 11, lineHeight: 14, marginTop: 4, textAlign: "center" },
   entryCard: {
     backgroundColor: colors.card,
     borderColor: colors.line,
@@ -203,7 +203,7 @@ const styles = StyleSheet.create({
   entrySymbol: { color: colors.ink, fontSize: 13, fontWeight: "900" },
   entryPnl: { color: colors.green, fontSize: 14, fontWeight: "900" },
   entryLoss: { color: colors.red },
-  entryMeta: { color: colors.muted, fontSize: 9, fontWeight: "800" },
-  entryNotes: { color: colors.ink, fontSize: 10, lineHeight: 15 },
+  entryMeta: { color: colors.muted, fontSize: 11, fontWeight: "800" },
+  entryNotes: { color: colors.ink, fontSize: 11, lineHeight: 15 },
   pressed: { opacity: 0.66 },
 });

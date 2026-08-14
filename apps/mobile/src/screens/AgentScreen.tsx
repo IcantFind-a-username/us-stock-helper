@@ -175,12 +175,12 @@ export function AgentScreen() {
 const styles = StyleSheet.create({
   screen: { gap: spacing.md, paddingTop: spacing.xs },
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
-  demoLabel: { color: colors.amber, fontSize: 8, fontWeight: "900" },
-  eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "800", marginTop: 2 },
+  demoLabel: { color: colors.amber, fontSize: 11, fontWeight: "900" },
+  eyebrow: { color: colors.muted, fontSize: 11, fontWeight: "800", marginTop: 2 },
   title: { color: colors.ink, fontSize: 23, fontWeight: "900", marginTop: spacing.xxs },
   status: { alignItems: "center", flexDirection: "row", gap: spacing.xs },
   statusDot: { backgroundColor: colors.green, borderRadius: 4, height: 7, width: 7 },
-  statusText: { color: colors.muted, fontSize: 9, fontWeight: "900" },
+  statusText: { color: colors.muted, fontSize: 11, fontWeight: "900" },
   guardrail: {
     backgroundColor: colors.navy,
     borderRadius: radius.lg,
@@ -188,7 +188,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   guardrailTitle: { color: colors.card, fontSize: 15, fontWeight: "900" },
-  guardrailBody: { color: colors.navyMuted, fontSize: 9, lineHeight: 14 },
+  guardrailBody: { color: colors.navyMuted, fontSize: 11, lineHeight: 14 },
   turns: { gap: spacing.sm },
   actions: { flexDirection: "row", gap: spacing.sm },
   secondary: {
@@ -201,8 +201,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 44,
   },
-  secondaryText: { color: colors.blue, fontSize: 9, fontWeight: "900" },
-  acknowledgement: { color: colors.green, fontSize: 9, fontWeight: "800" },
+  secondaryText: { color: colors.blue, fontSize: 11, fontWeight: "900" },
+  acknowledgement: { color: colors.green, fontSize: 11, fontWeight: "800" },
   council: {
     alignItems: "center",
     backgroundColor: colors.card,
@@ -225,8 +225,8 @@ const styles = StyleSheet.create({
   councilIconText: { color: colors.purple, fontSize: 15, fontWeight: "900" },
   councilCopy: { flex: 1, gap: 3 },
   councilTitle: { color: colors.ink, fontSize: 13, fontWeight: "900" },
-  councilBody: { color: colors.muted, fontSize: 9, lineHeight: 13 },
-  disclaimer: { color: colors.purple, fontSize: 8, fontWeight: "800" },
+  councilBody: { color: colors.muted, fontSize: 11, lineHeight: 13 },
+  disclaimer: { color: colors.purple, fontSize: 11, fontWeight: "800" },
   chevron: { color: colors.muted, fontSize: 23, fontWeight: "700" },
   pressed: { opacity: 0.66 },
 });

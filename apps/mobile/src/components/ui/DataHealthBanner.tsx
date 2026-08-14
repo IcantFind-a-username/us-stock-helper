@@ -52,7 +52,7 @@ const styles = StyleSheet.create({
   label: { fontSize: 13, fontWeight: "700" },
   detail: { color: colors.muted, fontSize: 12, marginTop: spacing.xs },
   sessionCopy: { alignItems: "flex-end", flexShrink: 1 },
-  marker: { color: colors.amber, fontSize: 10, fontWeight: "800" },
+  marker: { color: colors.amber, fontSize: 11, fontWeight: "800" },
   session: { color: colors.ink, fontSize: 12, fontWeight: "600", textAlign: "right" },
   evidenceButton: { alignItems: "center", backgroundColor: colors.card, borderRadius: radius.sm, justifyContent: "center", minHeight: 44, paddingHorizontal: spacing.md },
   evidenceText: { color: colors.blue, fontSize: 13, fontWeight: "800" },

@@ -122,7 +122,7 @@ export function PairDeviceScreen() {
 
 const styles = StyleSheet.create({
   screen: { gap: spacing.md, paddingTop: spacing.lg },
-  eyebrow: { color: colors.muted, fontSize: 9, fontWeight: "800" },
+  eyebrow: { color: colors.muted, fontSize: 11, fontWeight: "800" },
   title: { color: colors.ink, fontSize: 23, fontWeight: "900", marginTop: spacing.xxs },
   statusCard: {
     backgroundColor: colors.card,
@@ -133,7 +133,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   statusLabel: { fontSize: 15, fontWeight: "900" },
-  statusBody: { color: colors.muted, fontSize: 10, lineHeight: 15 },
+  statusBody: { color: colors.muted, fontSize: 11, lineHeight: 15 },
   form: {
     backgroundColor: colors.card,
     borderColor: colors.line,
@@ -142,7 +142,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.md,
   },
-  fieldLabel: { color: colors.muted, fontSize: 9, fontWeight: "900" },
+  fieldLabel: { color: colors.muted, fontSize: 11, fontWeight: "900" },
   input: {
     backgroundColor: colors.backgroundRaised,
     borderColor: colors.line,
@@ -154,7 +154,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: spacing.md,
   },
-  fieldError: { color: colors.red, fontSize: 10, fontWeight: "800" },
+  fieldError: { color: colors.red, fontSize: 11, fontWeight: "800" },
   submit: {
     alignItems: "center",
     backgroundColor: colors.blue,
@@ -164,7 +164,7 @@ const styles = StyleSheet.create({
   },
   submitPending: { backgroundColor: colors.muted },
   submitText: { color: colors.card, fontSize: 12, fontWeight: "900" },
-  hint: { color: colors.muted, fontSize: 9, lineHeight: 14 },
+  hint: { color: colors.muted, fontSize: 11, lineHeight: 14 },
   pairedCard: {
     backgroundColor: colors.greenSoft,
     borderRadius: radius.lg,
@@ -172,7 +172,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   pairedTitle: { color: colors.ink, fontSize: 12, fontWeight: "900" },
-  pairedBody: { color: colors.muted, fontSize: 10, lineHeight: 15 },
+  pairedBody: { color: colors.muted, fontSize: 11, lineHeight: 15 },
   failureCard: {
     backgroundColor: colors.redSoft,
     borderRadius: radius.lg,
@@ -180,14 +180,14 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   failureTitle: { color: colors.red, fontSize: 13, fontWeight: "900" },
-  failureBody: { color: colors.ink, fontSize: 10, lineHeight: 15 },
+  failureBody: { color: colors.ink, fontSize: 11, lineHeight: 15 },
   boundary: {
     backgroundColor: colors.blueSoft,
     borderRadius: radius.md,
     gap: spacing.xs,
     padding: spacing.md,
   },
-  boundaryTitle: { color: colors.blue, fontSize: 10, fontWeight: "900" },
-  boundaryBody: { color: colors.ink, fontSize: 9, lineHeight: 14 },
+  boundaryTitle: { color: colors.blue, fontSize: 11, fontWeight: "900" },
+  boundaryBody: { color: colors.ink, fontSize: 11, lineHeight: 14 },
   pressed: { opacity: 0.66 },
 });

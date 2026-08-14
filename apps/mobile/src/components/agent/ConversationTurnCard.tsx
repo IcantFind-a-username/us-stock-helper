@@ -61,8 +61,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: spacing.xs,
   },
-  assistantLabel: { color: colors.blue, fontSize: 8, fontWeight: "900" },
-  demo: { color: colors.amber, fontSize: 8, fontWeight: "900" },
+  assistantLabel: { color: colors.blue, fontSize: 11, fontWeight: "900" },
+  demo: { color: colors.amber, fontSize: 11, fontWeight: "900" },
   section: {
     backgroundColor: colors.backgroundRaised,
     borderRadius: radius.md,
@@ -70,8 +70,8 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
   },
   objective: { backgroundColor: colors.navy, padding: spacing.md },
-  sectionTitle: { color: colors.muted, fontSize: 8, fontWeight: "900" },
+  sectionTitle: { color: colors.muted, fontSize: 11, fontWeight: "900" },
   objectiveTitle: { color: colors.blueBright },
-  sectionBody: { color: colors.ink, fontSize: 10, lineHeight: 15 },
+  sectionBody: { color: colors.ink, fontSize: 11, lineHeight: 15 },
   objectiveBody: { color: colors.card, fontSize: 13, fontWeight: "900", lineHeight: 18 },
 });

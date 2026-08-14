@@ -43,5 +43,5 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   title: { color: colors.ink, fontSize: 12, fontWeight: "800" },
-  body: { color: colors.muted, fontSize: 10, lineHeight: 15 },
+  body: { color: colors.muted, fontSize: 11, lineHeight: 15 },
 });

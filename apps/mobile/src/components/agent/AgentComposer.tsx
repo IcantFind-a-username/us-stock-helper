@@ -67,7 +67,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: spacing.md,
   },
-  chipText: { color: colors.blue, fontSize: 9, fontWeight: "900" },
+  chipText: { color: colors.blue, fontSize: 11, fontWeight: "900" },
   composer: { alignItems: "center", flexDirection: "row", gap: spacing.sm },
   input: {
     backgroundColor: colors.card,
@@ -88,6 +88,6 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: spacing.md,
   },
-  sendText: { color: colors.card, fontSize: 10, fontWeight: "900" },
+  sendText: { color: colors.card, fontSize: 11, fontWeight: "900" },
   pressed: { opacity: 0.66 },
 });
