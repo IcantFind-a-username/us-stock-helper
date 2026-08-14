@@ -13,6 +13,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import unicodedata
 from dataclasses import dataclass
@@ -84,20 +85,37 @@ class ProcessRunner:
     run: Callable[..., subprocess.CompletedProcess[str]]
 
 
-_LIBC = ctypes.CDLL(None, use_errno=True)
-_LIBC.acl_get_fd.argtypes = [ctypes.c_int]
-_LIBC.acl_get_fd.restype = ctypes.c_void_p
-_LIBC.acl_init.argtypes = [ctypes.c_int]
-_LIBC.acl_init.restype = ctypes.c_void_p
-_LIBC.acl_set_fd.argtypes = [ctypes.c_int, ctypes.c_void_p]
-_LIBC.acl_set_fd.restype = ctypes.c_int
-_LIBC.acl_free.argtypes = [ctypes.c_void_p]
-_LIBC.acl_free.restype = ctypes.c_int
+def _load_acl_library() -> ctypes.CDLL | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+        library.acl_get_fd.argtypes = [ctypes.c_int]
+        library.acl_get_fd.restype = ctypes.c_void_p
+        library.acl_init.argtypes = [ctypes.c_int]
+        library.acl_init.restype = ctypes.c_void_p
+        library.acl_set_fd.argtypes = [ctypes.c_int, ctypes.c_void_p]
+        library.acl_set_fd.restype = ctypes.c_int
+        library.acl_free.argtypes = [ctypes.c_void_p]
+        library.acl_free.restype = ctypes.c_int
+    except (AttributeError, OSError):
+        return None
+    return library
+
+
+_LIBC = _load_acl_library()
+
+
+def _require_acl_library() -> ctypes.CDLL:
+    if _LIBC is None:
+        raise OSError(errno.ENOTSUP, "extended ACL operations are unavailable")
+    return _LIBC
 
 
 def _has_extended_acl(descriptor: int) -> bool:
+    library = _require_acl_library()
     ctypes.set_errno(0)
-    acl = _LIBC.acl_get_fd(descriptor)
+    acl = library.acl_get_fd(descriptor)
     if not acl:
         error_number = ctypes.get_errno()
         if error_number == errno.ENOENT:
@@ -106,23 +124,24 @@ def _has_extended_acl(descriptor: int) -> bool:
     try:
         return True
     finally:
-        if _LIBC.acl_free(acl) != 0:
+        if library.acl_free(acl) != 0:
             error_number = ctypes.get_errno()
             raise OSError(error_number, "extended ACL could not be released")
 
 
 def _clear_extended_acl(descriptor: int) -> None:
+    library = _require_acl_library()
     ctypes.set_errno(0)
-    empty_acl = _LIBC.acl_init(1)
+    empty_acl = library.acl_init(1)
     if not empty_acl:
         error_number = ctypes.get_errno()
         raise OSError(error_number, "empty ACL could not be allocated")
     try:
-        if _LIBC.acl_set_fd(descriptor, empty_acl) != 0:
+        if library.acl_set_fd(descriptor, empty_acl) != 0:
             error_number = ctypes.get_errno()
             raise OSError(error_number, "extended ACL could not be cleared")
     finally:
-        if _LIBC.acl_free(empty_acl) != 0:
+        if library.acl_free(empty_acl) != 0:
             error_number = ctypes.get_errno()
             raise OSError(error_number, "empty ACL could not be released")
 
@@ -676,8 +695,8 @@ def _repair_private_descriptor(
         raise RuntimeConfigurationError(
             f"private {expected} mode must be {rendered_mode}"
         )
-    filesystem.clear_extended_acl(descriptor)
     filesystem.fchmod(descriptor, mode)
+    filesystem.clear_extended_acl(descriptor)
     _validate_private_descriptor(
         descriptor,
         expected=expected,

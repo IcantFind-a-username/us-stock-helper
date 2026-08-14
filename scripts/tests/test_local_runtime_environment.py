@@ -227,6 +227,95 @@ raise SystemExit(2)
         with self.assertRaises(support.RuntimeConfigurationError):
             support.parse_runtime_environment(self.environment_path)
 
+    def test_acl_boundary_imports_without_platform_support_and_fails_closed(
+        self,
+    ) -> None:
+        repository = Path(__file__).resolve().parents[2]
+        module_path = repository / "scripts/local_runtime_support.py"
+        script = r'''
+import ctypes
+import dataclasses
+import errno
+import importlib.util
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+scenario = sys.argv[2]
+if scenario == "non-darwin":
+    sys.platform = "linux"
+
+    def forbidden_cdll(*args, **kwargs):
+        raise AssertionError("libc ACL loading must not run off macOS")
+
+    ctypes.CDLL = forbidden_cdll
+else:
+    sys.platform = "darwin"
+
+    class LibcWithoutAclSymbols:
+        def __getattr__(self, name):
+            raise AttributeError(name)
+
+    ctypes.CDLL = lambda *args, **kwargs: LibcWithoutAclSymbols()
+
+spec = importlib.util.spec_from_file_location("isolated_runtime_support", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+for operation in (
+    module.DEFAULT_FILE_SYSTEM.has_extended_acl,
+    module.DEFAULT_FILE_SYSTEM.clear_extended_acl,
+):
+    try:
+        operation(0)
+    except OSError as error:
+        if error.errno != errno.ENOTSUP:
+            raise
+    else:
+        raise AssertionError("unsupported ACL operation did not fail closed")
+
+with tempfile.TemporaryDirectory() as temporary:
+    private_parent = Path(temporary) / "private"
+    private_parent.mkdir(mode=0o700)
+    environment_path = private_parent / "runtime.env"
+    environment_path.write_bytes(b"ANTHROPIC_API_KEY=synthetic-value\n")
+    environment_path.chmod(0o600)
+    try:
+        module.parse_runtime_environment(environment_path)
+    except module.RuntimeConfigurationError as error:
+        if "synthetic-value" in str(error):
+            raise AssertionError("unsupported ACL error exposed configuration data")
+    else:
+        raise AssertionError("default unsupported ACL boundary did not fail closed")
+    injected = dataclasses.replace(
+        module.DEFAULT_FILE_SYSTEM,
+        has_extended_acl=lambda descriptor: False,
+        clear_extended_acl=lambda descriptor: None,
+    )
+    parsed = module.parse_runtime_environment(environment_path, filesystem=injected)
+    if parsed != {"ANTHROPIC_API_KEY": "synthetic-value"}:
+        raise AssertionError("injected ACL filesystem boundary was not honored")
+'''
+
+        for scenario in ("non-darwin", "missing-symbols"):
+            with self.subTest(scenario=scenario):
+                result = subprocess.run(
+                    [sys.executable, "-c", script, str(module_path), scenario],
+                    cwd=repository,
+                    env={"PYTHONPATH": str(repository)},
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    result.stderr.decode("utf-8", errors="replace"),
+                )
+                self.assertEqual(result.stdout, b"")
+                self.assertEqual(result.stderr, b"")
+
     def test_parser_rejects_invalid_assignment_syntax_without_leaking_values(
         self,
     ) -> None:
@@ -482,6 +571,74 @@ raise SystemExit(2)
         self.assert_extended_acl(runtime_directory, False)
         self.assert_extended_acl(log_file, False)
 
+    def test_private_file_restricts_mode_before_clearing_acl(self) -> None:
+        support = support_module()
+        log_file = self.private_parent / "runtime.log"
+        log_file.write_bytes(b"existing")
+        log_file.chmod(0o644)
+        real_fstat = support.DEFAULT_FILE_SYSTEM.fstat
+        events: list[str] = []
+
+        def tracked_fchmod(descriptor: int, mode: int) -> None:
+            metadata = real_fstat(descriptor)
+            if stat.S_ISREG(metadata.st_mode):
+                events.append("fchmod")
+            os.fchmod(descriptor, mode)
+
+        def tracked_acl_clear(descriptor: int) -> None:
+            metadata = real_fstat(descriptor)
+            if stat.S_ISREG(metadata.st_mode):
+                events.append("clear_acl")
+            support.DEFAULT_FILE_SYSTEM.clear_extended_acl(descriptor)
+
+        filesystem = dataclasses.replace(
+            support.DEFAULT_FILE_SYSTEM,
+            fchmod=tracked_fchmod,
+            clear_extended_acl=tracked_acl_clear,
+        )
+
+        support.ensure_private_file(log_file, filesystem=filesystem)
+
+        self.assertEqual(events, ["fchmod", "clear_acl"])
+
+    def test_private_file_does_not_clear_acl_when_restrictive_chmod_fails(
+        self,
+    ) -> None:
+        support = support_module()
+        log_file = self.private_parent / "runtime.log"
+        log_file.write_bytes(b"existing")
+        log_file.chmod(0o644)
+        real_fstat = support.DEFAULT_FILE_SYSTEM.fstat
+        events: list[str] = []
+        deny_acl_present = True
+
+        def failing_fchmod(descriptor: int, mode: int) -> None:
+            metadata = real_fstat(descriptor)
+            if stat.S_ISREG(metadata.st_mode):
+                events.append("fchmod")
+                raise OSError("synthetic chmod failure")
+            os.fchmod(descriptor, mode)
+
+        def tracked_acl_clear(descriptor: int) -> None:
+            nonlocal deny_acl_present
+            metadata = real_fstat(descriptor)
+            if stat.S_ISREG(metadata.st_mode):
+                events.append("clear_acl")
+                deny_acl_present = False
+            support.DEFAULT_FILE_SYSTEM.clear_extended_acl(descriptor)
+
+        filesystem = dataclasses.replace(
+            support.DEFAULT_FILE_SYSTEM,
+            fchmod=failing_fchmod,
+            clear_extended_acl=tracked_acl_clear,
+        )
+
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.ensure_private_file(log_file, filesystem=filesystem)
+
+        self.assertEqual(events, ["fchmod"])
+        self.assertTrue(deny_acl_present)
+
     def test_private_path_helpers_refuse_foreign_owned_managed_objects(self) -> None:
         support = support_module()
         runtime_directory = self.root / "runtime"
@@ -536,29 +693,47 @@ raise SystemExit(2)
         destination = inherited_parent / "secret.env"
         marker = b"synthetic-secret-bytes"
         real_fstat = support.DEFAULT_FILE_SYSTEM.fstat
-        cleared_regular_inodes: set[int] = set()
+        events: list[str] = []
 
-        def record_acl_clear(descriptor: int) -> None:
-            support.DEFAULT_FILE_SYSTEM.clear_extended_acl(descriptor)
+        def record_fchmod(descriptor: int, mode: int) -> None:
             metadata = real_fstat(descriptor)
             if stat.S_ISREG(metadata.st_mode):
-                cleared_regular_inodes.add(metadata.st_ino)
+                events.append("fchmod")
+            os.fchmod(descriptor, mode)
+
+        def record_acl_clear(descriptor: int) -> None:
+            metadata = real_fstat(descriptor)
+            if stat.S_ISREG(metadata.st_mode):
+                events.append("clear_acl")
+            support.DEFAULT_FILE_SYSTEM.clear_extended_acl(descriptor)
+
+        def record_acl_check(descriptor: int) -> bool:
+            metadata = real_fstat(descriptor)
+            if stat.S_ISREG(metadata.st_mode):
+                events.append("check_acl")
+            return support.DEFAULT_FILE_SYSTEM.has_extended_acl(descriptor)
 
         def guarded_write(descriptor: int, content: bytes) -> int:
-            metadata = real_fstat(descriptor)
-            if metadata.st_ino not in cleared_regular_inodes:
+            if events != ["fchmod", "clear_acl", "check_acl"]:
                 raise AssertionError("secret bytes were written before ACL removal")
+            events.append("write")
             return os.write(descriptor, content)
 
         filesystem = dataclasses.replace(
             support.DEFAULT_FILE_SYSTEM,
+            fchmod=record_fchmod,
             clear_extended_acl=record_acl_clear,
+            has_extended_acl=record_acl_check,
             write_fd=guarded_write,
         )
 
         support.atomic_write_private_file(destination, marker, filesystem=filesystem)
 
         self.assertEqual(destination.read_bytes(), marker)
+        self.assertEqual(
+            events,
+            ["fchmod", "clear_acl", "check_acl", "write", "check_acl"],
+        )
         self.assert_extended_acl(destination, False)
 
     def test_private_path_helpers_refuse_symlinks_and_non_private_parents(self) -> None:
