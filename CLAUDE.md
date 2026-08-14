@@ -14,7 +14,7 @@
 ## 测试命令（已验证）
 
 - 单个服务：`python3 -m pip install -q -e services/<name> && python3 -m pytest services/<name>/tests -q`
-- 只跑与改动相关的测试（优先用这个）：`bash scripts/test_changed.sh`
+- 只跑与改动相关的测试（优先用这个）：`bash scripts/test_changed.sh`——屏幕只显示摘要/失败末尾，完整日志在 `test_changed.log`，不要把完整日志读进上下文
 - 移动端：`cd apps/mobile && npm test`（需先 `npm ci`）；类型检查 `npm run typecheck`
 - CI（`.github/workflows/ci.yml`）以 8 个服务全绿为合并门禁；`deploy/`、`scripts/` 的 macOS 专属套件不在 Linux CI 中跑
 
@@ -27,7 +27,7 @@
 
 ## 迭代规则
 
-1. 每轮只做 `docs/backlog.md` 中的一项，改动保持小而完整。大功能不许在单会话里一口气做完：先拆成可单轮完成的 backlog 条目，再逐轮执行（执行类迭代用 Sonnet 档模型即可，测试门禁兜底质量）
+1. 每轮只做 `docs/backlog.md` 中的一项，改动保持小而完整。大功能不许在单会话里一口气做完：先拆成可单轮完成的 backlog 条目（Claude Code 用 `/plan-feature`），再逐轮执行（执行类迭代用 Sonnet 档模型即可，测试门禁兜底质量）
 2. 修 bug 先写复现它的失败测试，再改代码（回归测试就是记忆）
 3. 结束前必须跑 `bash scripts/test_changed.sh` 且全绿
 4. 完成后更新 backlog（勾掉完成项、追加新发现的问题）
