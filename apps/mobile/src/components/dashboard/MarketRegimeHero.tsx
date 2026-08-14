@@ -69,9 +69,9 @@ const styles = StyleSheet.create({
   },
   topRow: { alignItems: "flex-start", flexDirection: "row", gap: spacing.sm },
   copy: { flex: 1, minWidth: 0 },
-  eyebrow: { color: colors.navyEyebrow, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
-  conclusion: { color: "#EFF6FF", fontSize: 20, fontWeight: "800", marginTop: 4 },
-  rationale: { color: colors.navyMuted, fontSize: 11, lineHeight: 16, marginTop: 3 },
+  eyebrow: { color: colors.navyEyebrow, fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
+  conclusion: { color: "#EFF6FF", fontSize: 22, fontWeight: "800", marginTop: 4 },
+  rationale: { color: colors.navyMuted, fontSize: 12, lineHeight: 18, marginTop: 3 },
   playbook: {
     backgroundColor: "rgba(53, 113, 194, 0.18)",
     borderColor: "rgba(79, 155, 255, 0.28)",
@@ -82,8 +82,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 9,
   },
-  playbookLabel: { color: colors.blueBright, fontSize: 10, fontWeight: "800" },
-  advice: { color: "#D7E4F5", flex: 1, fontSize: 10, lineHeight: 15 },
+  playbookLabel: { color: colors.blueBright, fontSize: 11, fontWeight: "800" },
+  advice: { color: "#D7E4F5", flex: 1, fontSize: 12, lineHeight: 18 },
   driverRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   driverChip: {
     backgroundColor: "rgba(255,255,255,0.07)",
@@ -91,7 +91,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 4,
   },
-  driverText: { color: "#D7E4F5", fontSize: 8, fontWeight: "700" },
+  driverText: { color: "#D7E4F5", fontSize: 11, fontWeight: "700" },
   detailAction: { alignSelf: "flex-start", justifyContent: "center", minHeight: 44, paddingRight: spacing.md },
-  detailActionText: { color: colors.blueBright, fontSize: 11, fontWeight: "800" },
+  detailActionText: { color: colors.blueBright, fontSize: 12, fontWeight: "800" },
 });

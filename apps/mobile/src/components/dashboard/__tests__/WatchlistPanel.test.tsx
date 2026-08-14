@@ -110,6 +110,22 @@ it("offers no expander when nothing is hidden", async () => {
   expect(view.queryByRole("button", { name: /查看全部/ })).toBeNull();
 });
 
+it("uses readable type for every compact quote column", async () => {
+  const view = await renderPanel({ quotes: [quote(0)] });
+
+  const expectations = [
+    [view.getByTestId("watchlist-count"), 11],
+    [view.getByText("SYM00"), 14],
+    [view.getByText("实时只读"), 11],
+    [view.getByText("$100.00"), 13],
+    [view.getByText("+1.25%"), 12],
+    [view.getByText("读取中"), 11],
+  ] as const;
+  expectations.forEach(([node, floor]) => {
+    expect(StyleSheet.flatten(node.props.style).fontSize).toBeGreaterThanOrEqual(floor);
+  });
+});
+
 it("routes every single row to its own symbol", async () => {
   const opened: string[] = [];
   const view = await renderPanel({

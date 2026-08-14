@@ -195,7 +195,7 @@ function scoreTone(value: number) {
 }
 
 const styles = StyleSheet.create({
-  count: { color: colors.muted, fontSize: 9, fontWeight: "700", marginBottom: spacing.xs },
+  count: { color: colors.muted, fontSize: 11, fontWeight: "700", marginBottom: spacing.xs },
   list: { gap: 6 },
   row: {
     alignItems: "center",
@@ -205,24 +205,24 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: spacing.sm,
-    minHeight: 48,
+    minHeight: 56,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
   identity: { flex: 1, gap: 2, minWidth: 0 },
-  symbol: { color: colors.ink, fontSize: 12, fontWeight: "800" },
-  pulse: { color: colors.muted, fontSize: 9 },
+  symbol: { color: colors.ink, fontSize: 14, fontWeight: "800" },
+  pulse: { color: colors.muted, fontSize: 11 },
   quoteColumn: { alignItems: "flex-end", gap: 2 },
   price: {
     color: colors.ink,
-    fontSize: 11,
+    fontSize: 13,
     fontVariant: ["tabular-nums"],
     fontWeight: "700",
   },
-  change: { fontSize: 10, fontVariant: ["tabular-nums"], fontWeight: "800" },
-  scoreColumn: { alignItems: "flex-end", gap: 2, minWidth: 74 },
-  scoreValue: { fontSize: 15, fontVariant: ["tabular-nums"], fontWeight: "900" },
-  scoreMeta: { color: colors.muted, fontSize: 8, fontWeight: "700" },
+  change: { fontSize: 12, fontVariant: ["tabular-nums"], fontWeight: "800" },
+  scoreColumn: { alignItems: "flex-end", gap: 2, minWidth: 92 },
+  scoreValue: { fontSize: 16, fontVariant: ["tabular-nums"], fontWeight: "900" },
+  scoreMeta: { color: colors.muted, fontSize: 11, fontWeight: "700" },
   scoreStrong: { color: colors.green },
   scoreMixed: { color: colors.amber },
   scoreWeak: { color: colors.red },
@@ -239,5 +239,5 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     minHeight: 44,
   },
-  expandText: { color: colors.blue, fontSize: 11, fontWeight: "800" },
+  expandText: { color: colors.blue, fontSize: 12, fontWeight: "800" },
 });

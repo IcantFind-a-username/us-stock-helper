@@ -80,9 +80,9 @@ export function DashboardHeader({
 const styles = StyleSheet.create({
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   copy: { flex: 1, minWidth: 0 },
-  session: { color: colors.muted, fontSize: 10, fontWeight: "700" },
-  greeting: { color: colors.ink, fontSize: 18, fontWeight: "800", marginTop: spacing.xxs },
-  demoStatus: { color: colors.muted, fontSize: 10, marginTop: spacing.xxs },
+  session: { color: colors.muted, fontSize: 11, fontWeight: "700" },
+  greeting: { color: colors.ink, fontSize: 22, fontWeight: "800", marginTop: spacing.xxs },
+  demoStatus: { color: colors.muted, fontSize: 11, marginTop: spacing.xxs },
   actions: { flexDirection: "row", gap: spacing.xs, marginLeft: spacing.sm },
   iconButton: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 44 },
   iconCircle: { alignItems: "center", backgroundColor: colors.card, borderRadius: radius.round, height: 32, justifyContent: "center", width: 32 },

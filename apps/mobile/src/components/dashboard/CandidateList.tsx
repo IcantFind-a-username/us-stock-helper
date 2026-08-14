@@ -89,10 +89,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 34,
   },
-  logoText: { color: colors.blue, fontSize: 11, fontWeight: "800" },
+  logoText: { color: colors.blue, fontSize: 12, fontWeight: "800" },
   copy: { flex: 1, minWidth: 0 },
-  symbol: { color: colors.ink, fontSize: 13, fontWeight: "800" },
-  catalyst: { color: colors.muted, fontSize: 10, marginTop: spacing.xxs },
+  symbol: { color: colors.ink, fontSize: 14, fontWeight: "800" },
+  catalyst: { color: colors.muted, fontSize: 11, marginTop: spacing.xxs },
   rankAction: {
     alignItems: "flex-end",
     justifyContent: "center",
@@ -100,6 +100,6 @@ const styles = StyleSheet.create({
     minWidth: 58,
     paddingLeft: spacing.sm,
   },
-  rank: { color: colors.ink, fontSize: 16, fontVariant: ["tabular-nums"], fontWeight: "800" },
-  evidenceCount: { color: colors.muted, fontSize: 9, marginTop: spacing.xxs },
+  rank: { color: colors.ink, fontSize: 18, fontVariant: ["tabular-nums"], fontWeight: "800" },
+  evidenceCount: { color: colors.muted, fontSize: 11, marginTop: spacing.xxs },
 });

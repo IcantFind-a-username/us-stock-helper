@@ -153,6 +153,27 @@ it("renders the priority alert and watchlist as compact dashboard surfaces", asy
   expect(StyleSheet.flatten(sectionAction.props.style).minWidth).toBeGreaterThanOrEqual(44);
 });
 
+it("keeps dashboard headings and metadata readable at native scale", async () => {
+  const view = await renderDashboard();
+
+  await waitFor(() => expect(view.getByText("谨慎偏多")).toBeTruthy());
+  const atLeast = (text: string | RegExp, floor: number) => {
+    const node = view.getByText(text);
+    expect(StyleSheet.flatten(node.props.style).fontSize).toBeGreaterThanOrEqual(floor);
+  };
+
+  atLeast(/美股盘中 · 演示状态/, 11);
+  atLeast("演示数据 · 非实时行情", 11);
+  atLeast("我的关注", 14);
+  atLeast("需要关注", 14);
+  atLeast("潜力候选", 14);
+  atLeast("接近量价确认区", 16);
+  atLeast("等待量价确认", 11);
+  atLeast("基础贡献", 11);
+  atLeast("盘中量价确认", 11);
+  atLeast("证据 5", 11);
+});
+
 it("routes alert, quotes, and both long/short candidates while disclosing their evidence", async () => {
   const view = await renderDashboard();
 
