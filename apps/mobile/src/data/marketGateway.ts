@@ -355,8 +355,11 @@ function requireSnapshotMetadata(
     requireString(record, "availableAt"),
     `${label}.availableAt`,
   );
-  if (asOf.getTime() > cutoff.getTime() || availableAt.getTime() > cutoff.getTime()) {
-    throw new GatewayValidationError(`${label} is after snapshot decision cutoff`);
+  if (
+    asOf.getTime() > availableAt.getTime() ||
+    availableAt.getTime() > cutoff.getTime()
+  ) {
+    throw new GatewayValidationError(`${label} violates point-in-time ordering`);
   }
   return {
     source,
@@ -866,15 +869,28 @@ function decodeSnapshotV3SectionEnvelope(
   const quality = qualityStatus as SnapshotQuality;
   const emptyArray = Array.isArray(data) && data.length === 0;
 
-  if (availability === "unavailable") {
+  if (availability === "unavailable" || availability === "stale") {
     if (
       quality !== "invalid" ||
-      (data !== null && !emptyArray) ||
+      (availability === "stale"
+        ? data !== null
+        : data !== null && !emptyArray) ||
       errorCode === null ||
       reason === null
     ) {
       throw new GatewayValidationError(
-        `${label} unavailable status contradicts its envelope`,
+        `${label} error status contradicts its envelope`,
+      );
+    }
+    if (
+      availability === "stale" &&
+      (source !== null ||
+        asOfValue !== null ||
+        availableAtValue !== null ||
+        receivedAtValue !== null)
+    ) {
+      throw new GatewayValidationError(
+        `${label} stale status contradicts its envelope`,
       );
     }
   } else if (
@@ -909,7 +925,10 @@ function decodeSnapshotV3SectionEnvelope(
 }
 
 function sectionCarriesData(section: SnapshotSection<unknown>) {
-  return section.availabilityStatus !== "unavailable";
+  return (
+    section.availabilityStatus === "live" ||
+    section.availabilityStatus === "delayed"
+  );
 }
 
 function sectionIsValidated(section: SnapshotSection<unknown>) {
@@ -1545,7 +1564,10 @@ function decodeV3CandlesSection(
       throw new GatewayValidationError("candles section row source must be moomoo");
     }
     if (
+      metadata.asOf !== timestamp.toISOString() ||
       timestamp.getTime() > new Date(metadata.availableAt).getTime() ||
+      (section.availableAt !== null &&
+        Date.parse(metadata.availableAt) > Date.parse(section.availableAt)) ||
       timestamp.getTime() <= previousTimestamp
     ) {
       throw new GatewayValidationError("candles section rows violate ordering");
@@ -1557,7 +1579,9 @@ function decodeV3CandlesSection(
     );
     if (
       receivedAt.getTime() < new Date(metadata.availableAt).getTime() ||
-      receivedAt.getTime() > cutoff.getTime()
+      receivedAt.getTime() > cutoff.getTime() ||
+      (section.receivedAt !== null &&
+        receivedAt.getTime() > Date.parse(section.receivedAt))
     ) {
       throw new GatewayValidationError("candles section receipt time is invalid");
     }
@@ -1599,6 +1623,24 @@ function decodeV3CandlesSection(
       volume,
     } satisfies Candle;
   });
+  if (candles.length > 0) {
+    const latestCandle = candles.at(-1)!;
+    const latestAvailableAt = candles.reduce(
+      (latest, candle) =>
+        Date.parse(candle.availableAt) > Date.parse(latest)
+          ? candle.availableAt
+          : latest,
+      candles[0]!.availableAt,
+    );
+    if (
+      section.asOf !== latestCandle.timestamp ||
+      section.availableAt !== latestAvailableAt
+    ) {
+      throw new GatewayValidationError(
+        "candles section metadata contradicts its rows",
+      );
+    }
+  }
   return withSectionData(section, { candles, priceAdjustment });
 }
 
@@ -1746,6 +1788,23 @@ function decodeV3TechnicalSection(
     ),
     qualityStatus: magicStatus,
   };
+  for (const [label, metadata] of [
+    ["ma5", ma5],
+    ["rsi", rsi],
+    ["macd", macd],
+    ["volatility", volatility],
+    ["magicNine", magicNine],
+  ] as const) {
+    if (
+      metadata.source !== section.source ||
+      metadata.asOf !== section.asOf ||
+      metadata.availableAt !== section.availableAt
+    ) {
+      throw new GatewayValidationError(
+        `technical ${label} provenance contradicts its section`,
+      );
+    }
+  }
   return withSectionData(section, {
     indicators: { ma5, rsi, macd, volatility },
     magicNine,
@@ -1788,6 +1847,10 @@ function decodeV3CurrentSessionFlowSection(
       timestamp.getTime() <= previousTimestamp ||
       timestamp.getTime() > availableAt.getTime() ||
       availableAt.getTime() > cutoff.getTime() ||
+      (section.asOf !== null &&
+        timestamp.getTime() > Date.parse(section.asOf)) ||
+      (section.availableAt !== null &&
+        availableAt.getTime() > Date.parse(section.availableAt)) ||
       (section.receivedAt !== null &&
         availableAt.getTime() > Date.parse(section.receivedAt))
     ) {
@@ -1820,6 +1883,21 @@ function decodeV3CurrentSessionFlowSection(
       institutionalIdentity: false,
     } satisfies NormalizedCapitalFlowPoint;
   });
+  const latestAvailableAt = data.reduce(
+    (latest, row) =>
+      Date.parse(row.availableAt) > Date.parse(latest)
+        ? row.availableAt
+        : latest,
+    data[0]!.availableAt,
+  );
+  if (
+    data.at(-1)!.timestamp !== section.asOf ||
+    latestAvailableAt !== section.availableAt
+  ) {
+    throw new GatewayValidationError(
+      "currentSessionFlow section metadata contradicts its rows",
+    );
+  }
   return withSectionData(section, data);
 }
 
@@ -1854,6 +1932,12 @@ function decodeV3HoldingsSection(
   ) {
     throw new GatewayValidationError("validated holdings cannot carry anomalies");
   }
+  const aggregateAnomalyCount = section.anomalies.filter(
+    (anomaly) =>
+      anomaly.code === "AGGREGATE_PERCENT_ABOVE_100" &&
+      anomaly.reason === aggregateHoldingsWarning,
+  ).length;
+  let aggregateRowCount = 0;
   let previousAvailableAt = Number.POSITIVE_INFINITY;
   const data = section.data.map((item, index) => {
     if (!isRecord(item)) {
@@ -1903,19 +1987,16 @@ function decodeV3HoldingsSection(
     ) {
       throw new GatewayValidationError(`holdings row ${index} has invalid values`);
     }
-    if (
-      holdingPercent > 100 &&
-      (section.qualityStatus !== "anomalous" ||
-        !section.warnings.includes(aggregateHoldingsWarning) ||
-        !section.anomalies.some(
-          (anomaly) =>
-            anomaly.rowIndex === index &&
-            anomaly.code === "AGGREGATE_PERCENT_ABOVE_100",
-        ))
-    ) {
-      throw new GatewayValidationError(
-        `holdings row ${index} aggregate percentage is not explained`,
-      );
+    if (holdingPercent > 100) {
+      aggregateRowCount += 1;
+      if (
+        section.qualityStatus !== "anomalous" ||
+        !section.warnings.includes(aggregateHoldingsWarning)
+      ) {
+        throw new GatewayValidationError(
+          `holdings row ${index} aggregate percentage is not explained`,
+        );
+      }
     }
     return {
       period: requireString(item, "period"),
@@ -1934,6 +2015,19 @@ function decodeV3HoldingsSection(
       qualityStatus: "delayed",
     } satisfies DelayedInstitutionalHolding;
   });
+  if (aggregateAnomalyCount !== aggregateRowCount) {
+    throw new GatewayValidationError(
+      "holdings aggregate anomalies do not explain the provider rows",
+    );
+  }
+  if (
+    data[0]!.reportedAt !== section.asOf ||
+    data[0]!.availableAt !== section.availableAt
+  ) {
+    throw new GatewayValidationError(
+      "holdings section metadata contradicts its first provider row",
+    );
+  }
   return withSectionData(section, data);
 }
 
@@ -1962,7 +2056,12 @@ export function decodeStockSnapshotV3Envelope(
   if (value.schemaVersion !== "3") {
     throw new GatewayValidationError("unsupported snapshot schemaVersion");
   }
-  const symbol = normalizeUsSymbol(requireString(value, "symbol"));
+  const symbol = requireString(value, "symbol");
+  if (normalizeUsSymbol(symbol) !== symbol) {
+    throw new GatewayValidationError(
+      "snapshot symbol must be the canonical wire echo",
+    );
+  }
   const interval = requireString(value, "interval");
   const requestedCount = requireFiniteNumber(value, "count");
   if (
@@ -2049,9 +2148,11 @@ export function decodeStockSnapshotV3Envelope(
     sectionIsValidated(candles) &&
     candles.data !== null &&
     candles.data.candles.length > 0;
-  const allRequestedValidated = requestedSnapshotV3Sections.every((name) =>
-    sectionIsValidated(sections[name]),
-  );
+  const allRequestedValidated =
+    candlesUsable &&
+    requestedSnapshotV3Sections.every((name) =>
+      sectionIsValidated(sections[name]),
+    );
   const derivedStatus =
     !quoteUsable && !candlesUsable
       ? "unavailable"

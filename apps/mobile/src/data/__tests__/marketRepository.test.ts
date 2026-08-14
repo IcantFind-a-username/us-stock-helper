@@ -179,6 +179,68 @@ it("preserves an unknown snapshot major as client-update-required", async () => 
   });
 });
 
+it("preserves a producer stale v3 snapshot as a retryable repository error", async () => {
+  const payload = stockSnapshotV3Fixture();
+  payload.status = "unavailable";
+  for (const [name, reason] of [
+    ["quote", "实时报价不可用"],
+    ["candles", "已完成蜡烛图数据不可用"],
+  ] as const) {
+    Object.assign(payload.sections[name], {
+      availabilityStatus: "stale",
+      qualityStatus: "invalid",
+      source: null,
+      asOf: null,
+      availableAt: null,
+      receivedAt: null,
+      data: null,
+      errorCode: "STALE_DATA",
+      reason,
+      warnings: [],
+      anomalies: [],
+      methodVersion: "unavailable-v1",
+    });
+  }
+  Object.assign(payload.sections.technical, {
+    availabilityStatus: "unavailable",
+    qualityStatus: "invalid",
+    source: null,
+    asOf: null,
+    availableAt: null,
+    receivedAt: null,
+    data: null,
+    errorCode: "CANDLES_UNAVAILABLE",
+    reason: "技术指标需要已验证的蜡烛图数据",
+    warnings: [],
+    anomalies: [],
+    methodVersion: "unavailable-v1",
+  });
+  const originalFetch = globalThis.fetch;
+  const fetchImpl = jest.fn(async () => jsonResponse(payload));
+  globalThis.fetch = fetchImpl as unknown as typeof fetch;
+  try {
+    const repository = createGatewayMarketRepository({
+      apiUrl: "http://127.0.0.1:8765",
+    });
+
+    const error = await repository
+      .getStockSnapshot(
+        { symbol: "NVDA", interval: "5m", count: 200 },
+        { forceRefresh: true },
+      )
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      name: "MarketDataError",
+      category: "stale",
+    });
+    expect(isRetryableMarketError(error as MarketDataError)).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 /**
  * Retrying is a claim that waiting will help. Making it about a missing SDK or
  * a revoked pairing keeps the screen looking busy while it is actually waiting

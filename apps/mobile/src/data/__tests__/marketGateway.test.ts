@@ -19,6 +19,8 @@ import {
 import { stockSnapshotV3Fixture } from "./stockSnapshotV3.fixture";
 
 const now = new Date("2026-07-25T16:00:00.000Z");
+const aggregateHoldingsReason =
+  "供应商返回的聚合持仓比例超过 100%，不能按唯一股份占比直接解释";
 const fallback: WatchlistQuote[] = [
   {
     symbol: "NVDA",
@@ -584,6 +586,72 @@ describe("schema-v3 stock snapshot validation", () => {
     });
   }
 
+  function makeSectionStale(
+    payload: ReturnType<typeof stockSnapshotV3Fixture>,
+    name: "quote" | "candles" | "currentSessionFlow" | "holdings",
+  ) {
+    const reason = {
+      quote: "实时报价不可用",
+      candles: "已完成蜡烛图数据不可用",
+      currentSessionFlow: "当前交易时段资金流数据不可用",
+      holdings: "机构持仓数据不可用",
+    }[name];
+    Object.assign(payload.sections[name], {
+      availabilityStatus: "stale",
+      qualityStatus: "invalid",
+      source: null,
+      asOf: null,
+      availableAt: null,
+      receivedAt: null,
+      data: null,
+      errorCode:
+        name === "currentSessionFlow"
+          ? "CURRENT_SESSION_FLOW_UNAVAILABLE"
+          : "STALE_DATA",
+      reason,
+      warnings: [],
+      anomalies: [],
+      methodVersion: "unavailable-v1",
+    });
+  }
+
+  function makeHoldingsValidated(
+    payload: ReturnType<typeof stockSnapshotV3Fixture>,
+  ) {
+    payload.sections.holdings.qualityStatus = "validated";
+    payload.sections.holdings.data[0]!.holdingPercent = 34.5937;
+    payload.sections.holdings.warnings = [];
+    payload.sections.holdings.anomalies = [];
+  }
+
+  function makeEmptyCandlesStructurallyValid(
+    payload: ReturnType<typeof stockSnapshotV3Fixture>,
+  ) {
+    payload.sections.candles.data.candles = [];
+    payload.sections.candles.asOf = payload.sections.candles.receivedAt;
+    payload.sections.candles.availableAt = payload.sections.candles.receivedAt;
+    payload.sections.technical.asOf = payload.sections.candles.receivedAt;
+    for (const indicator of [
+      payload.sections.technical.data.indicators.ma5,
+      payload.sections.technical.data.indicators.rsi,
+    ]) {
+      indicator.asOf = payload.sections.technical.asOf;
+      indicator.series = [];
+    }
+    payload.sections.technical.data.indicators.macd.asOf =
+      payload.sections.technical.asOf;
+    payload.sections.technical.data.indicators.macd.series = {
+      line: [],
+      signal: [],
+      histogram: [],
+    };
+    payload.sections.technical.data.indicators.volatility.asOf =
+      payload.sections.technical.asOf;
+    payload.sections.technical.data.magicNine.asOf =
+      payload.sections.technical.asOf;
+    payload.sections.technical.data.magicNine.series = [];
+  }
+
   it("decodes anomalous aggregate holdings without pretending they are unique ownership", () => {
     const snapshot = decodeStockSnapshotV3Envelope(stockSnapshotV3Fixture(), {
       now,
@@ -696,12 +764,72 @@ describe("schema-v3 stock snapshot validation", () => {
     expect(snapshot.sections.holdings.errorCode).toBe("MALFORMED_PROVIDER_DATA");
   });
 
+  it.each(["currentSessionFlow", "holdings"] as const)(
+    "keeps usable price when the optional %s section has a producer stale envelope",
+    (name) => {
+      const payload = stockSnapshotV3Fixture();
+      makeSectionStale(payload, name);
+
+      const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+      expect(snapshot.snapshotStatus).toBe("partial");
+      expect(snapshot.quote?.price).toBe(142.25);
+      expect(snapshot.candles).toHaveLength(2);
+      expect(snapshot.sections[name]).toMatchObject({
+        availabilityStatus: "stale",
+        qualityStatus: "invalid",
+        data: null,
+      });
+    },
+  );
+
   it.each([
     ["a negative aggregate", -1],
     ["a non-finite aggregate", Number.POSITIVE_INFINITY],
   ])("rejects holdings with %s", (_label, holdingPercent) => {
     const payload = stockSnapshotV3Fixture();
     payload.sections.holdings.data[0]!.holdingPercent = holdingPercent;
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow();
+  });
+
+  it("uses original provider row indexes for aggregate holdings anomalies", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.sections.holdings.anomalies = [
+      {
+        rowIndex: 0,
+        code: "MISSING_REQUIRED_FIELD",
+        reason: "机构持仓记录缺少必填字段",
+      },
+      {
+        rowIndex: 1,
+        code: "AGGREGATE_PERCENT_ABOVE_100",
+        reason: aggregateHoldingsReason,
+      },
+    ];
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(snapshot.institutionalHoldings).toHaveLength(1);
+    expect(snapshot.institutionalHoldings[0]?.holdingPercent).toBe(345.937);
+  });
+
+  it.each([
+    ["wrong code", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.holdings.anomalies[0]!.code = "INVALID_NUMERIC_VALUE";
+    }],
+    ["missing code", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      delete (payload.sections.holdings.anomalies[0] as { code?: string }).code;
+    }],
+    ["wrong reason", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.holdings.anomalies[0]!.reason = "聚合比例说明不匹配";
+    }],
+    ["missing reason", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      delete (payload.sections.holdings.anomalies[0] as { reason?: string }).reason;
+    }],
+  ])("rejects aggregate holdings with a %s", (_label, mutate) => {
+    const payload = stockSnapshotV3Fixture();
+    mutate(payload);
 
     expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow();
   });
@@ -744,6 +872,21 @@ describe("schema-v3 stock snapshot validation", () => {
     }
   });
 
+  it("classifies producer stale quote and candles envelopes as unavailable stale data", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.status = "unavailable";
+    makeSectionStale(payload, "quote");
+    makeSectionStale(payload, "candles");
+    makeSectionUnavailable(payload, "technical", "CANDLES_UNAVAILABLE");
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow(
+      expect.objectContaining({
+        name: "GatewaySnapshotUnavailableError",
+        kind: "stale",
+      }),
+    );
+  });
+
   it("rejects a validated empty candle section as an unusable price source", () => {
     const payload = stockSnapshotV3Fixture();
     payload.status = "unavailable";
@@ -754,6 +897,74 @@ describe("schema-v3 stock snapshot validation", () => {
     expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow(
       GatewaySnapshotUnavailableError,
     );
+  });
+
+  it("rejects live status when validated candles are structurally valid but empty", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.status = "live";
+    makeHoldingsValidated(payload);
+    makeEmptyCandlesStructurallyValid(payload);
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow(
+      /status/i,
+    );
+  });
+
+  it("accepts partial status when validated candles are structurally valid but empty", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.status = "partial";
+    makeHoldingsValidated(payload);
+    makeEmptyCandlesStructurallyValid(payload);
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(snapshot.snapshotStatus).toBe("partial");
+    expect(snapshot.quote?.price).toBe(142.25);
+    expect(snapshot.candles).toEqual([]);
+  });
+
+  it.each([
+    ["a flow row timestamp later than section asOf", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.currentSessionFlow.data[1]!.timestamp =
+        "2026-07-25T15:55:00.500Z";
+    }],
+    ["a flow row availability later than section availableAt", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.currentSessionFlow.data[1]!.availableAt =
+        "2026-07-25T15:55:01.500Z";
+    }],
+    ["a candle receipt later than section receivedAt", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.candles.data.candles[1]!.receivedAt =
+        "2026-07-25T15:55:03.000Z";
+    }],
+    ["a candle asOf that differs from its timestamp", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.candles.data.candles[0]!.asOf =
+        "2026-07-25T15:49:59.000Z";
+    }],
+    ["a candle section asOf that differs from its latest row", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.candles.asOf = "2026-07-25T15:54:59.000Z";
+    }],
+    ["a candle section availableAt that differs from its latest row availability", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.candles.availableAt = "2026-07-25T15:55:01.500Z";
+    }],
+    ["holdings section asOf that differs from the first report", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.holdings.asOf = "2026-03-30T00:00:00.000Z";
+    }],
+    ["holdings section availableAt that differs from the first row", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.holdings.availableAt = "2026-05-16T00:00:00.000Z";
+    }],
+    ["technical indicator provenance that differs from its section", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.technical.data.indicators.ma5.asOf =
+        "2026-07-25T15:54:59.000Z";
+    }],
+    ["technical pattern provenance that differs from its section", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.technical.data.magicNine.availableAt =
+        "2026-07-25T15:59:49.000Z";
+    }],
+  ])("rejects %s", (_label, mutate) => {
+    const payload = stockSnapshotV3Fixture();
+    mutate(payload);
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow();
   });
 
   it.each([
@@ -1004,7 +1215,7 @@ describe("market gateway fallback", () => {
       now: () => now,
     });
 
-    const result = await client.getStockSnapshot("nvda", "day", 200);
+    const result = await client.getStockSnapshot(" us.nvda ", "day", 200);
     const requestedPaths = (fetchImpl as unknown as jest.MockedFunction<typeof fetch>)
       .mock.calls.map(([request]) => {
         const url = new URL(String(request));
@@ -1021,6 +1232,27 @@ describe("market gateway fallback", () => {
       source: { source: "moomoo" },
     });
   });
+
+  it.each([" US.nvda ", "US.NVDA", "nvda", "NvDa"])(
+    "rejects non-canonical v3 response symbol %p without fallback",
+    async (responseSymbol) => {
+      const payload = stockSnapshotV3Fixture();
+      payload.symbol = responseSymbol;
+      const fetchImpl = jest.fn(async () =>
+        jsonResponse(payload),
+      ) as unknown as jest.MockedFunction<typeof fetch>;
+      const client = createMarketGatewayClient({
+        baseUrl: "http://127.0.0.1:8765",
+        fetchImpl,
+        now: () => now,
+      });
+
+      await expect(
+        client.getStockSnapshot("nvda", "5m", 200),
+      ).rejects.toMatchObject({ kind: "validation" });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([404, 426])(
     "falls back to schema v2 only when the v3 route returns HTTP %s",
@@ -1104,6 +1336,69 @@ describe("market gateway fallback", () => {
     await expect(
       client.getStockSnapshot("NVDA", "5m", 200),
     ).rejects.toMatchObject({ kind: "validation" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps stale quote and candles sections to stale without v2 fallback", async () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.status = "unavailable";
+    Object.assign(payload.sections.quote, {
+      availabilityStatus: "stale",
+      qualityStatus: "invalid",
+      source: null,
+      asOf: null,
+      availableAt: null,
+      receivedAt: null,
+      data: null,
+      errorCode: "STALE_DATA",
+      reason: "实时报价不可用",
+      warnings: [],
+      anomalies: [],
+      methodVersion: "unavailable-v1",
+    });
+    Object.assign(payload.sections.candles, {
+      availabilityStatus: "stale",
+      qualityStatus: "invalid",
+      source: null,
+      asOf: null,
+      availableAt: null,
+      receivedAt: null,
+      data: null,
+      errorCode: "STALE_DATA",
+      reason: "已完成蜡烛图数据不可用",
+      warnings: [],
+      anomalies: [],
+      methodVersion: "unavailable-v1",
+    });
+    Object.assign(payload.sections.technical, {
+      availabilityStatus: "unavailable",
+      qualityStatus: "invalid",
+      source: null,
+      asOf: null,
+      availableAt: null,
+      receivedAt: null,
+      data: null,
+      errorCode: "CANDLES_UNAVAILABLE",
+      reason: "技术指标需要已验证的蜡烛图数据",
+      warnings: [],
+      anomalies: [],
+      methodVersion: "unavailable-v1",
+    });
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse(payload),
+    ) as unknown as jest.MockedFunction<typeof fetch>;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(
+      client.getStockSnapshot("NVDA", "5m", 200),
+    ).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind: "stale",
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
