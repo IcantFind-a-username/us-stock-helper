@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import importlib
 import io
 import os
@@ -68,6 +69,33 @@ class RuntimeEnvironmentTestCase(unittest.TestCase):
         self.environment_path.write_bytes(content)
         self.environment_path.chmod(mode)
         return self.environment_path
+
+    def add_acl(self, path: Path, entry: str) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("macOS extended ACL integration test")
+        subprocess.run(["chmod", "+a", entry, str(path)], check=True)
+        self.addCleanup(
+            subprocess.run,
+            ["chmod", "-N", str(path)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def assert_extended_acl(self, path: Path, expected: bool) -> None:
+        support = support_module()
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        if path.is_dir():
+            flags |= getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(path, flags)
+        try:
+            self.assertEqual(
+                support.DEFAULT_FILE_SYSTEM.has_extended_acl(descriptor), expected
+            )
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def encoded_environment(values: dict[str, str]) -> bytes:
@@ -153,6 +181,49 @@ raise SystemExit(2)
         self.write_environment(self.encoded_environment(SYNTHETIC_ENVIRONMENT))
         self.private_parent.chmod(0o755)
 
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.parse_runtime_environment(self.environment_path)
+
+    def test_parser_refuses_foreign_owner_on_parent_or_environment_file(self) -> None:
+        support = support_module()
+        self.write_environment(self.encoded_environment(SYNTHETIC_ENVIRONMENT))
+        real_fstat = support.DEFAULT_FILE_SYSTEM.fstat
+
+        for foreign_kind in ("directory", "file"):
+            with self.subTest(foreign_kind=foreign_kind):
+                def synthetic_fstat(descriptor: int):
+                    metadata = real_fstat(descriptor)
+                    is_target = (
+                        foreign_kind == "directory" and stat.S_ISDIR(metadata.st_mode)
+                    ) or (
+                        foreign_kind == "file" and stat.S_ISREG(metadata.st_mode)
+                    )
+                    if not is_target:
+                        return metadata
+                    values = list(metadata)
+                    values[4] = support.DEFAULT_FILE_SYSTEM.geteuid() + 1
+                    return os.stat_result(values)
+
+                filesystem = dataclasses.replace(
+                    support.DEFAULT_FILE_SYSTEM, fstat=synthetic_fstat
+                )
+                with self.assertRaises(support.RuntimeConfigurationError):
+                    support.parse_runtime_environment(
+                        self.environment_path, filesystem=filesystem
+                    )
+
+    def test_parser_refuses_extended_acl_on_parent_or_environment_file(self) -> None:
+        support = support_module()
+        self.write_environment(self.encoded_environment(SYNTHETIC_ENVIRONMENT))
+
+        self.add_acl(self.private_parent, "everyone allow search")
+        self.assert_extended_acl(self.private_parent, True)
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.parse_runtime_environment(self.environment_path)
+
+        subprocess.run(["chmod", "-N", str(self.private_parent)], check=True)
+        self.add_acl(self.environment_path, "everyone allow read")
+        self.assert_extended_acl(self.environment_path, True)
         with self.assertRaises(support.RuntimeConfigurationError):
             support.parse_runtime_environment(self.environment_path)
 
@@ -394,6 +465,101 @@ raise SystemExit(2)
             [path.name for path in log_directory.iterdir()],
             ["market-loopback.log"],
         )
+
+    def test_private_path_helpers_clear_extended_acl(self) -> None:
+        support = support_module()
+        runtime_directory = self.root / "runtime"
+        runtime_directory.mkdir(mode=0o700)
+        log_file = self.private_parent / "runtime.log"
+        log_file.write_bytes(b"existing")
+        log_file.chmod(0o600)
+        self.add_acl(runtime_directory, "everyone allow search")
+        self.add_acl(log_file, "everyone allow read")
+
+        support.ensure_private_directory(runtime_directory)
+        support.ensure_private_file(log_file)
+
+        self.assert_extended_acl(runtime_directory, False)
+        self.assert_extended_acl(log_file, False)
+
+    def test_private_path_helpers_refuse_foreign_owned_managed_objects(self) -> None:
+        support = support_module()
+        runtime_directory = self.root / "runtime"
+        runtime_directory.mkdir(mode=0o700)
+        log_file = self.private_parent / "runtime.log"
+        log_file.write_bytes(b"existing")
+        log_file.chmod(0o600)
+        real_fstat = support.DEFAULT_FILE_SYSTEM.fstat
+        runtime_inode = runtime_directory.stat().st_ino
+
+        for foreign_kind, operation in (
+            (
+                "directory",
+                lambda fs: support.ensure_private_directory(
+                    runtime_directory, filesystem=fs
+                ),
+            ),
+            (
+                "file",
+                lambda fs: support.ensure_private_file(log_file, filesystem=fs),
+            ),
+        ):
+            with self.subTest(foreign_kind=foreign_kind):
+                def synthetic_fstat(descriptor: int):
+                    metadata = real_fstat(descriptor)
+                    is_target = (
+                        foreign_kind == "directory"
+                        and metadata.st_ino == runtime_inode
+                    ) or (
+                        foreign_kind == "file" and stat.S_ISREG(metadata.st_mode)
+                    )
+                    if not is_target:
+                        return metadata
+                    values = list(metadata)
+                    values[4] = support.DEFAULT_FILE_SYSTEM.geteuid() + 1
+                    return os.stat_result(values)
+
+                filesystem = dataclasses.replace(
+                    support.DEFAULT_FILE_SYSTEM, fstat=synthetic_fstat
+                )
+                with self.assertRaises(support.RuntimeConfigurationError):
+                    operation(filesystem)
+
+    def test_atomic_write_clears_inherited_acl_before_secret_bytes(self) -> None:
+        support = support_module()
+        inherited_parent = self.root / "inherited"
+        inherited_parent.mkdir(mode=0o700)
+        self.add_acl(
+            inherited_parent,
+            "everyone allow read,file_inherit,only_inherit",
+        )
+        destination = inherited_parent / "secret.env"
+        marker = b"synthetic-secret-bytes"
+        real_fstat = support.DEFAULT_FILE_SYSTEM.fstat
+        cleared_regular_inodes: set[int] = set()
+
+        def record_acl_clear(descriptor: int) -> None:
+            support.DEFAULT_FILE_SYSTEM.clear_extended_acl(descriptor)
+            metadata = real_fstat(descriptor)
+            if stat.S_ISREG(metadata.st_mode):
+                cleared_regular_inodes.add(metadata.st_ino)
+
+        def guarded_write(descriptor: int, content: bytes) -> int:
+            metadata = real_fstat(descriptor)
+            if metadata.st_ino not in cleared_regular_inodes:
+                raise AssertionError("secret bytes were written before ACL removal")
+            return os.write(descriptor, content)
+
+        filesystem = dataclasses.replace(
+            support.DEFAULT_FILE_SYSTEM,
+            clear_extended_acl=record_acl_clear,
+            write_fd=guarded_write,
+        )
+
+        support.atomic_write_private_file(destination, marker, filesystem=filesystem)
+
+        self.assertEqual(destination.read_bytes(), marker)
+        self.assert_extended_acl(destination, False)
 
     def test_private_path_helpers_refuse_symlinks_and_non_private_parents(self) -> None:
         support = support_module()

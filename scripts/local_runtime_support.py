@@ -7,6 +7,8 @@ from fixed allowlists instead of inheriting the launcher's environment.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
 import re
 import stat
@@ -69,6 +71,9 @@ class FileSystemRunner:
     replace: Callable[[PathLike, PathLike], None]
     unlink: Callable[[PathLike], None]
     mkstemp: Callable[..., tuple[int, str]]
+    geteuid: Callable[[], int]
+    has_extended_acl: Callable[[int], bool]
+    clear_extended_acl: Callable[[int], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +82,49 @@ class ProcessRunner:
 
     execve: Callable[[str, Sequence[str], Mapping[str, str]], NoReturn]
     run: Callable[..., subprocess.CompletedProcess[str]]
+
+
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_LIBC.acl_get_fd.argtypes = [ctypes.c_int]
+_LIBC.acl_get_fd.restype = ctypes.c_void_p
+_LIBC.acl_init.argtypes = [ctypes.c_int]
+_LIBC.acl_init.restype = ctypes.c_void_p
+_LIBC.acl_set_fd.argtypes = [ctypes.c_int, ctypes.c_void_p]
+_LIBC.acl_set_fd.restype = ctypes.c_int
+_LIBC.acl_free.argtypes = [ctypes.c_void_p]
+_LIBC.acl_free.restype = ctypes.c_int
+
+
+def _has_extended_acl(descriptor: int) -> bool:
+    ctypes.set_errno(0)
+    acl = _LIBC.acl_get_fd(descriptor)
+    if not acl:
+        error_number = ctypes.get_errno()
+        if error_number == errno.ENOENT:
+            return False
+        raise OSError(error_number, "extended ACL could not be read")
+    try:
+        return True
+    finally:
+        if _LIBC.acl_free(acl) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, "extended ACL could not be released")
+
+
+def _clear_extended_acl(descriptor: int) -> None:
+    ctypes.set_errno(0)
+    empty_acl = _LIBC.acl_init(1)
+    if not empty_acl:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, "empty ACL could not be allocated")
+    try:
+        if _LIBC.acl_set_fd(descriptor, empty_acl) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, "extended ACL could not be cleared")
+    finally:
+        if _LIBC.acl_free(empty_acl) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, "empty ACL could not be released")
 
 
 DEFAULT_FILE_SYSTEM = FileSystemRunner(
@@ -93,6 +141,9 @@ DEFAULT_FILE_SYSTEM = FileSystemRunner(
     replace=os.replace,
     unlink=os.unlink,
     mkstemp=tempfile.mkstemp,
+    geteuid=os.geteuid,
+    has_extended_acl=_has_extended_acl,
+    clear_extended_acl=_clear_extended_acl,
 )
 DEFAULT_PROCESS_RUNNER = ProcessRunner(execve=os.execve, run=subprocess.run)
 
@@ -217,8 +268,16 @@ def parse_runtime_environment(
             raise RuntimeConfigurationError(
                 "runtime environment must be a regular file"
             )
+        if metadata.st_uid != filesystem.geteuid():
+            raise RuntimeConfigurationError(
+                "runtime environment must be owned by the current user"
+            )
         if stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE:
             raise RuntimeConfigurationError("runtime environment mode must be 0600")
+        if filesystem.has_extended_acl(descriptor):
+            raise RuntimeConfigurationError(
+                "runtime environment must not have an extended ACL"
+            )
         content = _read_all(descriptor, filesystem=filesystem)
     except OSError:
         raise RuntimeConfigurationError(
@@ -334,31 +393,32 @@ def ensure_private_directory(
 
     directory = Path(path)
     try:
-        metadata = filesystem.lstat(directory)
+        filesystem.lstat(directory)
     except FileNotFoundError:
         try:
             filesystem.mkdir(directory, PRIVATE_DIRECTORY_MODE)
-            metadata = filesystem.lstat(directory)
         except OSError:
             raise RuntimeConfigurationError(
                 "private directory could not be created"
             ) from None
     except OSError:
         raise RuntimeConfigurationError("private directory is unavailable") from None
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeConfigurationError("private path must be a directory")
+    descriptor: int | None = None
     try:
-        filesystem.chmod(directory, PRIVATE_DIRECTORY_MODE)
-        metadata = filesystem.lstat(directory)
+        descriptor = _open_directory_descriptor(directory, filesystem=filesystem)
+        _repair_private_descriptor(
+            descriptor,
+            expected="directory",
+            mode=PRIVATE_DIRECTORY_MODE,
+            filesystem=filesystem,
+        )
     except OSError:
         raise RuntimeConfigurationError(
             "private directory mode could not be set"
         ) from None
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or stat.S_IMODE(metadata.st_mode) != PRIVATE_DIRECTORY_MODE
-    ):
-        raise RuntimeConfigurationError("private directory mode must be 0700")
+    finally:
+        if descriptor is not None:
+            filesystem.close_fd(descriptor)
 
 
 def ensure_private_file(
@@ -369,7 +429,7 @@ def ensure_private_file(
     """Atomically create a regular file if absent and leave it at ``0600``."""
 
     file_path = Path(path)
-    _require_private_directory(file_path.parent, filesystem=filesystem)
+    _prepare_private_parent(file_path.parent, filesystem=filesystem)
     flags = (
         os.O_WRONLY
         | os.O_CREAT
@@ -382,13 +442,12 @@ def ensure_private_file(
     except OSError:
         raise RuntimeConfigurationError("private file could not be opened") from None
     try:
-        metadata = filesystem.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeConfigurationError("private path must be a regular file")
-        filesystem.fchmod(descriptor, PRIVATE_FILE_MODE)
-        metadata = filesystem.fstat(descriptor)
-        if stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE:
-            raise RuntimeConfigurationError("private file mode must be 0600")
+        _repair_private_descriptor(
+            descriptor,
+            expected="file",
+            mode=PRIVATE_FILE_MODE,
+            filesystem=filesystem,
+        )
     except OSError:
         raise RuntimeConfigurationError("private file mode could not be set") from None
     finally:
@@ -404,15 +463,15 @@ def atomic_write_private_file(
     """Replace a private regular file atomically without rendering its content."""
 
     file_path = Path(path)
-    _require_private_directory(file_path.parent, filesystem=filesystem)
+    _prepare_private_parent(file_path.parent, filesystem=filesystem)
     try:
-        existing = filesystem.lstat(file_path)
+        filesystem.lstat(file_path)
     except FileNotFoundError:
-        existing = None
+        pass
     except OSError:
         raise RuntimeConfigurationError("private file is unavailable") from None
-    if existing is not None and not stat.S_ISREG(existing.st_mode):
-        raise RuntimeConfigurationError("private path must be a regular file")
+    else:
+        _repair_existing_private_file(file_path, filesystem=filesystem)
 
     descriptor: int | None = None
     temporary_name: str | None = None
@@ -420,7 +479,12 @@ def atomic_write_private_file(
         descriptor, temporary_name = filesystem.mkstemp(
             prefix=f".{file_path.name}.", dir=str(file_path.parent)
         )
-        filesystem.fchmod(descriptor, PRIVATE_FILE_MODE)
+        _repair_private_descriptor(
+            descriptor,
+            expected="file",
+            mode=PRIVATE_FILE_MODE,
+            filesystem=filesystem,
+        )
         remaining = memoryview(content)
         while remaining:
             written = filesystem.write_fd(descriptor, remaining)
@@ -428,16 +492,14 @@ def atomic_write_private_file(
                 raise OSError("short private file write")
             remaining = remaining[written:]
         filesystem.fsync(descriptor)
-        filesystem.close_fd(descriptor)
-        descriptor = None
         filesystem.replace(temporary_name, file_path)
         temporary_name = None
-        metadata = filesystem.lstat(file_path)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE
-        ):
-            raise OSError("private file verification failed")
+        _validate_private_descriptor(
+            descriptor,
+            expected="file",
+            mode=PRIVATE_FILE_MODE,
+            filesystem=filesystem,
+        )
     except (OSError, TypeError, ValueError):
         raise RuntimeConfigurationError("private file could not be written") from None
     finally:
@@ -471,14 +533,157 @@ def _require_private_directory(
     *,
     filesystem: FileSystemRunner,
 ) -> None:
+    descriptor: int | None = None
     try:
-        metadata = filesystem.lstat(path)
+        descriptor = _open_directory_descriptor(path, filesystem=filesystem)
+        _validate_private_descriptor(
+            descriptor,
+            expected="directory",
+            mode=PRIVATE_DIRECTORY_MODE,
+            filesystem=filesystem,
+        )
     except OSError:
         raise RuntimeConfigurationError("private directory is unavailable") from None
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeConfigurationError("private parent must be a directory")
-    if stat.S_IMODE(metadata.st_mode) != PRIVATE_DIRECTORY_MODE:
-        raise RuntimeConfigurationError("private directory mode must be 0700")
+    finally:
+        if descriptor is not None:
+            filesystem.close_fd(descriptor)
+
+
+def _prepare_private_parent(
+    path: PathLike,
+    *,
+    filesystem: FileSystemRunner,
+) -> None:
+    """Validate a private parent and remove only inherited ACL access."""
+
+    descriptor: int | None = None
+    try:
+        descriptor = _open_directory_descriptor(path, filesystem=filesystem)
+        _repair_private_descriptor(
+            descriptor,
+            expected="directory",
+            mode=PRIVATE_DIRECTORY_MODE,
+            filesystem=filesystem,
+            require_current_mode=True,
+        )
+    except OSError:
+        raise RuntimeConfigurationError("private directory is unavailable") from None
+    finally:
+        if descriptor is not None:
+            filesystem.close_fd(descriptor)
+
+
+def _repair_existing_private_file(
+    path: PathLike,
+    *,
+    filesystem: FileSystemRunner,
+) -> None:
+    flags = (
+        os.O_WRONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = filesystem.open_fd(path, flags)
+    except OSError:
+        raise RuntimeConfigurationError("private file is unavailable") from None
+    try:
+        _repair_private_descriptor(
+            descriptor,
+            expected="file",
+            mode=PRIVATE_FILE_MODE,
+            filesystem=filesystem,
+        )
+    except OSError:
+        raise RuntimeConfigurationError("private file is unavailable") from None
+    finally:
+        filesystem.close_fd(descriptor)
+
+
+def _open_directory_descriptor(
+    path: PathLike,
+    *,
+    filesystem: FileSystemRunner,
+) -> int:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
+    return filesystem.open_fd(path, flags)
+
+
+def _require_owned_descriptor(
+    descriptor: int,
+    *,
+    expected: str,
+    filesystem: FileSystemRunner,
+) -> os.stat_result:
+    metadata = filesystem.fstat(descriptor)
+    if expected == "directory":
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeConfigurationError("private path must be a directory")
+    elif not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeConfigurationError("private path must be a regular file")
+    if metadata.st_uid != filesystem.geteuid():
+        raise RuntimeConfigurationError(
+            "private path must be owned by the current user"
+        )
+    return metadata
+
+
+def _validate_private_descriptor(
+    descriptor: int,
+    *,
+    expected: str,
+    mode: int,
+    filesystem: FileSystemRunner,
+) -> None:
+    metadata = _require_owned_descriptor(
+        descriptor,
+        expected=expected,
+        filesystem=filesystem,
+    )
+    if stat.S_IMODE(metadata.st_mode) != mode:
+        rendered_mode = "0700" if expected == "directory" else "0600"
+        raise RuntimeConfigurationError(
+            f"private {expected} mode must be {rendered_mode}"
+        )
+    if filesystem.has_extended_acl(descriptor):
+        raise RuntimeConfigurationError(
+            f"private {expected} must not have an extended ACL"
+        )
+
+
+def _repair_private_descriptor(
+    descriptor: int,
+    *,
+    expected: str,
+    mode: int,
+    filesystem: FileSystemRunner,
+    require_current_mode: bool = False,
+) -> None:
+    metadata = _require_owned_descriptor(
+        descriptor,
+        expected=expected,
+        filesystem=filesystem,
+    )
+    if require_current_mode and stat.S_IMODE(metadata.st_mode) != mode:
+        rendered_mode = "0700" if expected == "directory" else "0600"
+        raise RuntimeConfigurationError(
+            f"private {expected} mode must be {rendered_mode}"
+        )
+    filesystem.clear_extended_acl(descriptor)
+    filesystem.fchmod(descriptor, mode)
+    _validate_private_descriptor(
+        descriptor,
+        expected=expected,
+        mode=mode,
+        filesystem=filesystem,
+    )
 
 
 def _absolute_path(path: PathLike, label: str) -> Path:
