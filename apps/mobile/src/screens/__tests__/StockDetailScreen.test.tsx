@@ -542,6 +542,9 @@ it("offers actionable loading and unavailable states without rendering fixture d
   });
 
   expect(loadingView.getByText("正在连接 moomoo 行情…")).toBeTruthy();
+  expect(
+    StyleSheet.flatten(loadingView.getByTestId("stock-detail").props.style).flex,
+  ).toBe(1);
   const loadingBack = loadingView.getByRole("button", { name: "返回自选列表" });
   expect(StyleSheet.flatten(loadingBack.props.style).minHeight).toBeGreaterThanOrEqual(44);
   expect(loadingView.queryByText("演示数据 · 非实时行情")).toBeNull();

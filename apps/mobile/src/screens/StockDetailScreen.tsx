@@ -193,7 +193,7 @@ export function StockDetailScreen() {
     // throw away a live analysis and empty the app over a moomoo hiccup, so
     // the quote surface reports its own outage and the rest still renders.
     return (
-      <View style={styles.screen} testID="stock-detail">
+      <View style={styles.statePage} testID="stock-detail">
         <StockPageState
           market={market as MarketDataState<ChartSnapshot>}
           onBack={() => router.back()}
@@ -479,6 +479,7 @@ export function StockDetailScreen() {
 
 const styles = StyleSheet.create({
   screen: { gap: spacing.md, paddingTop: spacing.xs },
+  statePage: { backgroundColor: colors.background, flex: 1 },
   demoBanner: {
     alignItems: "center",
     backgroundColor: colors.amberSoft,
