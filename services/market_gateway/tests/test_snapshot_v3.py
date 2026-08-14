@@ -350,6 +350,28 @@ class HoldingsV3Tests(unittest.TestCase):
         self.assertEqual(result.quality_status, "invalid")
         self.assertEqual(result.anomalies[0]["code"], "INVALID_NUMERIC_VALUE")
 
+    def test_overflowing_numeric_row_is_excluded_without_losing_sibling(self) -> None:
+        result = normalize_holdings_v3(
+            [holding_row(), holding_row(shares_held=10**10000)],
+            CUTOFF,
+            RECEIVED_AT,
+        )
+
+        self.assertEqual(len(result.data), 1)
+        self.assertEqual(result.data[0]["holdingPercent"], 46.474)
+        self.assertEqual(result.availability_status, "delayed")
+        self.assertEqual(result.quality_status, "anomalous")
+        self.assertEqual(
+            result.anomalies,
+            (
+                {
+                    "rowIndex": 1,
+                    "code": "INVALID_NUMERIC_VALUE",
+                    "reason": ANOMALY_REASONS["INVALID_NUMERIC_VALUE"],
+                },
+            ),
+        )
+
     def test_batch_received_after_cutoff_excludes_each_row_as_future(self) -> None:
         result = normalize_holdings_v3(
             [holding_row()], CUTOFF, CUTOFF + timedelta(microseconds=1)
@@ -466,6 +488,20 @@ class StockSnapshotV3AssemblyTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "unavailable")
 
+    def test_incomplete_candle_shape_does_not_satisfy_price_minimum(self) -> None:
+        sections = validated_requested_sections()
+        sections["quote"] = unavailable_section()
+        sections["candles"] = section(
+            {
+                "candles": [{"complete": True}],
+                "priceAdjustment": "forward-adjusted",
+            }
+        )
+
+        payload = assemble_stock_snapshot_v3("AVGO", "day", 200, CUTOFF, sections)
+
+        self.assertEqual(payload["status"], "unavailable")
+
     def test_non_positive_or_non_finite_quote_is_not_usable(self) -> None:
         for price in (None, 0, -1, math.nan, math.inf):
             with self.subTest(price=price):
@@ -522,6 +558,18 @@ class StockSnapshotV3AssemblyTests(unittest.TestCase):
                         cutoff,
                         validated_requested_sections(),
                     )
+
+    def test_non_datetime_cutoff_raises_top_level_gateway_error(self) -> None:
+        with self.assertRaises(GatewayError) as raised:
+            assemble_stock_snapshot_v3(
+                "AVGO",
+                "day",
+                200,
+                "2026-08-14T12:00:00Z",  # type: ignore[arg-type]
+                validated_requested_sections(),
+            )
+
+        self.assertEqual(raised.exception.code.value, "INVALID_ARGUMENT")
 
 
 if __name__ == "__main__":

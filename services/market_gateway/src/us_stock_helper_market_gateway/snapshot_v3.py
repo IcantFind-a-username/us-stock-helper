@@ -250,6 +250,11 @@ def assemble_stock_snapshot_v3(
             ErrorCode.INVALID_ARGUMENT,
             "Candle count must be between 1 and 1000",
         )
+    if not isinstance(decision_cutoff, datetime):
+        raise GatewayError(
+            ErrorCode.INVALID_ARGUMENT,
+            "Decision cutoff must include timezone information",
+        )
     try:
         cutoff = require_utc(decision_cutoff, "decision_cutoff")
     except GatewayError as error:
@@ -327,7 +332,10 @@ def _holding_numbers(item: dict[str, Any]) -> tuple[float, ...] | None:
         value = item[field]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError:
+            return None
         if not math.isfinite(number):
             return None
         values.append(number)
@@ -387,6 +395,36 @@ def _candles_are_usable(section: SnapshotSection) -> bool:
         return False
     candles = section.data.get("candles")
     return isinstance(candles, list) and any(
-        isinstance(candle, Mapping) and candle.get("complete") is True
-        for candle in candles
+        _completed_candle_is_valid(candle) for candle in candles
+    )
+
+
+def _completed_candle_is_valid(candle: object) -> bool:
+    if not isinstance(candle, Mapping) or candle.get("complete") is not True:
+        return False
+    try:
+        parse_aware(candle["timestamp"], "candle timestamp")
+    except (KeyError, GatewayError):
+        return False
+
+    numbers: list[float] = []
+    for field in ("open", "high", "low", "close", "volume"):
+        value = candle.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        try:
+            number = float(value)
+        except OverflowError:
+            return False
+        if not math.isfinite(number):
+            return False
+        numbers.append(number)
+
+    open_price, high, low, close, volume = numbers
+    return (
+        min(open_price, high, low, close) > 0
+        and volume >= 0
+        and high >= max(open_price, close)
+        and low <= min(open_price, close)
+        and high >= low
     )
