@@ -22,7 +22,7 @@ class DocumentationDriftTests(unittest.TestCase):
 
     def test_the_documented_allowlist_matches_the_served_paths(self) -> None:
         text = GATEWAY_README.read_text(encoding="utf-8")
-        documented = set(re.findall(r"`GET (/[a-z-]+)`|`(/[a-z-]+)`", text))
+        documented = set(re.findall(r"`GET (/[a-z0-9/-]+)`|`(/[a-z0-9/-]+)`", text))
         flattened = {value for pair in documented for value in pair if value}
 
         for path in _PATHS:

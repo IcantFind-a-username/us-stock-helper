@@ -1,14 +1,40 @@
 from __future__ import annotations
 
 import math
+import time
+from concurrent.futures import (
+    Executor,
+    Future,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+)
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
+from . import snapshot as snapshot_v2
 from .errors import ErrorCode, GatewayError, PointInTimeViolation
 from .models import ProviderBatch, QuoteProvider, SessionHealth
 from .snapshot import assemble_stock_snapshot
+from .snapshot_v3 import (
+    SnapshotSection,
+    assemble_stock_snapshot_v3,
+    normalize_holdings_v3,
+)
 from .symbols import from_moomoo_code, to_moomoo_code
 from .time_utils import iso_z, parse_aware, require_utc, utc_now
+
+
+SNAPSHOT_SOURCE_TIMEOUT_SECONDS = 5.0
+SNAPSHOT_DEADLINE_SECONDS = 12.0
+SNAPSHOT_MAX_PROVIDER_OPERATIONS = 4
+
+_SNAPSHOT_INTERVALS = {"1m", "5m", "15m", "30m", "60m", "day", "week"}
+_UNREQUESTED_V3_SECTIONS = (
+    "fundamentals",
+    "marketContext",
+    "news",
+    "forecastDecision",
+)
 
 
 class MarketGatewayService:
@@ -21,11 +47,19 @@ class MarketGatewayService:
         clock: Callable[[], datetime] = utc_now,
         session_max_age: timedelta = timedelta(seconds=15),
         response_max_age: timedelta = timedelta(seconds=30),
+        monotonic: Callable[[], float] = time.monotonic,
+        source_timeout_seconds: float = SNAPSHOT_SOURCE_TIMEOUT_SECONDS,
+        snapshot_deadline_seconds: float = SNAPSHOT_DEADLINE_SECONDS,
+        executor_factory: Callable[[int], Executor] = ThreadPoolExecutor,
     ) -> None:
         self._provider = provider
         self._clock = clock
         self._session_max_age = session_max_age
         self._response_max_age = response_max_age
+        self._monotonic = monotonic
+        self._source_timeout_seconds = source_timeout_seconds
+        self._snapshot_deadline_seconds = snapshot_deadline_seconds
+        self._executor_factory = executor_factory
 
     def health(self) -> dict[str, Any]:
         started_at = require_utc(self._clock(), "clock")
@@ -293,6 +327,494 @@ class MarketGatewayService:
                 interval=timeframe,
                 now=completed_at,
             )
+
+    def stock_snapshot_v3(
+        self,
+        symbol: str,
+        timeframe: str,
+        count: int,
+    ) -> dict[str, Any]:
+        try:
+            code = to_moomoo_code(symbol)
+            if timeframe not in _SNAPSHOT_INTERVALS:
+                raise GatewayError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "Unsupported candle interval",
+                )
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or not 1 <= count <= 1000
+            ):
+                raise GatewayError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "Candle count must be between 1 and 1000",
+                )
+        except GatewayError as error:
+            return self._snapshot_error(error, symbol=symbol, interval=timeframe)
+
+        started_at = require_utc(self._clock(), "clock")
+        health = self._safe_health(started_at)
+        observed_at = require_utc(self._clock(), "clock")
+        health_state = self._health_state(health, observed_at)
+        normalized_symbol = from_moomoo_code(code)
+        if health_state != "healthy":
+            health_code = health.error_code or self._code_for_health_state(health_state)
+            return assemble_stock_snapshot_v3(
+                normalized_symbol,
+                timeframe,
+                count,
+                observed_at,
+                self._unhealthy_snapshot_v3_sections(health_code),
+            )
+
+        requested_at = self._monotonic()
+        batches, failures = self._collect_snapshot_v3_batches(
+            code,
+            timeframe,
+            count,
+            requested_at,
+        )
+        try:
+            decision_cutoff = require_utc(self._clock(), "clock")
+        except (AttributeError, GatewayError, TypeError):
+            return self._snapshot_error(
+                GatewayError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "Decision cutoff must include timezone information",
+                ),
+                symbol=normalized_symbol,
+                interval=timeframe,
+                now=observed_at,
+            )
+
+        sections = self._snapshot_v3_sections(
+            normalized_symbol,
+            code,
+            timeframe,
+            decision_cutoff,
+            batches,
+            failures,
+        )
+        return assemble_stock_snapshot_v3(
+            normalized_symbol,
+            timeframe,
+            count,
+            decision_cutoff,
+            sections,
+        )
+
+    def _collect_snapshot_v3_batches(
+        self,
+        code: str,
+        timeframe: str,
+        count: int,
+        requested_at: float,
+    ) -> tuple[dict[str, ProviderBatch], dict[str, str]]:
+        operations: tuple[tuple[str, Callable[[], ProviderBatch]], ...] = (
+            ("quote", lambda: self._provider.quotes([code])),
+            ("candles", lambda: self._provider.candles(code, timeframe, count)),
+            ("flow", lambda: self._provider.capital_flow(code)),
+            ("holdings", lambda: self._provider.institutional_holdings(code)),
+        )
+        executor = self._executor_factory(SNAPSHOT_MAX_PROVIDER_OPERATIONS)
+        submitted: list[tuple[str, float, Future[ProviderBatch]]] = []
+        batches: dict[str, ProviderBatch] = {}
+        failures: dict[str, str] = {}
+        try:
+            for name, operation in operations:
+                submitted_at = self._monotonic()
+                future = executor.submit(operation)
+                submitted.append((name, submitted_at, future))
+
+            overall_deadline = requested_at + self._snapshot_deadline_seconds
+            for name, submitted_at, future in submitted:
+                now = self._monotonic()
+                source_deadline = submitted_at + self._source_timeout_seconds
+                remaining = min(source_deadline, overall_deadline) - now
+                if remaining <= 0 and not future.done():
+                    failures[name] = ErrorCode.PROVIDER_ERROR.value
+                    continue
+                try:
+                    batches[name] = future.result(timeout=max(0.0, remaining))
+                except FutureTimeoutError:
+                    failures[name] = ErrorCode.PROVIDER_ERROR.value
+                except GatewayError as error:
+                    failures[name] = error.code.value
+                except Exception:
+                    failures[name] = ErrorCode.PROVIDER_ERROR.value
+        finally:
+            for _, _, future in submitted:
+                if not future.done():
+                    future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+        return batches, failures
+
+    def _snapshot_v3_sections(
+        self,
+        symbol: str,
+        code: str,
+        timeframe: str,
+        decision_cutoff: datetime,
+        batches: dict[str, ProviderBatch],
+        failures: dict[str, str],
+    ) -> dict[str, SnapshotSection]:
+        sections = {
+            name: self._not_requested_snapshot_v3_section()
+            for name in _UNREQUESTED_V3_SECTIONS
+        }
+        sections["quote"] = self._snapshot_v3_source_section(
+            "quote",
+            failures,
+            lambda: self._quote_snapshot_v3_section(
+                symbol,
+                batches["quote"],
+                decision_cutoff,
+            ),
+        )
+        sections["candles"] = self._snapshot_v3_source_section(
+            "candles",
+            failures,
+            lambda: self._candles_snapshot_v3_section(
+                symbol,
+                timeframe,
+                batches["candles"],
+                decision_cutoff,
+            ),
+        )
+        sections["technical"] = self._technical_snapshot_v3_section(
+            symbol,
+            timeframe,
+            sections["candles"],
+            decision_cutoff,
+        )
+        sections["currentSessionFlow"] = self._snapshot_v3_source_section(
+            "flow",
+            failures,
+            lambda: self._flow_snapshot_v3_section(
+                symbol,
+                code,
+                timeframe,
+                batches["flow"],
+                sections["candles"],
+                decision_cutoff,
+            ),
+        )
+        sections["holdings"] = self._snapshot_v3_source_section(
+            "holdings",
+            failures,
+            lambda: self._holdings_snapshot_v3_section(
+                batches["holdings"],
+                decision_cutoff,
+            ),
+        )
+        return sections
+
+    def _snapshot_v3_source_section(
+        self,
+        name: str,
+        failures: dict[str, str],
+        build: Callable[[], SnapshotSection],
+    ) -> SnapshotSection:
+        if name in failures:
+            return self._unavailable_snapshot_v3_section(name, failures[name])
+        try:
+            return build()
+        except GatewayError as error:
+            return self._unavailable_snapshot_v3_section(name, error.code.value)
+        except (KeyError, TypeError, ValueError):
+            return self._unavailable_snapshot_v3_section(
+                name,
+                ErrorCode.MALFORMED_PROVIDER_DATA.value,
+            )
+        except Exception:
+            return self._unavailable_snapshot_v3_section(
+                name,
+                ErrorCode.PROVIDER_ERROR.value,
+            )
+
+    def _quote_snapshot_v3_section(
+        self,
+        symbol: str,
+        batch: ProviderBatch,
+        decision_cutoff: datetime,
+    ) -> SnapshotSection:
+        received_at = self._validate_batch(batch, decision_cutoff)
+        items = self._normalize_quotes(batch.items, decision_cutoff)
+        quote = snapshot_v2._quote(symbol, items, decision_cutoff)
+        as_of = parse_aware(quote["asOf"], "quote asOf")
+        available_at = parse_aware(quote["availableAt"], "quote availableAt")
+        return SnapshotSection(
+            availability_status="live",
+            quality_status="validated",
+            source="moomoo",
+            as_of=as_of,
+            available_at=available_at,
+            received_at=received_at,
+            data=quote,
+            error_code=None,
+            reason=None,
+            method_version="provider-quote-v1",
+        )
+
+    def _candles_snapshot_v3_section(
+        self,
+        symbol: str,
+        timeframe: str,
+        batch: ProviderBatch,
+        decision_cutoff: datetime,
+    ) -> SnapshotSection:
+        received_at = self._validate_batch(batch, decision_cutoff)
+        normalized = self._normalize_candles(batch.items, decision_cutoff)
+        candles = snapshot_v2._candles(
+            symbol,
+            timeframe,
+            normalized,
+            decision_cutoff,
+        )
+        as_of = (
+            parse_aware(candles[-1]["asOf"], "candle asOf") if candles else received_at
+        )
+        available_at = max(
+            (
+                parse_aware(item["availableAt"], "candle availableAt")
+                for item in candles
+            ),
+            default=received_at,
+        )
+        return SnapshotSection(
+            availability_status="live",
+            quality_status="validated",
+            source="moomoo",
+            as_of=as_of,
+            available_at=available_at,
+            received_at=received_at,
+            data={
+                "candles": candles,
+                "priceAdjustment": snapshot_v2._price_adjustment(candles),
+            },
+            error_code=None,
+            reason=None,
+            method_version="provider-completed-candle-v1",
+        )
+
+    def _technical_snapshot_v3_section(
+        self,
+        symbol: str,
+        timeframe: str,
+        candle_section: SnapshotSection,
+        decision_cutoff: datetime,
+    ) -> SnapshotSection:
+        candle_data = candle_section.data
+        candles = (
+            candle_data.get("candles")
+            if candle_section.quality_status == "validated"
+            and isinstance(candle_data, dict)
+            else None
+        )
+        if not isinstance(candles, list) or not candles:
+            return self._unavailable_snapshot_v3_section(
+                "technical",
+                "CANDLES_UNAVAILABLE",
+            )
+        try:
+            bars = snapshot_v2._analysis_bars(symbol, timeframe, candles)
+            all_indicators = snapshot_v2._indicators(
+                candles,
+                decision_cutoff,
+                bars,
+            )
+            magic_nine = all_indicators["magicNine"]
+            indicators = {
+                name: value
+                for name, value in all_indicators.items()
+                if name != "magicNine"
+            }
+            as_of = parse_aware(candles[-1]["asOf"], "technical asOf")
+        except (GatewayError, KeyError, TypeError, ValueError):
+            return self._unavailable_snapshot_v3_section(
+                "technical",
+                "CANDLES_UNAVAILABLE",
+            )
+        return SnapshotSection(
+            availability_status="live",
+            quality_status="validated",
+            source="analysis-core",
+            as_of=as_of,
+            available_at=decision_cutoff,
+            received_at=decision_cutoff,
+            data={
+                "indicators": indicators,
+                "magicNine": magic_nine,
+            },
+            error_code=None,
+            reason=None,
+            method_version="analysis-core-indicators-v1",
+        )
+
+    def _flow_snapshot_v3_section(
+        self,
+        symbol: str,
+        code: str,
+        timeframe: str,
+        batch: ProviderBatch,
+        candle_section: SnapshotSection,
+        decision_cutoff: datetime,
+    ) -> SnapshotSection:
+        received_at = self._validate_batch(batch, decision_cutoff)
+        flow_items = self._normalize_capital_flow(
+            batch.items,
+            decision_cutoff,
+            expected_code=code,
+        )
+        candle_data = candle_section.data
+        candles = (
+            candle_data.get("candles")
+            if candle_section.quality_status == "validated"
+            and isinstance(candle_data, dict)
+            else None
+        )
+        if not flow_items or not isinstance(candles, list) or not candles:
+            raise GatewayError(
+                ErrorCode.MALFORMED_PROVIDER_DATA,
+                "Current-session flow is unavailable",
+            )
+        bars = snapshot_v2._analysis_bars(symbol, timeframe, candles)
+        participation, warnings = snapshot_v2._participation(
+            symbol,
+            timeframe,
+            bars,
+            flow_items,
+            decision_cutoff,
+        )
+        rows = [{**item, "institutionalIdentity": False} for item in participation]
+        if not any(item.get("qualityStatus") == "live" for item in rows):
+            raise GatewayError(
+                ErrorCode.MALFORMED_PROVIDER_DATA,
+                "Current-session flow is unavailable",
+            )
+        return SnapshotSection(
+            availability_status="live",
+            quality_status="validated",
+            source="moomoo",
+            as_of=max(parse_aware(item["asOf"], "flow asOf") for item in rows),
+            available_at=max(
+                parse_aware(item["availableAt"], "flow availableAt") for item in rows
+            ),
+            received_at=received_at,
+            data=rows,
+            error_code=None,
+            reason=None,
+            warnings=tuple(warnings),
+            method_version="order-size-activity-share-v1",
+        )
+
+    def _holdings_snapshot_v3_section(
+        self,
+        batch: ProviderBatch,
+        decision_cutoff: datetime,
+    ) -> SnapshotSection:
+        received_at = self._validate_holdings_snapshot_v3_batch(
+            batch,
+            decision_cutoff,
+        )
+        return normalize_holdings_v3(
+            batch.items,
+            decision_cutoff,
+            received_at,
+        )
+
+    def _validate_holdings_snapshot_v3_batch(
+        self,
+        batch: ProviderBatch,
+        decision_cutoff: datetime,
+    ) -> datetime:
+        if not isinstance(batch, ProviderBatch) or batch.source != "moomoo":
+            raise GatewayError(
+                ErrorCode.MALFORMED_PROVIDER_DATA,
+                "Live response did not identify moomoo as its source",
+            )
+        received_at = require_utc(batch.received_at, "holdings received_at")
+        if decision_cutoff - received_at > self._response_max_age:
+            raise GatewayError(
+                ErrorCode.STALE_DATA,
+                "Market data response is stale",
+                retriable=True,
+            )
+        if not isinstance(batch.items, list):
+            raise GatewayError(
+                ErrorCode.MALFORMED_PROVIDER_DATA,
+                "Provider items are malformed",
+            )
+        return received_at
+
+    def _unhealthy_snapshot_v3_sections(
+        self,
+        error_code: ErrorCode,
+    ) -> dict[str, SnapshotSection]:
+        sections = {
+            name: self._not_requested_snapshot_v3_section()
+            for name in _UNREQUESTED_V3_SECTIONS
+        }
+        sections["quote"] = self._unavailable_snapshot_v3_section(
+            "quote", error_code.value
+        )
+        sections["candles"] = self._unavailable_snapshot_v3_section(
+            "candles", error_code.value
+        )
+        sections["technical"] = self._unavailable_snapshot_v3_section(
+            "technical", "CANDLES_UNAVAILABLE"
+        )
+        sections["currentSessionFlow"] = self._unavailable_snapshot_v3_section(
+            "flow", error_code.value
+        )
+        sections["holdings"] = self._unavailable_snapshot_v3_section(
+            "holdings", error_code.value
+        )
+        return sections
+
+    @staticmethod
+    def _unavailable_snapshot_v3_section(
+        name: str,
+        error_code: str,
+    ) -> SnapshotSection:
+        public_error_code = (
+            "CURRENT_SESSION_FLOW_UNAVAILABLE" if name == "flow" else error_code
+        )
+        reason = {
+            "quote": "实时报价不可用",
+            "candles": "已完成蜡烛图数据不可用",
+            "technical": "技术指标需要已验证的蜡烛图数据",
+            "flow": "当前交易时段资金流数据不可用",
+            "holdings": "机构持仓数据不可用",
+        }[name]
+        return SnapshotSection(
+            availability_status=(
+                "stale" if error_code == ErrorCode.STALE_DATA.value else "unavailable"
+            ),
+            quality_status="invalid",
+            source=None,
+            as_of=None,
+            available_at=None,
+            received_at=None,
+            data=None,
+            error_code=public_error_code,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _not_requested_snapshot_v3_section() -> SnapshotSection:
+        return SnapshotSection(
+            availability_status="unavailable",
+            quality_status="invalid",
+            source=None,
+            as_of=None,
+            available_at=None,
+            received_at=None,
+            data=None,
+            error_code="NOT_REQUESTED",
+            reason="此切片未请求该数据",
+        )
 
     def _execute(
         self,

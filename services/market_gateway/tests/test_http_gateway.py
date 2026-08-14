@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from us_stock_helper_market_gateway.http_gateway import (
     GatewayApplication,
@@ -9,7 +9,7 @@ from us_stock_helper_market_gateway.http_gateway import (
     _encode_response_body,
 )
 from us_stock_helper_market_gateway.errors import ErrorCode, GatewayError
-from us_stock_helper_market_gateway.models import SessionHealth
+from us_stock_helper_market_gateway.models import ProviderBatch, SessionHealth
 from us_stock_helper_market_gateway.service import MarketGatewayService
 
 
@@ -71,6 +71,15 @@ class StubService:
             "institutionalHoldings": [],
             "provenance": [],
             "warnings": [],
+        }
+
+    def stock_snapshot_v3(self, symbol: str, timeframe: str, count: int) -> dict:
+        return {
+            "schemaVersion": "3",
+            "status": "partial",
+            "symbol": symbol,
+            "interval": timeframe,
+            "count": count,
         }
 
     def capital_flow(self, symbol: str) -> dict:
@@ -198,6 +207,8 @@ class GatewayApplicationTests(unittest.TestCase):
             "/quotes",
             "/candles",
             "/stock-snapshot",
+            "/v2/stock-snapshot",
+            "/v3/stock-snapshot",
             "/capital-flow",
             "/capital-distribution",
             "/institutional-holdings",
@@ -332,6 +343,95 @@ class GatewayApplicationTests(unittest.TestCase):
         self.assertEqual(body["schemaVersion"], "2")
         self.assertEqual(body["symbol"], "NVDA")
         self.assertEqual(body["interval"], "5m")
+
+    def test_stock_snapshot_routes_select_the_contract_version_explicitly(self) -> None:
+        for path, expected_version in (
+            ("/stock-snapshot", "2"),
+            ("/v2/stock-snapshot", "2"),
+            ("/v3/stock-snapshot", "3"),
+        ):
+            with self.subTest(path=path):
+                status, _, body = self.app.handle(
+                    "GET",
+                    path,
+                    {"symbol": ["NVDA"], "interval": ["day"], "count": ["200"]},
+                    {},
+                    "127.0.0.1",
+                )
+
+                self.assertEqual(status, 200)
+                self.assertEqual(body["schemaVersion"], expected_version)
+
+    def test_versioned_snapshot_routes_remain_read_only_and_unknown_versions_fail(
+        self,
+    ) -> None:
+        status, headers, body = self.app.handle(
+            "POST", "/v3/stock-snapshot", {}, {}, "127.0.0.1"
+        )
+        self.assertEqual(status, 405)
+        self.assertEqual(headers["Allow"], "GET, OPTIONS")
+        self.assertEqual(body["error"]["code"], "METHOD_NOT_ALLOWED")
+
+        status, _, body = self.app.handle(
+            "GET", "/v4/stock-snapshot", {}, {}, "127.0.0.1"
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"]["code"], "PATH_NOT_ALLOWED")
+
+    def test_unavailable_v3_snapshot_is_http_200_but_invalid_count_is_400(
+        self,
+    ) -> None:
+        now = datetime(2026, 7, 25, 4, 0, tzinfo=timezone.utc)
+
+        class NoPriceProvider:
+            def __init__(self) -> None:
+                self.health_calls = 0
+
+            def health(self) -> SessionHealth:
+                self.health_calls += 1
+                return SessionHealth("healthy", now, "moomoo")
+
+            def quotes(self, codes: list[str]) -> ProviderBatch:
+                raise RuntimeError("raw quote secret")
+
+            def candles(self, code: str, timeframe: str, count: int) -> ProviderBatch:
+                raise RuntimeError("raw candle secret")
+
+            def capital_flow(self, code: str) -> ProviderBatch:
+                return ProviderBatch("moomoo", now - timedelta(seconds=1), [])
+
+            def institutional_holdings(self, code: str) -> ProviderBatch:
+                return ProviderBatch("moomoo", now - timedelta(seconds=1), [])
+
+        provider = NoPriceProvider()
+        service = MarketGatewayService(
+            provider,  # type: ignore[arg-type]
+            clock=lambda: now,
+        )
+        app = GatewayApplication(service, self.config)
+        query = {"symbol": ["NVDA"], "interval": ["day"], "count": ["200"]}
+
+        status, _, body = app.handle(
+            "GET", "/v3/stock-snapshot", query, {}, "127.0.0.1"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["schemaVersion"], "3")
+        self.assertEqual(body["status"], "unavailable")
+        self.assertNotIn("error", body)
+        self.assertNotIn("raw quote secret", repr(body))
+        health_calls = provider.health_calls
+
+        status, _, body = app.handle(
+            "GET",
+            "/v3/stock-snapshot",
+            {**query, "count": ["1001"]},
+            {},
+            "127.0.0.1",
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "INVALID_ARGUMENT")
+        self.assertEqual(provider.health_calls, health_calls)
 
     def test_mid_operation_opend_offline_maps_to_retryable_http_503(self) -> None:
         class OfflineDuringCandlesProvider:

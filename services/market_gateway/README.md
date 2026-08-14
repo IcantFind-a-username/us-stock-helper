@@ -9,8 +9,9 @@ brokerage context, order endpoint, or order-capable route.
 
 - `OpenQuoteContext` is the only OpenD context constructed.
 - The HTTP allowlist is exactly `GET /health`, `/watchlist`, `/quotes`,
-  `/candles`, `/stock-snapshot`, `/capital-flow`, `/capital-distribution`, and
-  `/institutional-holdings`; write methods fail closed.
+  `/candles`, `/stock-snapshot`, `/v2/stock-snapshot`, `/v3/stock-snapshot`,
+  `/capital-flow`, `/capital-distribution`, and `/institutional-holdings`; write
+  methods fail closed.
 - A response can use `session: "healthy"` only when the OpenD health check and
   the just-received provider batch are fresh and identify `source: "moomoo"`.
 - Every timestamp returned to the app is timezone-aware UTC.
