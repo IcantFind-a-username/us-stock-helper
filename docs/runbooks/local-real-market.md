@@ -78,6 +78,22 @@ cutoff for every source child, and no transaction capability.
 
 ## Temporary iPhone LAN runtime
 
+For the already paired local development setup, keep all three read-only
+services in one foreground supervisor:
+
+```bash
+scripts/run_local_dev_stack.sh
+```
+
+It reads the existing operator-owned
+`~/.us-stock-helper/lan.env`, writes only redacted process logs under `/tmp`,
+and stops the remaining services if any one of them exits. It does not contain
+or print the market token, device credentials, or an Anthropic key. Run it in a
+terminal or a user launch job when the stack must survive a calling shell.
+
+The lower-level commands below remain useful when bringing up only the market
+gateway or rotating the LAN token.
+
 Choose the Mac's active LAN address and the exact CIDR that contains only the
 phone network. Generate a fresh 32-byte token for every session:
 
