@@ -952,7 +952,7 @@ class SnapshotV3ValidationTests(unittest.TestCase):
             (("sections", "quote", "data", "qualityStatus"), "delayed"),
         )
         for path, value in mutations:
-            with self.subTest(path=path):
+            with self.subTest(path=path, value=value):
                 payload = self.fixture()
                 target = payload
                 for key in path[:-1]:
@@ -978,11 +978,20 @@ class SnapshotV3ValidationTests(unittest.TestCase):
             (("sections", "candles", "data", "candles", 0, "qualityStatus"), "delayed"),
             (("sections", "candles", "data", "candles", 0, "methodVersion"), "wrong-method"),
             (("sections", "candles", "data", "candles", 0, "priceAdjustment"), "unadjusted"),
+            (("sections", "candles", "data", "candles", 0, "complete"), False),
+            (("sections", "candles", "data", "candles", 0, "open"), True),
+            (("sections", "candles", "data", "candles", 0, "high"), float("nan")),
+            (("sections", "candles", "data", "candles", 0, "low"), float("inf")),
+            (("sections", "candles", "data", "candles", 0, "close"), 0.0),
+            (("sections", "candles", "data", "candles", 0, "volume"), -1.0),
+            (("sections", "candles", "data", "candles", 0, "high"), 183.0),
+            (("sections", "candles", "data", "candles", 0, "low"), 181.0),
+            (("sections", "candles", "data", "candles", 0, "high"), 179.0),
             (("sections", "candles", "asOf"), "2026-07-24T19:59:59Z"),
             (("sections", "candles", "availableAt"), "2026-07-24T20:00:02Z"),
         )
         for path, value in mutations:
-            with self.subTest(path=path):
+            with self.subTest(path=path, value=value):
                 payload = self.fixture()
                 target = payload
                 for key in path[:-1]:
