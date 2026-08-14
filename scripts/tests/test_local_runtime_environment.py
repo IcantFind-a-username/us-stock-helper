@@ -1,0 +1,415 @@
+from __future__ import annotations
+
+import contextlib
+import importlib
+import io
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+EXPECTED_ENVIRONMENT_KEYS = {
+    "ANALYSIS_API_ALLOWED_CLIENTS",
+    "ANALYSIS_API_ALLOW_LAN",
+    "ANALYSIS_API_GATEWAY_URL",
+    "ANALYSIS_API_HOST",
+    "ANALYSIS_API_PORT",
+    "ANTHROPIC_API_KEY",
+    "MOOMOO_GATEWAY_ALLOWED_CLIENTS",
+    "MOOMOO_GATEWAY_ALLOW_LAN",
+    "MOOMOO_GATEWAY_HOST",
+    "MOOMOO_GATEWAY_PORT",
+    "MOOMOO_GATEWAY_TOKEN",
+    "US_STOCK_HELPER_CONTACT_EMAIL",
+}
+
+SYNTHETIC_ENVIRONMENT = {
+    "MOOMOO_GATEWAY_ALLOW_LAN": "true",
+    "MOOMOO_GATEWAY_HOST": "203.0.113.20",
+    "MOOMOO_GATEWAY_PORT": "19001",
+    "MOOMOO_GATEWAY_TOKEN": "synthetic-gateway-secret-000000000001",
+    "MOOMOO_GATEWAY_ALLOWED_CLIENTS": "192.0.2.0/24",
+    "ANALYSIS_API_ALLOW_LAN": "true",
+    "ANALYSIS_API_HOST": "203.0.113.21",
+    "ANALYSIS_API_PORT": "19002",
+    "ANALYSIS_API_ALLOWED_CLIENTS": "198.51.100.0/24",
+    "ANALYSIS_API_GATEWAY_URL": "https://wrong.example.test:9443",
+    "US_STOCK_HELPER_CONTACT_EMAIL": "runtime@example.test",
+    "ANTHROPIC_API_KEY": "synthetic-anthropic-secret-000000000001",
+}
+
+
+def support_module():
+    try:
+        return importlib.import_module("scripts.local_runtime_support")
+    except ModuleNotFoundError as error:
+        raise AssertionError(
+            "scripts.local_runtime_support is not implemented"
+        ) from error
+
+
+class RuntimeEnvironmentTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+        self.private_parent = self.root / ".us-stock-helper"
+        self.private_parent.mkdir(mode=0o700)
+        self.environment_path = self.private_parent / "lan.env"
+
+    def write_environment(self, content: bytes, *, mode: int = 0o600) -> Path:
+        if self.environment_path.exists():
+            self.environment_path.chmod(0o600)
+        self.environment_path.write_bytes(content)
+        self.environment_path.chmod(mode)
+        return self.environment_path
+
+    @staticmethod
+    def encoded_environment(values: dict[str, str]) -> bytes:
+        lines = ["# synthetic runtime environment", ""]
+        lines.extend(f"{key}={value}" for key, value in values.items())
+        return ("\n".join(lines) + "\n").encode("utf-8")
+
+    def test_parser_accepts_blank_lines_comments_and_exact_current_key_set(
+        self,
+    ) -> None:
+        support = support_module()
+        self.write_environment(self.encoded_environment(SYNTHETIC_ENVIRONMENT))
+        ambient_key = "US_STOCK_HELPER_TEST_AMBIENT_CANARY"
+        ambient_value = "ambient-value-must-not-be-touched"
+
+        with mock.patch.dict(os.environ, {ambient_key: ambient_value}, clear=False):
+            before = dict(os.environ)
+            parsed = support.parse_runtime_environment(self.environment_path)
+            after = dict(os.environ)
+
+        self.assertEqual(parsed, SYNTHETIC_ENVIRONMENT)
+        self.assertEqual(set(parsed), EXPECTED_ENVIRONMENT_KEYS)
+        self.assertEqual(after, before)
+
+    def test_parser_refuses_non_regular_files_including_symlinks(self) -> None:
+        support = support_module()
+        directory_path = self.private_parent / "directory.env"
+        directory_path.mkdir(mode=0o700)
+        target_path = self.write_environment(
+            self.encoded_environment(SYNTHETIC_ENVIRONMENT)
+        )
+        symlink_path = self.private_parent / "linked.env"
+        symlink_path.symlink_to(target_path)
+
+        for candidate in (directory_path, symlink_path):
+            with self.subTest(candidate=candidate.name):
+                with self.assertRaises(support.RuntimeConfigurationError):
+                    support.parse_runtime_environment(candidate)
+
+    def test_parser_refuses_fifo_without_waiting_for_a_writer(self) -> None:
+        fifo_path = self.private_parent / "pipe.env"
+        os.mkfifo(fifo_path, 0o600)
+        repository = Path(__file__).resolve().parents[2]
+        script = """
+from pathlib import Path
+import sys
+from scripts.local_runtime_support import RuntimeConfigurationError, parse_runtime_environment
+try:
+    parse_runtime_environment(Path(sys.argv[1]))
+except RuntimeConfigurationError:
+    raise SystemExit(0)
+raise SystemExit(2)
+"""
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(fifo_path)],
+                cwd=repository,
+                env={"PYTHONPATH": str(repository)},
+                capture_output=True,
+                check=False,
+                timeout=1,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("parser waited for a writer on a non-regular environment file")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(result.stderr, b"")
+
+    def test_parser_refuses_any_mode_other_than_0600(self) -> None:
+        support = support_module()
+        for mode in (0o400, 0o640, 0o644, 0o660):
+            with self.subTest(mode=oct(mode)):
+                self.write_environment(
+                    self.encoded_environment(SYNTHETIC_ENVIRONMENT), mode=mode
+                )
+                with self.assertRaises(support.RuntimeConfigurationError):
+                    support.parse_runtime_environment(self.environment_path)
+
+    def test_parser_refuses_non_private_or_non_directory_parent(self) -> None:
+        support = support_module()
+        self.write_environment(self.encoded_environment(SYNTHETIC_ENVIRONMENT))
+        self.private_parent.chmod(0o755)
+
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.parse_runtime_environment(self.environment_path)
+
+    def test_parser_rejects_invalid_assignment_syntax_without_leaking_values(
+        self,
+    ) -> None:
+        support = support_module()
+        marker = "sensitive-marker-must-not-appear"
+        invalid_contents = {
+            "duplicate key": (
+                f"ANTHROPIC_API_KEY={marker}\nANTHROPIC_API_KEY=second\n"
+            ).encode(),
+            "unknown key": f"UNKNOWN_RUNTIME_KEY={marker}\n".encode(),
+            "invalid key": f"lower_case={marker}\n".encode(),
+            "missing equals": f"ANTHROPIC_API_KEY-{marker}\n".encode(),
+            "nul": f"ANTHROPIC_API_KEY={marker}\x00tail\n".encode(),
+            "tab control": f"ANTHROPIC_API_KEY={marker}\ttail\n".encode(),
+            "carriage return": f"ANTHROPIC_API_KEY={marker}\r\n".encode(),
+            "export syntax": f"export ANTHROPIC_API_KEY={marker}\n".encode(),
+            "single quotes": f"ANTHROPIC_API_KEY='{marker}'\n".encode(),
+            "double quotes": f'ANTHROPIC_API_KEY="{marker}"\n'.encode(),
+            "command substitution": f"ANTHROPIC_API_KEY=$({marker})\n".encode(),
+            "variable substitution": f"ANTHROPIC_API_KEY=${{{marker}}}\n".encode(),
+            "bare variable": f"ANTHROPIC_API_KEY=${marker}\n".encode(),
+            "backticks": f"ANTHROPIC_API_KEY=`{marker}`\n".encode(),
+            "command separator": f"ANTHROPIC_API_KEY={marker};true\n".encode(),
+            "pipe": f"ANTHROPIC_API_KEY={marker}|true\n".encode(),
+            "background command": f"ANTHROPIC_API_KEY={marker}&true\n".encode(),
+            "redirection": f"ANTHROPIC_API_KEY={marker}>file\n".encode(),
+            "shell comment": f"ANTHROPIC_API_KEY={marker} # comment\n".encode(),
+            "invalid utf8": b"ANTHROPIC_API_KEY=\xff\n",
+        }
+
+        for name, content in invalid_contents.items():
+            with self.subTest(name=name):
+                self.write_environment(content)
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    with self.assertRaises(support.RuntimeConfigurationError) as raised:
+                        support.parse_runtime_environment(self.environment_path)
+                public_text = (
+                    stdout.getvalue() + stderr.getvalue() + str(raised.exception)
+                )
+                self.assertNotIn(marker, public_text)
+
+    def test_component_environments_are_fixed_minimal_and_secret_isolated(self) -> None:
+        support = support_module()
+        repository = self.root / "repo"
+        home = self.root / "home"
+        temporary = self.root / "tmp"
+        ca_bundle = self.root / "python" / "certifi" / "cacert.pem"
+        for path in (repository, home, temporary, ca_bundle.parent):
+            path.mkdir(parents=True, exist_ok=True)
+        ca_bundle.write_text("synthetic certificate bundle", encoding="utf-8")
+
+        common = {
+            "HOME": str(home),
+            "PATH": (
+                "/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:"
+                "/usr/bin:/bin:/usr/sbin:/sbin"
+            ),
+            "TMPDIR": str(temporary),
+        }
+        python_common = {
+            **common,
+            "PYTHONUNBUFFERED": "1",
+            "REQUESTS_CA_BUNDLE": str(ca_bundle),
+            "SSL_CERT_FILE": str(ca_bundle),
+        }
+        expected = {
+            "market-loopback": {
+                **python_common,
+                "MOOMOO_GATEWAY_HOST": "127.0.0.1",
+                "MOOMOO_GATEWAY_PORT": "8765",
+                "PYTHONPATH": ":".join(
+                    (
+                        str(repository / "services/market_gateway/src"),
+                        str(repository / "services/analysis_core"),
+                    )
+                ),
+            },
+            "market-lan": {
+                **python_common,
+                "MOOMOO_GATEWAY_ALLOW_LAN": "1",
+                "MOOMOO_GATEWAY_HOST": "0.0.0.0",
+                "MOOMOO_GATEWAY_PORT": "8766",
+                "MOOMOO_GATEWAY_TOKEN": SYNTHETIC_ENVIRONMENT["MOOMOO_GATEWAY_TOKEN"],
+                "MOOMOO_GATEWAY_ALLOWED_CLIENTS": SYNTHETIC_ENVIRONMENT[
+                    "MOOMOO_GATEWAY_ALLOWED_CLIENTS"
+                ],
+                "PYTHONPATH": ":".join(
+                    (
+                        str(repository / "services/market_gateway/src"),
+                        str(repository / "services/analysis_core"),
+                    )
+                ),
+            },
+            "analysis-api": {
+                **python_common,
+                "ANALYSIS_API_ALLOW_LAN": "1",
+                "ANALYSIS_API_HOST": "0.0.0.0",
+                "ANALYSIS_API_PORT": "8770",
+                "ANALYSIS_API_ALLOWED_CLIENTS": SYNTHETIC_ENVIRONMENT[
+                    "ANALYSIS_API_ALLOWED_CLIENTS"
+                ],
+                "ANALYSIS_API_GATEWAY_URL": "http://127.0.0.1:8765",
+                "ANTHROPIC_API_KEY": SYNTHETIC_ENVIRONMENT["ANTHROPIC_API_KEY"],
+                "DEVICE_AUTH_DATABASE": str(
+                    home / ".us-stock-helper/state/devices.sqlite3"
+                ),
+                "PYTHONPATH": ":".join(
+                    str(repository / relative)
+                    for relative in (
+                        "services/analysis_api/src",
+                        "services/analysis_core",
+                        "services/information_layer",
+                        "services/adviser_layer",
+                        "services/decision_engine",
+                        "services/device_auth/src",
+                        "services/adviser_llm/src",
+                    )
+                ),
+                "US_STOCK_HELPER_CONTACT_EMAIL": SYNTHETIC_ENVIRONMENT[
+                    "US_STOCK_HELPER_CONTACT_EMAIL"
+                ],
+            },
+            "metro": {
+                **common,
+                "EXPO_PUBLIC_INITIAL_DEMO_MODE": "false",
+            },
+        }
+
+        actual = {
+            component: support.build_component_environment(
+                component,
+                SYNTHETIC_ENVIRONMENT,
+                repository=repository,
+                home=home,
+                temporary_directory=temporary,
+                ca_bundle=ca_bundle,
+            )
+            for component in expected
+        }
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(
+            [
+                name
+                for name, environment in actual.items()
+                if "ANTHROPIC_API_KEY" in environment
+            ],
+            ["analysis-api"],
+        )
+        self.assertEqual(
+            [
+                name
+                for name, environment in actual.items()
+                if "MOOMOO_GATEWAY_TOKEN" in environment
+            ],
+            ["market-lan"],
+        )
+
+    def test_component_builder_rejects_unknown_component_and_relative_paths(
+        self,
+    ) -> None:
+        support = support_module()
+        absolute = self.root.resolve()
+
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.build_component_environment(
+                "unknown-component",
+                SYNTHETIC_ENVIRONMENT,
+                repository=absolute,
+                home=absolute,
+                temporary_directory=absolute,
+                ca_bundle=absolute / "cacert.pem",
+            )
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.build_component_environment(
+                "metro",
+                SYNTHETIC_ENVIRONMENT,
+                repository=Path("relative-repository"),
+                home=absolute,
+                temporary_directory=absolute,
+                ca_bundle=absolute / "cacert.pem",
+            )
+
+    def test_component_builder_reports_missing_required_key_without_other_values(
+        self,
+    ) -> None:
+        support = support_module()
+        values = dict(SYNTHETIC_ENVIRONMENT)
+        values.pop("MOOMOO_GATEWAY_TOKEN")
+
+        with self.assertRaises(support.RuntimeConfigurationError) as raised:
+            support.build_component_environment(
+                "market-lan",
+                values,
+                repository=self.root,
+                home=self.root,
+                temporary_directory=self.root,
+                ca_bundle=self.root / "cacert.pem",
+            )
+
+        message = str(raised.exception)
+        self.assertIn("MOOMOO_GATEWAY_TOKEN", message)
+        for value in SYNTHETIC_ENVIRONMENT.values():
+            self.assertNotIn(value, message)
+
+    def test_private_path_helpers_create_and_repair_exact_modes_silently(self) -> None:
+        support = support_module()
+        runtime_directory = self.root / "runtime"
+        log_directory = runtime_directory / "logs"
+        log_file = log_directory / "market-loopback.log"
+        marker = b"synthetic-private-file-value"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            support.ensure_private_directory(runtime_directory)
+            support.ensure_private_directory(log_directory)
+            support.ensure_private_file(log_file)
+            runtime_directory.chmod(0o755)
+            log_file.chmod(0o644)
+            support.ensure_private_directory(runtime_directory)
+            support.ensure_private_file(log_file)
+            support.atomic_write_private_file(log_file, marker)
+
+        self.assertEqual(stat.S_IMODE(runtime_directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(log_directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(log_file.stat().st_mode), 0o600)
+        self.assertEqual(log_file.read_bytes(), marker)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(
+            [path.name for path in log_directory.iterdir()],
+            ["market-loopback.log"],
+        )
+
+    def test_private_path_helpers_refuse_symlinks_and_non_private_parents(self) -> None:
+        support = support_module()
+        public_directory = self.root / "public"
+        public_directory.mkdir(mode=0o755)
+        target = self.root / "target.log"
+        target.write_text("target", encoding="utf-8")
+        target.chmod(0o600)
+        linked = public_directory / "linked.log"
+        linked.symlink_to(target)
+
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.ensure_private_file(linked)
+        with self.assertRaises(support.RuntimeConfigurationError):
+            support.atomic_write_private_file(public_directory / "new.log", b"value")
+
+
+if __name__ == "__main__":
+    unittest.main()
