@@ -58,7 +58,7 @@ class RuntimeEnvironmentTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
-        self.root = Path(self.temporary_directory.name)
+        self.root = Path(self.temporary_directory.name).resolve()
         self.private_parent = self.root / ".us-stock-helper"
         self.private_parent.mkdir(mode=0o700)
         self.environment_path = self.private_parent / "lan.env"
@@ -96,6 +96,14 @@ class RuntimeEnvironmentTestCase(unittest.TestCase):
             )
         finally:
             os.close(descriptor)
+
+    @staticmethod
+    def open_search(path: Path) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        if sys.platform == "darwin":
+            flags = 0x40000000 | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, flags)
 
     @staticmethod
     def encoded_environment(values: dict[str, str]) -> bytes:
@@ -264,9 +272,13 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
+policy = getattr(module, "directory_acl_is_absent_or_protective", None)
+if policy is None:
+    raise AssertionError("native ACL policy is unavailable")
 for operation in (
     module.DEFAULT_FILE_SYSTEM.has_extended_acl,
     module.DEFAULT_FILE_SYSTEM.clear_extended_acl,
+    lambda descriptor: policy(descriptor, allow_protective=True),
 ):
     try:
         operation(0)
@@ -315,6 +327,135 @@ with tempfile.TemporaryDirectory() as temporary:
                 )
                 self.assertEqual(result.stdout, b"")
                 self.assertEqual(result.stderr, b"")
+
+    def test_directory_acl_policy_accepts_only_the_macos_protective_entry(
+        self,
+    ) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("macOS extended ACL integration test")
+        support = support_module()
+        policy = support.directory_acl_is_absent_or_protective
+        for protected_path in (
+            Path.home().resolve(),
+            Path.home().resolve() / "Documents",
+        ):
+            with self.subTest(protected_path=protected_path):
+                descriptor = self.open_search(protected_path)
+                try:
+                    self.assertTrue(
+                        policy(
+                            descriptor,
+                            allow_protective=True,
+                        )
+                    )
+                    self.assertFalse(
+                        policy(
+                            descriptor,
+                            allow_protective=False,
+                        )
+                    )
+                finally:
+                    os.close(descriptor)
+
+        plain = self.root / "plain-acl-directory"
+        plain.mkdir(mode=0o700)
+        descriptor = self.open_search(plain)
+        try:
+            self.assertTrue(
+                policy(
+                    descriptor,
+                    allow_protective=False,
+                )
+            )
+        finally:
+            os.close(descriptor)
+
+        invalid_entries = {
+            "allow writes": ["everyone allow add_file,add_subdirectory,delete_child"],
+            "extra deny permission": ["everyone deny delete,delete_child"],
+            "inherit flag": ["everyone deny delete,file_inherit"],
+            "extra entry": ["everyone deny delete", "everyone deny read"],
+        }
+        for name, entries in invalid_entries.items():
+            with self.subTest(name=name):
+                directory = self.root / name.replace(" ", "-")
+                directory.mkdir(mode=0o700)
+                for entry in entries:
+                    self.add_acl(directory, entry)
+                descriptor = self.open_search(directory)
+                try:
+                    self.assertFalse(
+                        policy(
+                            descriptor,
+                            allow_protective=True,
+                        )
+                    )
+                finally:
+                    os.close(descriptor)
+
+    def test_directory_acl_policy_frees_qualifier_and_acl_exactly_once(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("macOS extended ACL ABI test")
+        support = support_module()
+        policy = support.directory_acl_is_absent_or_protective
+        qualifier = (support.ctypes.c_ubyte * 16)(*range(16))
+
+        class SyntheticAclLibrary:
+            def __init__(self) -> None:
+                self.entries = 0
+                self.freed: list[int] = []
+
+            def acl_get_fd(self, descriptor):
+                return 101
+
+            def acl_get_entry(self, acl, entry_id, output):
+                if self.entries:
+                    support.ctypes.set_errno(support.errno.EINVAL)
+                    return -1
+                self.entries += 1
+                output._obj.value = 202
+                return 0
+
+            def acl_get_tag_type(self, entry, output):
+                output._obj.value = 2
+                return 0
+
+            def acl_get_qualifier(self, entry):
+                return support.ctypes.addressof(qualifier)
+
+            def acl_get_permset_mask_np(self, entry, output):
+                output._obj.value = 0x10
+                return 0
+
+            def acl_get_flagset_np(self, value, output):
+                output._obj.value = 303
+                return 0
+
+            def acl_get_flag_np(self, flagset, flag):
+                return 0
+
+            def acl_free(self, value):
+                pointer = value if isinstance(value, int) else value.value
+                self.freed.append(pointer)
+                return 0
+
+        library = SyntheticAclLibrary()
+        with mock.patch.object(support, "_LIBC", library), mock.patch.object(
+            support,
+            "_everyone_group_uuid",
+            return_value=bytes(qualifier),
+        ):
+            self.assertTrue(
+                policy(
+                    99,
+                    allow_protective=True,
+                )
+            )
+
+        self.assertEqual(
+            library.freed,
+            [support.ctypes.addressof(qualifier), 101],
+        )
 
     def test_parser_rejects_invalid_assignment_syntax_without_leaking_values(
         self,

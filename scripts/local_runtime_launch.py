@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import grp
 import os
 import plistlib
 import pwd
@@ -19,24 +21,28 @@ if __package__:
     from .local_runtime_support import (
         DEFAULT_FILE_SYSTEM,
         DEFAULT_PROCESS_RUNNER,
+        COMPONENT_SPECS,
         FIXED_PATH,
         PRIVATE_DIRECTORY_MODE,
         FileSystemRunner,
         ProcessRunner,
         RuntimeConfigurationError,
         build_component_environment,
+        directory_acl_is_absent_or_protective,
         parse_runtime_environment,
     )
 else:
     from local_runtime_support import (  # type: ignore[no-redef]
         DEFAULT_FILE_SYSTEM,
         DEFAULT_PROCESS_RUNNER,
+        COMPONENT_SPECS,
         FIXED_PATH,
         PRIVATE_DIRECTORY_MODE,
         FileSystemRunner,
         ProcessRunner,
         RuntimeConfigurationError,
         build_component_environment,
+        directory_acl_is_absent_or_protective,
         parse_runtime_environment,
     )
 
@@ -45,6 +51,20 @@ EXPECTED_BRANCH = "feature/iphone-demo"
 GIT_EXECUTABLE = Path("/usr/bin/git")
 NODE_22_EXECUTABLE = Path("/opt/homebrew/opt/node@22/bin/node")
 LAUNCH_THROTTLE_SECONDS = 10
+_DARWIN_O_EXEC = 0x40000000
+_DARWIN_O_SYMLINK = 0x00200000
+_MAX_SYMLINK_HOPS = 8
+_HOMEBREW_GROUP_WRITABLE_DIRECTORIES = frozenset(
+    {Path("/opt/homebrew/opt"), Path("/opt/homebrew/Cellar")}
+)
+_PYTHON_GROUP_WRITABLE_PATHS = frozenset(
+    {
+        Path("/Library/Frameworks/Python.framework/Versions"),
+        Path("/Library/Frameworks/Python.framework/Versions/3.11"),
+        Path("/Library/Frameworks/Python.framework/Versions/3.11/bin"),
+        Path("/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11"),
+    }
+)
 
 COMPONENT_LABELS: Mapping[str, str] = MappingProxyType(
     {
@@ -213,22 +233,13 @@ def validate_repository_identity(
     """Require this launcher's exact feature worktree and Git identity."""
 
     repository_path = _absolute_path(repository)
-    try:
-        canonical_repository = repository_path.resolve(strict=True)
-    except OSError:
-        raise RuntimeConfigurationError(
-            "runtime repository identity is invalid"
-        ) from None
     launcher_repository = Path(__file__).resolve().parents[1]
-    if (
-        canonical_repository != repository_path
-        or canonical_repository != launcher_repository
-    ):
+    if repository_path != launcher_repository:
         raise RuntimeConfigurationError("runtime repository identity is invalid")
-    _validate_runtime_directory(repository_path, private=False)
+    validate_runtime_directory_chain(repository_path)
 
     git_file = repository_path / ".git"
-    validate_runtime_file(git_file, executable=False, allow_symlink=False)
+    validate_runtime_file(git_file, executable=False)
     try:
         git_reference = git_file.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -240,9 +251,9 @@ def validate_repository_identity(
     git_directory = Path(git_reference.removeprefix("gitdir: ").strip())
     if not git_directory.is_absolute():
         raise RuntimeConfigurationError("runtime repository identity is invalid")
-    _validate_runtime_directory(git_directory, private=False)
+    validate_runtime_directory_chain(git_directory)
 
-    validate_runtime_file(GIT_EXECUTABLE, executable=True, allow_symlink=False)
+    validate_runtime_file(GIT_EXECUTABLE, executable=True)
     git_environment = {"PATH": FIXED_PATH, "LC_ALL": "C"}
     commands = (
         [
@@ -283,95 +294,395 @@ def validate_repository_identity(
     validate_runtime_file(
         repository_path / "scripts/local_runtime_launch.py",
         executable=False,
-        allow_symlink=False,
     )
     return repository_path
+
+
+def validate_runtime_directory_chain(
+    path: os.PathLike[str] | str,
+    *,
+    required_mode: int | None = None,
+    filesystem: FileSystemRunner = DEFAULT_FILE_SYSTEM,
+) -> Path:
+    """Validate every absolute directory component with fd-relative opens."""
+
+    directory = _absolute_path(path)
+    _validate_trusted_path(
+        directory,
+        final_kind="directory",
+        allowed_symlinks=(),
+        trusted_external=False,
+        required_mode=required_mode,
+        executable=False,
+        filesystem=filesystem,
+    )
+    return directory
 
 
 def validate_runtime_file(
     path: os.PathLike[str] | str,
     *,
     executable: bool,
-    allow_symlink: bool = True,
+    allowed_symlinks: Sequence[os.PathLike[str] | str] = (),
+    trusted_external: bool = False,
+    required_mode: int | None = None,
     filesystem: FileSystemRunner = DEFAULT_FILE_SYSTEM,
 ) -> Path:
-    """Validate a trusted regular file while preserving an allowed venv symlink."""
+    """Validate a file and its chain while preserving an explicitly trusted argv."""
 
     file_path = _absolute_path(path)
-    try:
-        link_metadata = filesystem.lstat(file_path)
-        if stat.S_ISLNK(link_metadata.st_mode):
-            if not allow_symlink or link_metadata.st_uid not in {
-                0,
-                filesystem.geteuid(),
-            }:
-                raise RuntimeConfigurationError("runtime file is unsafe")
-            resolved_path = file_path.resolve(strict=True)
-        else:
-            resolved_path = file_path
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0)
-        )
-        descriptor = filesystem.open_fd(resolved_path, flags)
-    except (OSError, RuntimeConfigurationError):
-        raise RuntimeConfigurationError("runtime file is unsafe") from None
-    try:
-        metadata = filesystem.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeConfigurationError("runtime file is unsafe")
-        if metadata.st_uid not in {0, filesystem.geteuid()}:
-            raise RuntimeConfigurationError("runtime file is unsafe")
-        mode = stat.S_IMODE(metadata.st_mode)
-        if mode & 0o002 or (metadata.st_uid != 0 and mode & 0o020):
-            raise RuntimeConfigurationError("runtime file is unsafe")
-        if executable and (mode & 0o111 == 0 or not os.access(resolved_path, os.X_OK)):
-            raise RuntimeConfigurationError("runtime file is unsafe")
-        if filesystem.has_extended_acl(descriptor):
-            raise RuntimeConfigurationError("runtime file is unsafe")
-    except OSError:
-        raise RuntimeConfigurationError("runtime file is unsafe") from None
-    finally:
-        filesystem.close_fd(descriptor)
+    _validate_trusted_path(
+        file_path,
+        final_kind="file",
+        allowed_symlinks=allowed_symlinks,
+        trusted_external=trusted_external,
+        required_mode=required_mode,
+        executable=executable,
+        filesystem=filesystem,
+    )
     return file_path
 
 
-def _validate_runtime_directory(
-    path: os.PathLike[str] | str,
+def _validate_trusted_path(
+    path: Path,
     *,
-    private: bool,
-    allow_acl: bool = False,
-    filesystem: FileSystemRunner = DEFAULT_FILE_SYSTEM,
+    final_kind: str,
+    allowed_symlinks: Sequence[os.PathLike[str] | str],
+    trusted_external: bool,
+    required_mode: int | None,
+    executable: bool,
+    filesystem: FileSystemRunner,
 ) -> Path:
-    directory = _absolute_path(path)
+    if final_kind not in {"directory", "file"} or any(
+        part == ".." for part in path.parts
+    ):
+        raise RuntimeConfigurationError("runtime path is unsafe")
+    allowed = frozenset(_absolute_path(candidate) for candidate in allowed_symlinks)
+    queue = list(path.parts[1:])
+    current_parts: list[str] = []
+    descriptor: int | None = None
+    pending_descriptor: int | None = None
+    symlink_hops = 0
+    try:
+        descriptor = _open_root(filesystem)
+        _validate_directory_descriptor(
+            descriptor,
+            Path("/"),
+            trusted_external=trusted_external,
+            required_mode=None,
+            filesystem=filesystem,
+        )
+        if not queue:
+            if final_kind != "directory":
+                raise RuntimeConfigurationError("runtime path is unsafe")
+            return Path("/")
+
+        while queue:
+            if descriptor is None:
+                raise RuntimeConfigurationError("runtime path is unsafe")
+            name = queue.pop(0)
+            if not name or name in {".", ".."}:
+                raise RuntimeConfigurationError("runtime path is unsafe")
+            candidate = Path("/").joinpath(*current_parts, name)
+            is_final = not queue
+            flags = (
+                _file_open_flags()
+                if is_final and final_kind == "file"
+                else _directory_open_flags()
+            )
+            try:
+                child = filesystem.open_fd(name, flags, dir_fd=descriptor)
+            except OSError as error:
+                if (
+                    error.errno not in {errno.ELOOP, errno.ENOTDIR}
+                    or candidate not in allowed
+                ):
+                    raise RuntimeConfigurationError("runtime path is unsafe") from None
+                symlink_hops += 1
+                if symlink_hops > _MAX_SYMLINK_HOPS:
+                    raise RuntimeConfigurationError("runtime path is unsafe")
+                target = _read_trusted_symlink(
+                    descriptor,
+                    name,
+                    filesystem=filesystem,
+                )
+                normalized_target = _normalize_symlink_target(current_parts, target)
+                if not _runtime_symlink_target_is_allowed(
+                    candidate,
+                    normalized_target,
+                ):
+                    raise RuntimeConfigurationError("runtime symlink is unsafe")
+                queue = normalized_target + queue
+                owned_descriptor = descriptor
+                descriptor = None
+                filesystem.close_fd(owned_descriptor)
+                descriptor = _open_root(filesystem)
+                current_parts = []
+                _validate_directory_descriptor(
+                    descriptor,
+                    Path("/"),
+                    trusted_external=trusted_external,
+                    required_mode=None,
+                    filesystem=filesystem,
+                )
+                continue
+
+            child_path = candidate
+            pending_descriptor = child
+            if is_final and final_kind == "file":
+                _validate_file_descriptor(
+                    child,
+                    child_path,
+                    trusted_external=trusted_external,
+                    required_mode=required_mode,
+                    executable=executable,
+                    filesystem=filesystem,
+                )
+            else:
+                _validate_directory_descriptor(
+                    child,
+                    child_path,
+                    trusted_external=trusted_external,
+                    required_mode=required_mode if is_final else None,
+                    filesystem=filesystem,
+                )
+            owned_descriptor = descriptor
+            descriptor = None
+            filesystem.close_fd(owned_descriptor)
+            descriptor = child
+            pending_descriptor = None
+            current_parts.append(name)
+        return Path("/").joinpath(*current_parts)
+    except (OSError, RuntimeConfigurationError, ValueError):
+        raise RuntimeConfigurationError("runtime path is unsafe") from None
+    finally:
+        owned_descriptors = (pending_descriptor, descriptor)
+        pending_descriptor = None
+        descriptor = None
+        close_failed = False
+        for owned_descriptor in owned_descriptors:
+            if owned_descriptor is None:
+                continue
+            try:
+                filesystem.close_fd(owned_descriptor)
+            except OSError:
+                close_failed = True
+        if close_failed:
+            raise RuntimeConfigurationError("runtime path is unsafe") from None
+
+
+def _open_root(filesystem: FileSystemRunner) -> int:
+    return filesystem.open_fd(Path("/"), _directory_open_flags())
+
+
+def _directory_open_flags() -> int:
+    access = (
+        _DARWIN_O_EXEC | getattr(os, "O_DIRECTORY", 0)
+        if sys.platform == "darwin"
+        else os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    )
+    return access | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _file_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+
+
+def _read_trusted_symlink(
+    parent_descriptor: int,
+    name: str,
+    *,
+    filesystem: FileSystemRunner,
+) -> str:
     descriptor: int | None = None
     try:
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0)
-            | getattr(os, "O_DIRECTORY", 0)
+        descriptor = filesystem.open_fd(
+            name,
+            _DARWIN_O_SYMLINK | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent_descriptor,
         )
-        descriptor = filesystem.open_fd(directory, flags)
         metadata = filesystem.fstat(descriptor)
-        mode = stat.S_IMODE(metadata.st_mode)
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise RuntimeConfigurationError("runtime directory is unsafe")
-        if metadata.st_uid not in {0, filesystem.geteuid()} or mode & 0o002:
-            raise RuntimeConfigurationError("runtime directory is unsafe")
-        if private and mode != PRIVATE_DIRECTORY_MODE:
-            raise RuntimeConfigurationError("runtime directory is unsafe")
-        if not allow_acl and filesystem.has_extended_acl(descriptor):
-            raise RuntimeConfigurationError("runtime directory is unsafe")
+        if not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid not in {
+            0,
+            filesystem.geteuid(),
+        }:
+            raise RuntimeConfigurationError("runtime symlink is unsafe")
+        target = os.readlink(name, dir_fd=parent_descriptor)
+        if not target:
+            raise RuntimeConfigurationError("runtime symlink is unsafe")
+        return target
     except (OSError, RuntimeConfigurationError):
-        raise RuntimeConfigurationError("runtime directory is unsafe") from None
+        raise RuntimeConfigurationError("runtime symlink is unsafe") from None
     finally:
         if descriptor is not None:
             filesystem.close_fd(descriptor)
-    return directory
+
+
+def _normalize_symlink_target(parent_parts: Sequence[str], target: str) -> list[str]:
+    target_path = Path(target)
+    normalized = [] if target_path.is_absolute() else list(parent_parts)
+    for part in target_path.parts:
+        if part in {"", ".", "/"}:
+            continue
+        if part == "..":
+            if not normalized:
+                raise RuntimeConfigurationError("runtime symlink is unsafe")
+            normalized.pop()
+        else:
+            normalized.append(part)
+    if not normalized:
+        raise RuntimeConfigurationError("runtime symlink is unsafe")
+    return normalized
+
+
+def _runtime_symlink_target_is_allowed(
+    link: Path,
+    normalized_target: Sequence[str],
+) -> bool:
+    target = Path("/").joinpath(*normalized_target)
+    repository = Path(__file__).resolve().parents[1]
+    venv_bin = repository / "services/market_gateway/.venv/bin"
+    exact_targets = {
+        venv_bin / "python": venv_bin / "python3.11",
+        venv_bin
+        / "python3.11": Path(
+            "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11"
+        ),
+    }
+    if link in exact_targets:
+        return target == exact_targets[link]
+    if link == Path("/opt/homebrew/opt/node@22"):
+        return target.is_relative_to(Path("/opt/homebrew/Cellar/node@22"))
+    return False
+
+
+def _validate_directory_descriptor(
+    descriptor: int,
+    path: Path,
+    *,
+    trusted_external: bool,
+    required_mode: int | None,
+    filesystem: FileSystemRunner,
+) -> None:
+    metadata = filesystem.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise RuntimeConfigurationError("runtime directory is unsafe")
+    _validate_owner_and_mode(
+        path,
+        metadata,
+        trusted_external=trusted_external,
+        required_mode=required_mode,
+        filesystem=filesystem,
+    )
+    allow_protective = path in _protective_acl_paths(filesystem)
+    if not directory_acl_is_absent_or_protective(
+        descriptor,
+        allow_protective=allow_protective,
+    ):
+        raise RuntimeConfigurationError("runtime directory is unsafe")
+
+
+def _validate_file_descriptor(
+    descriptor: int,
+    path: Path,
+    *,
+    trusted_external: bool,
+    required_mode: int | None,
+    executable: bool,
+    filesystem: FileSystemRunner,
+) -> None:
+    metadata = filesystem.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeConfigurationError("runtime file is unsafe")
+    mode = _validate_owner_and_mode(
+        path,
+        metadata,
+        trusted_external=trusted_external,
+        required_mode=required_mode,
+        filesystem=filesystem,
+    )
+    if executable and not _is_executable_by_effective_user(
+        metadata,
+        mode,
+        filesystem=filesystem,
+    ):
+        raise RuntimeConfigurationError("runtime file is unsafe")
+    if filesystem.has_extended_acl(descriptor):
+        raise RuntimeConfigurationError("runtime file is unsafe")
+
+
+def _validate_owner_and_mode(
+    path: Path,
+    metadata: os.stat_result,
+    *,
+    trusted_external: bool,
+    required_mode: int | None,
+    filesystem: FileSystemRunner,
+) -> int:
+    mode = stat.S_IMODE(metadata.st_mode)
+    if metadata.st_uid not in {0, filesystem.geteuid()} or mode & 0o002:
+        raise RuntimeConfigurationError("runtime path is unsafe")
+    if mode & 0o020 and not _is_exact_trusted_external_group_write(
+        path,
+        metadata,
+        trusted_external=trusted_external,
+        filesystem=filesystem,
+    ):
+        raise RuntimeConfigurationError("runtime path is unsafe")
+    if required_mode is not None and mode != required_mode:
+        raise RuntimeConfigurationError("runtime path is unsafe")
+    return mode
+
+
+def _is_executable_by_effective_user(
+    metadata: os.stat_result,
+    mode: int,
+    *,
+    filesystem: FileSystemRunner,
+) -> bool:
+    effective_uid = filesystem.geteuid()
+    if effective_uid == 0:
+        return bool(mode & 0o111)
+    if metadata.st_uid == effective_uid:
+        return bool(mode & stat.S_IXUSR)
+    effective_groups = {filesystem.getegid(), *filesystem.getgroups()}
+    if metadata.st_gid in effective_groups:
+        return bool(mode & stat.S_IXGRP)
+    return bool(mode & stat.S_IXOTH)
+
+
+def _is_exact_trusted_external_group_write(
+    path: Path,
+    metadata: os.stat_result,
+    *,
+    trusted_external: bool,
+    filesystem: FileSystemRunner,
+) -> bool:
+    if not trusted_external or stat.S_IMODE(metadata.st_mode) != 0o775:
+        return False
+    try:
+        admin_gid = grp.getgrnam("admin").gr_gid
+        wheel_gid = grp.getgrnam("wheel").gr_gid
+    except KeyError:
+        return False
+    if path in _HOMEBREW_GROUP_WRITABLE_DIRECTORIES:
+        return metadata.st_uid == filesystem.geteuid() and metadata.st_gid == admin_gid
+    if path in _PYTHON_GROUP_WRITABLE_PATHS:
+        return metadata.st_uid == 0 and metadata.st_gid == wheel_gid
+    return False
+
+
+def _protective_acl_paths(filesystem: FileSystemRunner) -> frozenset[Path]:
+    try:
+        home = Path(pwd.getpwuid(filesystem.geteuid()).pw_dir).resolve(strict=True)
+    except (KeyError, OSError):
+        raise RuntimeConfigurationError("runtime home directory is unsafe") from None
+    return frozenset({home, home / "Documents", home / "Library"})
 
 
 def _validate_account_home(
@@ -391,12 +702,8 @@ def _validate_account_home(
         raise RuntimeConfigurationError("runtime home directory is unsafe") from None
     if home != canonical_home or home != account_home:
         raise RuntimeConfigurationError("runtime home directory is unsafe")
-    return _validate_runtime_directory(
-        home,
-        private=False,
-        allow_acl=True,
-        filesystem=filesystem,
-    )
+    validate_runtime_directory_chain(home, filesystem=filesystem)
+    return home
 
 
 def prepare_launch(
@@ -418,12 +725,20 @@ def prepare_launch(
         process_runner=process_runner,
     )
     home_path = _validate_account_home(home)
-    temporary_path = _validate_runtime_directory(temporary_directory, private=True)
+    temporary_path = validate_runtime_directory_chain(
+        temporary_directory,
+        required_mode=PRIVATE_DIRECTORY_MODE,
+    )
 
     if component in SECRET_COMPONENTS:
         if environment_file is None:
             raise RuntimeConfigurationError("runtime environment is unavailable")
-        parsed_environment = parse_runtime_environment(_absolute_path(environment_file))
+        environment_path = _absolute_path(environment_file)
+        validate_runtime_directory_chain(
+            environment_path.parent,
+            required_mode=PRIVATE_DIRECTORY_MODE,
+        )
+        parsed_environment = parse_runtime_environment(environment_path)
     else:
         if environment_file is not None:
             raise RuntimeConfigurationError("runtime environment is not allowed")
@@ -435,12 +750,18 @@ def prepare_launch(
         ca_path = validate_runtime_file(
             _absolute_path(ca_bundle),
             executable=False,
-            allow_symlink=False,
+        )
+        market_python_path = (
+            repository_path / "services/market_gateway/.venv/bin/python"
         )
         market_python = validate_runtime_file(
-            repository_path / "services/market_gateway/.venv/bin/python",
+            market_python_path,
             executable=True,
-            allow_symlink=True,
+            allowed_symlinks=(
+                market_python_path,
+                market_python_path.parent / "python3.11",
+            ),
+            trusted_external=True,
         )
         module = (
             "us_stock_helper_analysis_api"
@@ -452,7 +773,9 @@ def prepare_launch(
             if component == "analysis-api"
             else "services/market_gateway/src/us_stock_helper_market_gateway/__main__.py"
         )
-        validate_runtime_file(entrypoint, executable=False, allow_symlink=False)
+        validate_runtime_file(entrypoint, executable=False)
+        for relative_path in COMPONENT_SPECS[component].python_paths:
+            validate_runtime_directory_chain(repository_path / relative_path)
         executable_path = market_python
         arguments = (str(market_python), "-m", module)
         working_directory = repository_path
@@ -462,17 +785,16 @@ def prepare_launch(
         executable_path = validate_runtime_file(
             NODE_22_EXECUTABLE,
             executable=True,
-            allow_symlink=False,
+            allowed_symlinks=(Path("/opt/homebrew/opt/node@22"),),
+            trusted_external=True,
         )
         expo_cli = validate_runtime_file(
             repository_path / "apps/mobile/node_modules/expo/bin/cli",
             executable=False,
-            allow_symlink=False,
         )
         validate_runtime_file(
             repository_path / "apps/mobile/package.json",
             executable=False,
-            allow_symlink=False,
         )
         arguments = (
             str(executable_path),
@@ -483,9 +805,8 @@ def prepare_launch(
             "--port",
             "8088",
         )
-        working_directory = _validate_runtime_directory(
-            repository_path / "apps/mobile",
-            private=False,
+        working_directory = validate_runtime_directory_chain(
+            repository_path / "apps/mobile"
         )
         ca_path = repository_path  # Unused by the Metro component environment.
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import grp
 import os
 import re
 import stat
@@ -73,6 +74,8 @@ class FileSystemRunner:
     unlink: Callable[[PathLike], None]
     mkstemp: Callable[..., tuple[int, str]]
     geteuid: Callable[[], int]
+    getegid: Callable[[], int]
+    getgroups: Callable[[], list[int]]
     has_extended_acl: Callable[[int], bool]
     clear_extended_acl: Callable[[int], None]
 
@@ -92,18 +95,55 @@ def _load_acl_library() -> ctypes.CDLL | None:
         library = ctypes.CDLL(None, use_errno=True)
         library.acl_get_fd.argtypes = [ctypes.c_int]
         library.acl_get_fd.restype = ctypes.c_void_p
+        library.acl_get_entry.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        library.acl_get_entry.restype = ctypes.c_int
+        library.acl_get_tag_type.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        library.acl_get_tag_type.restype = ctypes.c_int
+        library.acl_get_qualifier.argtypes = [ctypes.c_void_p]
+        library.acl_get_qualifier.restype = ctypes.c_void_p
+        library.acl_get_permset_mask_np.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint64),
+        ]
+        library.acl_get_permset_mask_np.restype = ctypes.c_int
+        library.acl_get_flagset_np.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        library.acl_get_flagset_np.restype = ctypes.c_int
+        library.acl_get_flag_np.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        library.acl_get_flag_np.restype = ctypes.c_int
         library.acl_init.argtypes = [ctypes.c_int]
         library.acl_init.restype = ctypes.c_void_p
         library.acl_set_fd.argtypes = [ctypes.c_int, ctypes.c_void_p]
         library.acl_set_fd.restype = ctypes.c_int
         library.acl_free.argtypes = [ctypes.c_void_p]
         library.acl_free.restype = ctypes.c_int
+        library.mbr_gid_to_uuid.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_ubyte),
+        ]
+        library.mbr_gid_to_uuid.restype = ctypes.c_int
     except (AttributeError, OSError):
         return None
     return library
 
 
 _LIBC = _load_acl_library()
+
+_ACL_FIRST_ENTRY = 0
+_ACL_NEXT_ENTRY = -1
+_ACL_EXTENDED_DENY = 2
+_ACL_DELETE = 1 << 4
+_ACL_FLAGS = (1, 1 << 4, 1 << 5, 1 << 6, 1 << 7, 1 << 8, 1 << 17)
+_UUID_SIZE = 16
 
 
 def _require_acl_library() -> ctypes.CDLL:
@@ -127,6 +167,112 @@ def _has_extended_acl(descriptor: int) -> bool:
         if library.acl_free(acl) != 0:
             error_number = ctypes.get_errno()
             raise OSError(error_number, "extended ACL could not be released")
+
+
+def _everyone_group_uuid(library: ctypes.CDLL) -> bytes:
+    try:
+        everyone_gid = grp.getgrnam("everyone").gr_gid
+    except KeyError:
+        raise OSError(errno.ENOTSUP, "everyone group is unavailable") from None
+    value = (ctypes.c_ubyte * _UUID_SIZE)()
+    result = library.mbr_gid_to_uuid(everyone_gid, value)
+    if result != 0:
+        raise OSError(result, "everyone group UUID is unavailable")
+    return bytes(value)
+
+
+def _acl_flags_are_empty(library: ctypes.CDLL, value: ctypes.c_void_p) -> bool:
+    flagset = ctypes.c_void_p()
+    if library.acl_get_flagset_np(value, ctypes.byref(flagset)) != 0 or not flagset:
+        error_number = ctypes.get_errno() or errno.EINVAL
+        raise OSError(error_number, "ACL flags could not be read")
+    for flag in _ACL_FLAGS:
+        result = library.acl_get_flag_np(flagset, flag)
+        if result < 0:
+            error_number = ctypes.get_errno() or errno.EINVAL
+            raise OSError(error_number, "ACL flag could not be read")
+        if result != 0:
+            return False
+    return True
+
+
+def _free_acl_object(library: ctypes.CDLL, value: ctypes.c_void_p | int) -> None:
+    if library.acl_free(value) != 0:
+        error_number = ctypes.get_errno() or errno.EINVAL
+        raise OSError(error_number, "ACL object could not be released")
+
+
+def directory_acl_is_absent_or_protective(
+    descriptor: int,
+    *,
+    allow_protective: bool,
+) -> bool:
+    """Accept no ACL, or one exact macOS ``everyone deny delete`` entry."""
+
+    library = _require_acl_library()
+    ctypes.set_errno(0)
+    acl = library.acl_get_fd(descriptor)
+    if not acl:
+        error_number = ctypes.get_errno()
+        if error_number == errno.ENOENT:
+            return True
+        raise OSError(error_number or errno.EINVAL, "directory ACL could not be read")
+
+    try:
+        if not allow_protective or not _acl_flags_are_empty(library, acl):
+            return False
+
+        entry = ctypes.c_void_p()
+        ctypes.set_errno(0)
+        if library.acl_get_entry(acl, _ACL_FIRST_ENTRY, ctypes.byref(entry)) != 0:
+            error_number = ctypes.get_errno() or errno.EINVAL
+            raise OSError(error_number, "directory ACL entry could not be read")
+        if not entry:
+            raise OSError(errno.EINVAL, "directory ACL entry is unavailable")
+
+        tag = ctypes.c_int()
+        if library.acl_get_tag_type(entry, ctypes.byref(tag)) != 0:
+            error_number = ctypes.get_errno() or errno.EINVAL
+            raise OSError(error_number, "directory ACL tag could not be read")
+        if tag.value != _ACL_EXTENDED_DENY:
+            return False
+
+        qualifier = library.acl_get_qualifier(entry)
+        if not qualifier:
+            error_number = ctypes.get_errno() or errno.EINVAL
+            raise OSError(error_number, "directory ACL qualifier could not be read")
+        try:
+            principal = ctypes.string_at(qualifier, _UUID_SIZE)
+        finally:
+            _free_acl_object(library, qualifier)
+        if principal != _everyone_group_uuid(library):
+            return False
+
+        permissions = ctypes.c_uint64()
+        if library.acl_get_permset_mask_np(entry, ctypes.byref(permissions)) != 0:
+            error_number = ctypes.get_errno() or errno.EINVAL
+            raise OSError(error_number, "directory ACL permissions could not be read")
+        if permissions.value != _ACL_DELETE or not _acl_flags_are_empty(library, entry):
+            return False
+
+        extra_entry = ctypes.c_void_p()
+        ctypes.set_errno(0)
+        result = library.acl_get_entry(
+            acl,
+            _ACL_NEXT_ENTRY,
+            ctypes.byref(extra_entry),
+        )
+        terminal_error = ctypes.get_errno()
+        if result == 0:
+            return False
+        if result != -1 or terminal_error != errno.EINVAL:
+            raise OSError(
+                terminal_error or errno.EINVAL,
+                "directory ACL entry count could not be read",
+            )
+        return True
+    finally:
+        _free_acl_object(library, acl)
 
 
 def _clear_extended_acl(descriptor: int) -> None:
@@ -161,6 +307,8 @@ DEFAULT_FILE_SYSTEM = FileSystemRunner(
     unlink=os.unlink,
     mkstemp=tempfile.mkstemp,
     geteuid=os.geteuid,
+    getegid=os.getegid,
+    getgroups=os.getgroups,
     has_extended_acl=_has_extended_acl,
     clear_extended_acl=_clear_extended_acl,
 )
