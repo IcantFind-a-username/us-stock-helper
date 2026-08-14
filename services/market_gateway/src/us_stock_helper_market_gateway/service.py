@@ -9,6 +9,7 @@ from concurrent.futures import (
     TimeoutError as FutureTimeoutError,
 )
 from datetime import datetime, timedelta
+from threading import Lock
 from typing import Any, Callable
 
 from . import snapshot as snapshot_v2
@@ -421,28 +422,54 @@ class MarketGatewayService:
         submitted: list[tuple[str, float, Future[ProviderBatch]]] = []
         batches: dict[str, ProviderBatch] = {}
         failures: dict[str, str] = {}
+        completion_times: dict[str, float] = {}
+        completion_lock = Lock()
         try:
             for name, operation in operations:
                 submitted_at = self._monotonic()
-                future = executor.submit(operation)
+
+                def timed_operation(
+                    operation: Callable[[], ProviderBatch] = operation,
+                    name: str = name,
+                ) -> ProviderBatch:
+                    try:
+                        return operation()
+                    finally:
+                        completed_at = self._monotonic()
+                        with completion_lock:
+                            completion_times[name] = completed_at
+
+                future = executor.submit(timed_operation)
                 submitted.append((name, submitted_at, future))
 
             overall_deadline = requested_at + self._snapshot_deadline_seconds
             for name, submitted_at, future in submitted:
                 now = self._monotonic()
                 source_deadline = submitted_at + self._source_timeout_seconds
-                remaining = min(source_deadline, overall_deadline) - now
+                completion_deadline = min(source_deadline, overall_deadline)
+                remaining = completion_deadline - now
                 if remaining <= 0 and not future.done():
                     failures[name] = ErrorCode.PROVIDER_ERROR.value
                     continue
                 try:
-                    batches[name] = future.result(timeout=max(0.0, remaining))
+                    batch = future.result(timeout=max(0.0, remaining))
                 except FutureTimeoutError:
                     failures[name] = ErrorCode.PROVIDER_ERROR.value
+                    continue
                 except GatewayError as error:
-                    failures[name] = error.code.value
+                    failure_code = error.code.value
                 except Exception:
+                    failure_code = ErrorCode.PROVIDER_ERROR.value
+                else:
+                    failure_code = None
+                with completion_lock:
+                    completed_at = completion_times.get(name)
+                if completed_at is None or completed_at > completion_deadline:
                     failures[name] = ErrorCode.PROVIDER_ERROR.value
+                elif failure_code is not None:
+                    failures[name] = failure_code
+                else:
+                    batches[name] = batch
         finally:
             for _, _, future in submitted:
                 if not future.done():
@@ -492,11 +519,8 @@ class MarketGatewayService:
             "flow",
             failures,
             lambda: self._flow_snapshot_v3_section(
-                symbol,
                 code,
-                timeframe,
                 batches["flow"],
-                sections["candles"],
                 decision_cutoff,
             ),
         )
@@ -654,11 +678,8 @@ class MarketGatewayService:
 
     def _flow_snapshot_v3_section(
         self,
-        symbol: str,
         code: str,
-        timeframe: str,
         batch: ProviderBatch,
-        candle_section: SnapshotSection,
         decision_cutoff: datetime,
     ) -> SnapshotSection:
         received_at = self._validate_batch(batch, decision_cutoff)
@@ -667,28 +688,7 @@ class MarketGatewayService:
             decision_cutoff,
             expected_code=code,
         )
-        candle_data = candle_section.data
-        candles = (
-            candle_data.get("candles")
-            if candle_section.quality_status == "validated"
-            and isinstance(candle_data, dict)
-            else None
-        )
-        if not flow_items or not isinstance(candles, list) or not candles:
-            raise GatewayError(
-                ErrorCode.MALFORMED_PROVIDER_DATA,
-                "Current-session flow is unavailable",
-            )
-        bars = snapshot_v2._analysis_bars(symbol, timeframe, candles)
-        participation, warnings = snapshot_v2._participation(
-            symbol,
-            timeframe,
-            bars,
-            flow_items,
-            decision_cutoff,
-        )
-        rows = [{**item, "institutionalIdentity": False} for item in participation]
-        if not any(item.get("qualityStatus") == "live" for item in rows):
+        if not flow_items:
             raise GatewayError(
                 ErrorCode.MALFORMED_PROVIDER_DATA,
                 "Current-session flow is unavailable",
@@ -697,16 +697,19 @@ class MarketGatewayService:
             availability_status="live",
             quality_status="validated",
             source="moomoo",
-            as_of=max(parse_aware(item["asOf"], "flow asOf") for item in rows),
+            as_of=max(
+                parse_aware(item["timestamp"], "flow timestamp")
+                for item in flow_items
+            ),
             available_at=max(
-                parse_aware(item["availableAt"], "flow availableAt") for item in rows
+                parse_aware(item["availableAt"], "flow availableAt")
+                for item in flow_items
             ),
             received_at=received_at,
-            data=rows,
+            data=flow_items,
             error_code=None,
             reason=None,
-            warnings=tuple(warnings),
-            method_version="order-size-activity-share-v1",
+            method_version="provider-capital-flow-normalized-v1",
         )
 
     def _holdings_snapshot_v3_section(
@@ -735,6 +738,10 @@ class MarketGatewayService:
                 "Live response did not identify moomoo as its source",
             )
         received_at = require_utc(batch.received_at, "holdings received_at")
+        if received_at > decision_cutoff:
+            raise PointInTimeViolation(
+                "Provider holdings response is timestamped in the future"
+            )
         if decision_cutoff - received_at > self._response_max_age:
             raise GatewayError(
                 ErrorCode.STALE_DATA,

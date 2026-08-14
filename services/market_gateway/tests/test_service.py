@@ -299,6 +299,22 @@ class ScriptedExecutor:
         self.shutdown_calls.append((wait, cancel_futures))
 
 
+class LateDoneExecutor(ScriptedExecutor):
+    """Returns the first future only after its operation has completed late."""
+
+    def submit(self, operation: Callable[[], ProviderBatch]) -> ScriptedFuture:
+        if self.futures:
+            return super().submit(operation)
+        self.clock.advance(6.0)
+        future = ScriptedFuture(operation, self.clock, self.clock(), 0.0)
+        self.futures.append(future)
+        try:
+            future.result()
+        except BaseException:
+            pass
+        return future
+
+
 class SymbolNormalizationTests(unittest.TestCase):
     def test_us_symbol_round_trips_without_accepting_other_markets(self) -> None:
         self.assertEqual(to_moomoo_code(" nvda "), "US.NVDA")
@@ -848,6 +864,44 @@ class StockSnapshotV3ServiceTests(unittest.TestCase):
         self.assertEqual(holdings["errorCode"], "FUTURE_HOLDINGS_ROW")
         self.assertEqual(payload["sections"]["quote"]["qualityStatus"], "validated")
 
+    def test_future_holdings_batch_provenance_rejects_nonempty_rows(self) -> None:
+        provider = IndependentProvider()
+        batch = provider.behaviors["holdings"]
+        assert isinstance(batch, ProviderBatch)
+        provider.behaviors["holdings"] = ProviderBatch(
+            "moomoo",
+            NOW + timedelta(seconds=1),
+            copy.deepcopy(batch.items),
+        )
+        service, _, _ = self._service(provider)
+
+        payload = service.stock_snapshot_v3("NVDA", "5m", 200)
+
+        holdings = payload["sections"]["holdings"]
+        self.assertEqual(holdings["availabilityStatus"], "unavailable")
+        self.assertEqual(holdings["qualityStatus"], "invalid")
+        self.assertEqual(holdings["errorCode"], "MALFORMED_PROVIDER_DATA")
+        self.assertIsNone(holdings["receivedAt"])
+        self.assertIsNone(holdings["data"])
+
+    def test_future_holdings_batch_provenance_rejects_an_empty_batch(self) -> None:
+        provider = IndependentProvider()
+        provider.behaviors["holdings"] = ProviderBatch(
+            "moomoo",
+            NOW + timedelta(seconds=1),
+            [],
+        )
+        service, _, _ = self._service(provider)
+
+        payload = service.stock_snapshot_v3("NVDA", "5m", 200)
+
+        holdings = payload["sections"]["holdings"]
+        self.assertEqual(holdings["availabilityStatus"], "unavailable")
+        self.assertEqual(holdings["qualityStatus"], "invalid")
+        self.assertEqual(holdings["errorCode"], "MALFORMED_PROVIDER_DATA")
+        self.assertIsNone(holdings["receivedAt"])
+        self.assertIsNone(holdings["data"])
+
     def test_empty_candles_make_technical_explicitly_unavailable(self) -> None:
         provider = IndependentProvider()
         batch = provider.behaviors["candles"]
@@ -863,6 +917,33 @@ class StockSnapshotV3ServiceTests(unittest.TestCase):
             "CANDLES_UNAVAILABLE",
         )
         self.assertEqual(payload["status"], "partial")
+
+    def test_candle_failure_does_not_erase_validated_direct_flow(self) -> None:
+        provider = IndependentProvider()
+        provider.behaviors["candles"] = RuntimeError("raw candle failure")
+        service, _, _ = self._service(provider)
+
+        payload = service.stock_snapshot_v3("NVDA", "5m", 200)
+
+        self.assertEqual(
+            payload["sections"]["candles"]["availabilityStatus"],
+            "unavailable",
+        )
+        flow = payload["sections"]["currentSessionFlow"]
+        self.assertEqual(flow["availabilityStatus"], "live")
+        self.assertEqual(flow["qualityStatus"], "validated")
+        self.assertEqual(flow["source"], "moomoo")
+        self.assertEqual(flow["asOf"], "2026-07-25T03:50:00Z")
+        self.assertEqual(flow["availableAt"], "2026-07-25T03:50:00Z")
+        self.assertEqual(flow["receivedAt"], "2026-07-25T03:59:59Z")
+        self.assertEqual(
+            flow["methodVersion"],
+            "provider-capital-flow-normalized-v1",
+        )
+        self.assertIsNone(flow["errorCode"])
+        self.assertEqual(flow["data"][1]["largeOrderProxyNetFlow"], 1_800.0)
+        self.assertFalse(flow["data"][1]["institutionalIdentity"])
+        self.assertNotIn("coverage", flow["data"][1])
 
     def test_overall_deadline_stops_waiting_and_cancels_all_operations(self) -> None:
         provider = IndependentProvider()
@@ -882,6 +963,80 @@ class StockSnapshotV3ServiceTests(unittest.TestCase):
         self.assertEqual(executor.shutdown_calls, [(False, True)])
         self.assertEqual(payload["status"], "unavailable")
         self.assertNotIn("error", payload)
+
+    def test_done_future_completed_after_its_source_deadline_is_rejected(
+        self,
+    ) -> None:
+        provider = IndependentProvider()
+        monotonic = FakeMonotonic()
+        executor = LateDoneExecutor(monotonic)
+        service = MarketGatewayService(
+            provider,
+            clock=lambda: NOW,
+            monotonic=monotonic,
+            source_timeout_seconds=5.0,
+            snapshot_deadline_seconds=12.0,
+            executor_factory=executor.factory,  # type: ignore[arg-type]
+            session_max_age=timedelta(seconds=15),
+            response_max_age=timedelta(seconds=15),
+        )
+
+        payload = service.stock_snapshot_v3("NVDA", "5m", 200)
+
+        self.assertEqual(
+            payload["sections"]["quote"]["errorCode"],
+            "PROVIDER_ERROR",
+        )
+        self.assertEqual(
+            payload["sections"]["candles"]["qualityStatus"],
+            "validated",
+        )
+        self.assertEqual(monotonic(), 6.0)
+
+    def test_done_provider_error_completed_after_deadline_is_a_timeout(self) -> None:
+        provider = IndependentProvider()
+        provider.behaviors["quote"] = GatewayError(
+            ErrorCode.OPEND_OFFLINE,
+            "raw provider detail",
+        )
+        monotonic = FakeMonotonic()
+        executor = LateDoneExecutor(monotonic)
+        service = MarketGatewayService(
+            provider,
+            clock=lambda: NOW,
+            monotonic=monotonic,
+            source_timeout_seconds=5.0,
+            snapshot_deadline_seconds=12.0,
+            executor_factory=executor.factory,  # type: ignore[arg-type]
+            session_max_age=timedelta(seconds=15),
+            response_max_age=timedelta(seconds=15),
+        )
+
+        payload = service.stock_snapshot_v3("NVDA", "5m", 200)
+
+        self.assertEqual(
+            payload["sections"]["quote"]["errorCode"],
+            "PROVIDER_ERROR",
+        )
+        self.assertNotIn("raw provider detail", repr(payload))
+
+    def test_overall_deadline_limits_the_last_source_wait_budget(self) -> None:
+        provider = IndependentProvider()
+        service, monotonic, executor = self._service(
+            provider,
+            delays=[30.0, 30.0, 30.0, 30.0],
+            submit_latency=2.5,
+        )
+
+        payload = service.stock_snapshot_v3("NVDA", "5m", 200)
+
+        self.assertEqual(monotonic(), 12.0)
+        self.assertEqual(
+            [future.result_timeouts for future in executor.futures],
+            [[], [], [], [2.0]],
+        )
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(executor.shutdown_calls, [(False, True)])
 
     def test_invalid_request_fails_before_health_or_provider_calls(self) -> None:
         cases: tuple[tuple[Any, Any, Any], ...] = (
