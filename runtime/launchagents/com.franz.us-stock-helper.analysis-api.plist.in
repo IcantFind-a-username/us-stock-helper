@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.franz.us-stock-helper.analysis-api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__RUNTIME_LAUNCHER_INTERPRETER__</string>
+    <string>__RUNTIME_LAUNCHER_PATH__</string>
+    <string>analysis-api</string>
+    <string>--repository</string>
+    <string>__RUNTIME_REPOSITORY__</string>
+    <string>--home</string>
+    <string>__RUNTIME_HOME__</string>
+    <string>--temporary-directory</string>
+    <string>__RUNTIME_TEMPORARY_DIRECTORY__</string>
+    <string>--environment-file</string>
+    <string>__RUNTIME_ENVIRONMENT_FILE__</string>
+    <string>--ca-bundle</string>
+    <string>__RUNTIME_CA_BUNDLE__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__RUNTIME_WORKING_DIRECTORY__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__RUNTIME_STANDARD_OUT_PATH__</string>
+  <key>StandardErrorPath</key>
+  <string>__RUNTIME_STANDARD_ERROR_PATH__</string>
+</dict>
+</plist>
