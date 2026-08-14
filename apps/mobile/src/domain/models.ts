@@ -403,11 +403,20 @@ export interface StockSnapshot {
   quoteLatencyMs: number;
   candles: Candle[];
   forecast: ForecastSnapshot;
-  magicNine: { count: number; complete: boolean; invalidation: string; horizon: Horizon };
+  magicNine: {
+    count: number;
+    complete: boolean;
+    direction: "bullish" | "bearish";
+    invalidation: string;
+    horizon: Horizon;
+    /** Explicit fixture points aligned one-for-one with completed candles. */
+    series: (MagicNineSeriesPoint | null)[];
+  };
   dragonTrend: { state: Direction; score: number; methodVersion: string; invalidation: string };
   patterns: PatternSignal[];
   indicators: { rsi: RsiSnapshot; macd: MacdSnapshot };
   reportedOwnership: ReportedOwnership;
+  institutionalHoldings: DelayedInstitutionalHolding[];
   participationProxy: ParticipationProxy;
   marketContext: MarketContext;
   fundamentals: FundamentalSnapshot;
@@ -605,6 +614,7 @@ export interface ChartSnapshot {
   };
   magicNine: ChartMagicNineSnapshot;
   forecast: ForecastSnapshot | null;
+  institutionalHoldings?: DelayedInstitutionalHolding[];
 }
 
 export interface LiveStockSnapshot extends ChartSnapshot {
@@ -628,6 +638,7 @@ export interface LiveStockSnapshot extends ChartSnapshot {
 export interface DemoChartSnapshot extends ChartSnapshot {
   demoData: true;
   source: SnapshotSource & { source: "fixture"; status: "demo" };
+  institutionalHoldings: DelayedInstitutionalHolding[];
 }
 
 /** Converts the existing, explicitly demo-only fixture model for chart consumers. */
@@ -649,7 +660,12 @@ export function toDemoChartSnapshot(stock: StockSnapshot): DemoChartSnapshot {
       decisionCutoff: asOf,
     },
     symbol: stock.symbol,
-    interval: `demo-${stock.horizon}`,
+    interval:
+      stock.indicators.rsi.interval === "周线"
+        ? "week"
+        : stock.indicators.rsi.interval === "日线"
+          ? "day"
+          : "5m",
     quote: {
       ...fixtureMetadata,
       price: stock.price,
@@ -677,17 +693,27 @@ export function toDemoChartSnapshot(stock: StockSnapshot): DemoChartSnapshot {
     },
     magicNine: {
       ...fixtureMetadata,
-      direction: null,
+      direction: stock.magicNine.direction,
       count: stock.magicNine.count,
-      // The demo fixture has only a latest summary. Reconstructing a run from
-      // closes here would invent a client-side indicator with no provenance.
-      series: null,
+      // Demo data is fictional by definition, but it still carries a complete,
+      // explicit series so the chart exercises the same rendering contract as
+      // a live server response. The phone does not derive these from closes.
+      series: stock.magicNine.series,
       completed: stock.magicNine.complete,
       perfected: false,
-      confirmedAtIndex: null,
-      lastCompleted: null,
+      confirmedAtIndex:
+        stock.magicNine.count > 0 ? stock.candles.length - 1 : null,
+      lastCompleted: stock.magicNine.complete
+        ? {
+            direction: stock.magicNine.direction,
+            confirmedAtIndex: stock.candles.length - 1,
+            perfected: false,
+            barsSince: 0,
+          }
+        : null,
     },
     forecast: stock.forecast,
+    institutionalHoldings: stock.institutionalHoldings,
   };
 }
 

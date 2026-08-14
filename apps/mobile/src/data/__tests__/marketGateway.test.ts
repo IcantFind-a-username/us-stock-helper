@@ -533,6 +533,7 @@ describe("schema-v2 stock snapshot validation", () => {
       demoData: true,
       source: { source: "fixture", status: "demo" },
       symbol: "NVDA",
+      interval: "day",
       forecast: stockFixtures["NVDA:short"]!.forecast,
       candles: stockFixtures["NVDA:short"]!.candles,
       indicators: {
@@ -540,6 +541,16 @@ describe("schema-v2 stock snapshot validation", () => {
         macd: { line: stockFixtures["NVDA:short"]!.indicators.macd.dif },
       },
     });
+    expect(chart.magicNine.series?.filter(Boolean).map((point) => point?.count)).toEqual([
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+    ]);
+    expect(chart.institutionalHoldings).toHaveLength(1);
   });
 });
 

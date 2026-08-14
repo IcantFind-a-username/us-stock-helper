@@ -143,6 +143,28 @@ describe("fixtureRepository", () => {
     ).toBe(100);
   });
 
+  it("uses completed daily candles for the default short-horizon analysis", () => {
+    const stock = fixtureRepository.getStock("NVDA", "short");
+
+    expect(stock.indicators.rsi.interval).toBe("日线");
+    expect(stock.indicators.macd.interval).toBe("日线");
+    expect(
+      stock.candles.every((candle) =>
+        candle.timestamp.endsWith("T20:00:00.000Z"),
+      ),
+    ).toBe(true);
+    expect(
+      stock.candles.some((candle, index) => {
+        const previous = stock.candles[index - 1];
+        return (
+          previous !== undefined &&
+          Date.parse(candle.timestamp) - Date.parse(previous.timestamp) >
+            24 * 60 * 60 * 1_000
+        );
+      }),
+    ).toBe(true);
+  });
+
   it("keeps stock horizons genuinely independent and point-in-time safe", () => {
     const snapshots = (["short", "swing", "long"] as const).map((horizon) =>
       fixtureRepository.getStock("NVDA", horizon),
@@ -150,9 +172,11 @@ describe("fixtureRepository", () => {
 
     expect(new Set(snapshots.map(({ conclusion }) => conclusion)).size).toBe(3);
     expect(new Set(snapshots.map(({ adjustedScore }) => adjustedScore)).size).toBe(3);
-    expect(new Set(snapshots.map(({ indicators }) => indicators.rsi.interval))).toEqual(
-      new Set(["5分钟", "日线", "周线"]),
-    );
+    expect(snapshots.map(({ indicators }) => indicators.rsi.interval)).toEqual([
+      "日线",
+      "日线",
+      "周线",
+    ]);
 
     for (const stock of snapshots) {
       const predictedAt = Date.parse(stock.forecast.predictedAt);

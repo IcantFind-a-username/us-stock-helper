@@ -392,7 +392,7 @@ export function StockDetailScreen() {
         <ParticipationCard bars={stock.participationBars} />
       ) : null}
       <InstitutionalHoldingsCard
-        holdings={liveStock?.institutionalHoldings ?? []}
+        holdings={stock.institutionalHoldings ?? []}
       />
 
       {stock.demoData ? (

@@ -313,7 +313,7 @@ it("marks the whole chart as non-live only in explicit demo mode", async () => {
   await waitFor(() =>
     expect(view.getByText("演示数据 · 非实时行情")).toBeTruthy(),
   );
-  expect(view.getByText(/短线 · 演示数据/)).toBeTruthy();
+  expect(view.getByText(/日线 · 演示数据/)).toBeTruthy();
   expect(view.getByText(/上涨概率/)).toBeTruthy();
   expect(view.queryByText("实时只读")).toBeNull();
 });

@@ -186,7 +186,7 @@ export function FullChartScreen() {
       </Disclosure>
       <ParticipationCard bars={stock.participationBars} />
       <InstitutionalHoldingsCard
-        holdings={liveStock?.institutionalHoldings ?? []}
+        holdings={stock.institutionalHoldings ?? []}
       />
       <Text style={styles.boundary}>
         仅供分析与建议 · 不连接券商 · 不会自动下单

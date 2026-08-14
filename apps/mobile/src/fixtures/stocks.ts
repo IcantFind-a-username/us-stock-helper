@@ -20,7 +20,7 @@ const closeSeries: Record<string, number[]> = {
 
 const horizonSettings = {
   short: {
-    interval: "5分钟",
+    interval: "日线",
     amplitude: 1,
     range: 0.7,
     scoreAdjustment: 0,
@@ -78,13 +78,7 @@ function businessDayCloses(count: number) {
 }
 
 function closeTimeFor(horizon: Horizon, index: number, count: number) {
-  if (horizon === "short") {
-    const closeMinutes = 9 * 60 + 30 + (index + 1) * 5;
-    const hour = Math.floor(closeMinutes / 60);
-    const minute = closeMinutes % 60;
-    return `2026-07-24T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00-04:00`;
-  }
-  if (horizon === "swing") return businessDayCloses(count)[index]!.toISOString();
+  if (horizon !== "long") return businessDayCloses(count)[index]!.toISOString();
   const weeksFromEnd = count - index - 1;
   return new Date(Date.UTC(2026, 6, 24 - weeksFromEnd * 7, 20, 0, 0)).toISOString();
 }
@@ -278,6 +272,59 @@ const stockProfiles: StockProfile[] = [
   },
 ];
 
+const demoInstitutionalHoldings = (
+  profile: StockProfile,
+): StockSnapshot["institutionalHoldings"] => {
+  const bySymbol: Record<
+    string,
+    Pick<
+      StockSnapshot["institutionalHoldings"][number],
+      | "institutionCount"
+      | "institutionCountChange"
+      | "sharesHeld"
+      | "sharesHeldChange"
+      | "holdingPercentChange"
+    >
+  > = {
+    NVDA: {
+      institutionCount: 6_412,
+      institutionCountChange: 84,
+      sharesHeld: 15_860_000_000,
+      sharesHeldChange: 92_000_000,
+      holdingPercentChange: 0.38,
+    },
+    TSLA: {
+      institutionCount: 4_126,
+      institutionCountChange: -19,
+      sharesHeld: 1_572_000_000,
+      sharesHeldChange: -21_000_000,
+      holdingPercentChange: -0.61,
+    },
+    PLTR: {
+      institutionCount: 2_304,
+      institutionCountChange: 47,
+      sharesHeld: 968_000_000,
+      sharesHeldChange: 16_000_000,
+      holdingPercentChange: 0.72,
+    },
+  };
+  const values = bySymbol[profile.symbol] ?? bySymbol.NVDA!;
+  return [
+    {
+      period: "2026/Q2",
+      reportedAt: "2026-06-30T20:00:00Z",
+      reportedAtBasis: "reporting-period-end",
+      availableAt: "2026-07-20T14:01:00Z",
+      source: "moomoo-delayed-institutional-disclosure",
+      ...values,
+      holdingPercent: profile.reportedOwnership.institutionalPercent,
+      asOf: "2026-06-30T20:00:00Z",
+      methodVersion: "reported-holdings-v1",
+      qualityStatus: "delayed",
+    },
+  ];
+};
+
 const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
   const scale = profile.price / 143.8;
   const sourcePrefix = profile.symbol.toLowerCase();
@@ -293,6 +340,27 @@ const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
   );
   const baseScore = Math.max(0, Math.min(100, profile.baseScore + setting.scoreAdjustment));
   const invalidationPrice = profile.price * (forecastSlope >= 0 ? 0.9485 : 1.052);
+  const magicNineCount =
+    horizon === "short"
+      ? profile.symbol === "PLTR"
+        ? 9
+        : profile.symbol === "TSLA"
+          ? 4
+          : 7
+      : horizon === "swing"
+        ? 5
+        : 3;
+  const magicNineDirection =
+    profile.changePercent < 0 ? "bearish" as const : "bullish" as const;
+  const magicNineSeries = candles.map((_, index) => {
+    const firstSequenceIndex = candles.length - magicNineCount;
+    return index < firstSequenceIndex
+      ? null
+      : {
+          direction: magicNineDirection,
+          count: index - firstSequenceIndex + 1,
+        };
+  });
 
   return {
   demoData: true,
@@ -335,19 +403,12 @@ const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
     invalidation: `${profile.forecastSlope >= 0 ? "收盘跌破" : "收盘站上"} ${invalidationPrice.toFixed(2)} 或大盘环境反向`,
   },
   magicNine: {
-    count:
-      horizon === "short"
-        ? profile.symbol === "PLTR"
-          ? 9
-          : profile.symbol === "TSLA"
-            ? 4
-            : 7
-        : horizon === "swing"
-          ? 5
-          : 3,
+    count: magicNineCount,
     complete: horizon === "short" && profile.symbol === "PLTR",
+    direction: magicNineDirection,
     invalidation: "序列中断则重新计数",
     horizon,
+    series: magicNineSeries,
   },
   dragonTrend: {
     state: adjustedScore >= 60 ? "bullish" : adjustedScore < 50 ? "bearish" : "neutral",
@@ -414,6 +475,7 @@ const buildStock = (profile: StockProfile, horizon: Horizon): StockSnapshot => {
     availableAt: "2026-07-20T14:01:00Z",
     citationIds: [`${sourcePrefix}-source-1`],
   },
+  institutionalHoldings: demoInstitutionalHoldings(profile),
   participationProxy: {
     label: "估算代理",
     ...profile.participation,

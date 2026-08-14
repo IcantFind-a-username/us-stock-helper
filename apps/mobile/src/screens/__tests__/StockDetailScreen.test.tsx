@@ -597,7 +597,7 @@ it("uses the fixture only when runtime explicitly selects demo mode", async () =
     expect(view.getByText("演示数据 · 非实时行情")).toBeTruthy(),
   );
   expect(view.getByText("$143.80")).toBeTruthy();
-  expect(view.getByText(/短线 · 演示数据/)).toBeTruthy();
+  expect(view.getByText(/日线 · 演示数据/)).toBeTruthy();
   // The fixture snapshot names its source `fixture`; the reader is told what
   // that means rather than shown the identifier.
   expect(view.getByTestId("stock-summary-meta")).toHaveTextContent(/来源 演示数据/);
@@ -757,6 +757,8 @@ it("keeps the demo stock page free of a news surface it cannot fill", async () =
 
   await waitFor(() => expect(view.getAllByText("演示数据 · 非实时行情")).toHaveLength(1));
   expect(view.queryByTestId("decision-news")).toBeNull();
+  expect(view.getByTestId("institutional-holdings-card")).toBeTruthy();
+  expect(view.queryByTestId("institutional-holdings-empty")).toBeNull();
 });
 
 it("names what each still-dark card is waiting on", async () => {
