@@ -55,26 +55,53 @@ screen rather than being smoothed over in serialization:
   Both are `null` when the evidence never passed a collector: zero seconds old
   is a measurement, no measurement is not.
 
-## Run the server
+## Operate the durable local service
 
 `market_gateway` must already be serving on the same host; its `/candles`
 endpoint is this service's only deterministic price source. Optional sections
 of a stock snapshot, including holdings, cannot affect a decision.
 
-```bash
-PYTHONPATH=services/analysis_api/src:services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine \
-  python3 -m us_stock_helper_analysis_api
+From the repository root, use the lifecycle CLI instead of starting a
+foreground Python process:
 
-curl --fail --silent --show-error http://127.0.0.1:8770/health
-curl --fail --silent --show-error \
-  'http://127.0.0.1:8770/decision?symbol=NVDA&horizon=short'
+```bash
+python3 scripts/local_runtime.py install
+python3 scripts/local_runtime.py status
+python3 scripts/local_runtime.py health
+python3 scripts/local_runtime.py reinstall
+python3 scripts/local_runtime.py uninstall
 ```
 
-The default request above never calls a model. The phone's paid button sends
+The exact analysis label is `com.franz.us-stock-helper.analysis-api`, bound to
+`0.0.0.0:8770` for the allowlisted household LAN. The protected health result
+is checked without printing credentials. Closing the installing shell does not
+stop the service; verify that property from a fresh shell with `status` and
+`health`.
+
+For exceptional single-component recovery after ownership is verified:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.franz.us-stock-helper.analysis-api"
+```
+
+Use `reinstall` for normal code/configuration changes. Never replace an exact
+label with a PID or port-based kill. Metro is canonical only on `8088`;
+listeners on `8081`/`8083` are report-only legacy state.
+
+Ordinary uninstall preserves `~/.us-stock-helper/lan.env`, the durable pairing
+database at `~/.us-stock-helper/state/devices.sqlite3`, logs, and non-plist
+quarantine artifacts. The foreground `scripts/run_local_dev_stack.sh` is
+retired and intentionally exits `2` without starting anything.
+
+The default decision request never calls a model. The phone's paid button sends
 `adviser=news`, which performs one traceable news-interpretation call for that
 one symbol and returns measured token usage and cost. `adviser=1` remains the
 explicit full council mode for operator use; it performs the additional,
 larger 13-framework call and is never used by watchlists or automatic refresh.
+
+The table below describes the application parser's standalone defaults. The
+durable local launcher fixes the LAN host/port, loopback gateway URL, and
+`DEVICE_AUTH_DATABASE=$HOME/.us-stock-helper/state/devices.sqlite3`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -100,20 +127,38 @@ credential and therefore cannot authenticate to a LAN gateway.
 
 ## Explicit iPhone LAN mode
 
-Do not commit these values. Choose the actual Wi-Fi subnet used by the Mac and
-iPhone, and point the credential database somewhere only this account can read:
+This is a household-LAN Debug workflow. Put the exact phone CIDR in the private
+`~/.us-stock-helper/lan.env` as `ANALYSIS_API_ALLOWED_CLIENTS`; the runtime
+supplies the fixed LAN host/port, loopback gateway URL, and durable pairing path
+without sourcing the file. Do not export an ad-hoc second server or commit the
+values.
+
+Create a short-lived pairing code against the same durable database used by the
+LaunchAgent:
 
 ```bash
-export ANALYSIS_API_ALLOW_LAN=1
-export ANALYSIS_API_HOST=0.0.0.0
-export ANALYSIS_API_ALLOWED_CLIENTS=192.168.50.0/24
-export DEVICE_AUTH_DATABASE="$HOME/.us-stock-helper/device-auth.sqlite3"
+DEVICE_AUTH_DATABASE="$HOME/.us-stock-helper/state/devices.sqlite3" \
+PYTHONPATH=services/device_auth/src \
+  services/market_gateway/.venv/bin/python \
+  -m us_stock_helper_device_auth pair --label "iPhone"
 ```
 
-Print a pairing code with
-`python3 -m us_stock_helper_device_auth pair --label "iPhone"` and type it into
-the app. Every request then needs `Authorization: Bearer <device token>`, and
-the app stores that token in the Keychain rather than in the bundle.
+Type the code into the app rather than a shell log or issue tracker. Every
+request then needs `Authorization: Bearer <device token>`, and the app stores
+the resulting token in Keychain rather than in the bundle.
+
+Leave `EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN` empty. A static analysis token in
+`.env.local` would bypass the intended pairing/Keychain lifecycle and must not
+be used. The separate `EXPO_PUBLIC_MARKET_API_DEV_TOKEN` must exactly equal the
+current `MOOMOO_GATEWAY_TOKEN` in `~/.us-stock-helper/lan.env`. Rotate
+`lan.env` and `apps/mobile/.env.local` together, run
+`python3 scripts/local_runtime.py reinstall`, and reload Metro.
+
+The Debug client may use ignored `EXPO_PUBLIC_*` LAN endpoint values, which are
+visible in its JavaScript bundle and remain sensitive even though they cannot
+be kept confidential there. Never commit, log, or share a bearer value. A
+Release/TestFlight build is a separate gate: it must use the paired HTTPS
+boundary without Metro or any static market or analysis token.
 
 ## Point-in-time mapping of gateway candles
 

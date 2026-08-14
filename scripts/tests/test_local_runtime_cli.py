@@ -25,6 +25,237 @@ def runtime_module():
         raise AssertionError("scripts.local_runtime is not implemented") from error
 
 
+def metro_deep_link_module():
+    try:
+        return importlib.import_module("scripts.metro_deep_link")
+    except ModuleNotFoundError as error:
+        if error.name != "scripts.metro_deep_link":
+            raise
+        raise AssertionError("scripts.metro_deep_link is not implemented") from error
+
+
+class MetroDeepLinkTestCase(unittest.TestCase):
+    ACTUAL_EXPO_JSON = (
+        b'{"scheme":"exp+us-stock-helper","availableRuntimes":["custom"],'
+        b'"runtime":"custom","url":"exp+us-stock-helper://'
+        b'expo-development-client/?url=http%3A%2F%2F192.168.0.59%3A8088",'
+        b'"appId":"com.franz.usstockhelper.dev"}'
+    )
+
+    def payload_with(self, **replacements) -> bytes:
+        document = json.loads(self.ACTUAL_EXPO_JSON)
+        document.update(replacements)
+        return json.dumps(document, separators=(",", ":")).encode("utf-8")
+
+    def test_fetch_rechecks_the_shared_deadline_for_slow_drip_headers(self) -> None:
+        module = metro_deep_link_module()
+        clock = [0.0]
+
+        class SlowHeaderTransport:
+            def __init__(self):
+                self.timeouts = []
+                self.closed = False
+
+            def advance(self, timeout, delay):
+                self.timeouts.append(timeout)
+                clock[0] += min(timeout, delay)
+                if timeout < delay:
+                    raise TimeoutError
+
+            def connect(self, host, port, timeout):
+                self.host, self.port = host, port
+                self.advance(timeout, 0.4)
+
+            def send(self, payload, timeout):
+                self.request = payload
+                self.advance(timeout, 0.4)
+                return len(payload)
+
+            def receive(self, size, timeout):
+                del size
+                self.advance(timeout, 0.8)
+                return b"H"
+
+            def close(self):
+                self.closed = True
+
+        transport = SlowHeaderTransport()
+        with self.assertRaises(TimeoutError):
+            module.fetch_launcher_payload(
+                transport=transport,
+                monotonic=lambda: clock[0],
+            )
+
+        self.assertLessEqual(clock[0], 3.0)
+        self.assertEqual((transport.host, transport.port), ("127.0.0.1", 8088))
+        self.assertIn(
+            b"GET /_expo/open?platform=ios&runtime=custom HTTP/1.1\r\n",
+            transport.request,
+        )
+        self.assertTrue(transport.closed)
+        self.assertGreater(len(transport.timeouts), 3)
+        self.assertTrue(
+            all(
+                later < earlier
+                for earlier, later in zip(
+                    transport.timeouts,
+                    transport.timeouts[1:],
+                )
+            )
+        )
+
+    def test_fetch_shares_one_deadline_across_connect_headers_and_body(self) -> None:
+        module = metro_deep_link_module()
+        clock = [10.0]
+        header = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: 3\r\n\r\n{"
+        )
+
+        class SlowBodyTransport:
+            def __init__(self):
+                self.responses = [header, b"x", b"}"]
+                self.timeouts = []
+                self.closed = False
+
+            def advance(self, timeout, delay):
+                self.timeouts.append(timeout)
+                clock[0] += min(timeout, delay)
+                if timeout < delay:
+                    raise TimeoutError
+
+            def connect(self, host, port, timeout):
+                self.host, self.port = host, port
+                self.advance(timeout, 0.5)
+
+            def send(self, payload, timeout):
+                self.advance(timeout, 0.5)
+                return len(payload)
+
+            def receive(self, size, timeout):
+                del size
+                delay = 0.8 if len(self.responses) == 3 else 0.7
+                self.advance(timeout, delay)
+                return self.responses.pop(0)
+
+            def close(self):
+                self.closed = True
+
+        transport = SlowBodyTransport()
+        with self.assertRaises(TimeoutError):
+            module.fetch_launcher_payload(
+                transport=transport,
+                monotonic=lambda: clock[0],
+            )
+
+        self.assertLessEqual(clock[0], 13.0)
+        self.assertTrue(transport.closed)
+        self.assertEqual(len(transport.responses), 1)
+        self.assertGreater(transport.timeouts[0], transport.timeouts[-1])
+
+    def test_extracts_only_the_url_from_the_actual_expo_8088_response(self) -> None:
+        module = metro_deep_link_module()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        self.assertEqual(
+            module.extract_launcher_url(self.ACTUAL_EXPO_JSON),
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088",
+        )
+        self.assertEqual(
+            module.main(
+                fetcher=lambda: self.ACTUAL_EXPO_JSON,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+            0,
+        )
+        self.assertEqual(
+            stdout.getvalue(),
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088\n",
+        )
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_rejects_a_launcher_url_outside_the_fixed_debug_contract(self) -> None:
+        module = metro_deep_link_module()
+        invalid_urls = (
+            "EXP+US-STOCK-HELPER://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088",
+            "usstockhelper://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088",
+            "exp+us-stock-helper://not-the-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088",
+            "exp+us-stock-helper://expo-development-client/route"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8081",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=https%3A%2F%2F192.168.0.59%3A8088",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=HTTP%3A%2F%2F192.168.0.59%3A8088",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2Fuser%40example.test%40192.168.0.59%3A8088",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088%2Fbundle",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088%3Ftoken%3Dsecret",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2F8.8.8.8%3A8088",
+            "exp+us-stock-helper://expo-development-client/"
+            "?url=http%3A%2F%2F192.168.0.59%3A8088&extra=1",
+        )
+
+        for candidate in invalid_urls:
+            with self.subTest(candidate=candidate), self.assertRaises(
+                module.MetroDeepLinkError
+            ):
+                module.extract_launcher_url(self.payload_with(url=candidate))
+
+    def test_rejects_inconsistent_expo_runtime_metadata(self) -> None:
+        module = metro_deep_link_module()
+        invalid_metadata = (
+            {"scheme": "usstockhelper"},
+            {"availableRuntimes": ["custom", "expo"]},
+            {"availableRuntimes": []},
+            {"runtime": "expo"},
+            {"appId": "com.example.other"},
+            {"unexpected": "field"},
+        )
+
+        for replacements in invalid_metadata:
+            with self.subTest(replacements=replacements), self.assertRaises(
+                module.MetroDeepLinkError
+            ):
+                module.extract_launcher_url(self.payload_with(**replacements))
+
+    def test_cli_failure_is_fixed_and_does_not_render_the_response(self) -> None:
+        module = metro_deep_link_module()
+        fetchers = (
+            lambda: b'{"url":"' + SYNTHETIC_SECRET.encode() + b'"}',
+            lambda: (_ for _ in ()).throw(RuntimeError(SYNTHETIC_SECRET)),
+        )
+
+        for fetcher in fetchers:
+            with self.subTest(fetcher=fetcher):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                code = module.main(
+                    fetcher=fetcher,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(), "managed Metro launcher URL unavailable\n"
+                )
+                self.assertNotIn(SYNTHETIC_SECRET, stderr.getvalue())
+
+
 class FakeSystem:
     def __init__(self, runtime, paths) -> None:
         self.runtime = runtime
@@ -1310,6 +1541,67 @@ class RuntimeCliTestCase(unittest.TestCase):
         rendered = stdout.getvalue() + stderr.getvalue()
         self.assertEqual(rendered, "local runtime command failed\n")
         self.assertNotIn(SYNTHETIC_SECRET, rendered)
+
+    def test_retired_foreground_supervisor_is_a_fixed_fail_fast_migration_shim(
+        self,
+    ) -> None:
+        repository = Path(__file__).resolve().parents[2]
+        script = repository / "scripts/run_local_dev_stack.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            fake_bin = temporary_path / "bin"
+            fake_bin.mkdir()
+            environment_file = temporary_path / "hostile.env"
+            probe = temporary_path / "environment-was-sourced"
+            path_probe = temporary_path / "path-bash-was-executed"
+            bash_env_probe = temporary_path / "bash-env-was-sourced"
+            fake_bash = fake_bin / "bash"
+            fake_bash.write_text(
+                "#!/bin/sh\n"
+                '/usr/bin/touch "${US_STOCK_HELPER_PATH_PROBE}"\n'
+                'exec /bin/bash "$@"\n',
+                encoding="utf-8",
+            )
+            fake_bash.chmod(0o755)
+            bash_env = temporary_path / "hostile-bash-env"
+            bash_env.write_text(
+                '/usr/bin/touch "${US_STOCK_HELPER_BASH_ENV_PROBE}"\n',
+                encoding="utf-8",
+            )
+            environment_file.write_text(
+                '/usr/bin/touch "${US_STOCK_HELPER_TEST_PROBE}"\nexit 73\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(script), f"ignored-{SYNTHETIC_SECRET}"],
+                cwd=repository,
+                env={
+                    "BASH_ENV": str(bash_env),
+                    "ENV": str(bash_env),
+                    "HOME": temporary,
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "US_STOCK_HELPER_BASH_ENV_PROBE": str(bash_env_probe),
+                    "US_STOCK_HELPER_ENV_FILE": str(environment_file),
+                    "US_STOCK_HELPER_PATH_PROBE": str(path_probe),
+                    "US_STOCK_HELPER_TEST_PROBE": str(probe),
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(
+                result.stderr,
+                "run_local_dev_stack.sh is retired; the durable stack is managed by launchd.\n"
+                "Run: python3 scripts/local_runtime.py install\n",
+            )
+            self.assertFalse(probe.exists())
+            self.assertFalse(path_probe.exists())
+            self.assertFalse(bash_env_probe.exists())
+            self.assertNotIn(SYNTHETIC_SECRET, result.stderr)
 
     def test_direct_script_invalid_arguments_do_not_emit_raw_input(self) -> None:
         repository = Path(__file__).resolve().parents[2]

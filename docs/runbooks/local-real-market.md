@@ -1,21 +1,169 @@
 # Local Real-Market iPhone Runbook
 
-This runbook proves the read-only moomoo vertical slice on one Mac and one
-physical iPhone. It never calls a brokerage transaction API.
+This runbook operates the read-only local stack on one Mac. It is a
+household-LAN **Debug** workflow, not a Release/TestFlight deployment, and it
+never calls a brokerage transaction API.
 
-## Prerequisites
+## Fixed runtime contract
 
-- OpenD listens on `127.0.0.1:11111`.
-- OpenD is logged in to the user's Singapore moomoo account and that account
-  has US quote permission.
-- The Mac and iPhone share a mutually reachable network.
+The durable runtime is four independent user LaunchAgents:
+
+| Component | Exact label | Listener |
+| --- | --- | --- |
+| loopback market gateway | `com.franz.us-stock-helper.market-loopback` | `127.0.0.1:8765` |
+| LAN market gateway | `com.franz.us-stock-helper.market-lan` | `0.0.0.0:8766` |
+| analysis API | `com.franz.us-stock-helper.analysis-api` | `0.0.0.0:8770` |
+| Expo dev-client Metro | `com.franz.us-stock-helper.metro` | `0.0.0.0:8088` |
+
+`8088` is the only canonical Metro port. Listeners on `8081` or `8083` are
+legacy evidence only: status reports them, but the lifecycle command never
+signals, kills, or automatically hands them over. Never act on a PID merely
+because it owns one of those ports.
+
+OpenD remains an external desktop dependency on `127.0.0.1:11111`. The
+gateway stays running while OpenD is offline and reports that condition until
+OpenD is available again.
+
+The retired `scripts/run_local_dev_stack.sh` no longer starts anything. It
+prints the migration command and intentionally exits `2`, so old automation
+cannot mistake the notice for a running stack.
+
+## Security and deployment boundary
+
+The local LaunchAgents and plain-HTTP LAN listeners are for a trusted
+household network and Debug build only. Restrict both LAN services to the exact
+phone subnet. Debug `EXPO_PUBLIC_*` values are bundled into client JavaScript
+and cannot be kept confidential. A bearer value remains a sensitive,
+short-lived credential despite that limitation: never commit, log, or share it.
+
+A production Release/TestFlight build is a separate acceptance gate. It must:
+
+- work without Metro;
+- use a paired HTTPS API rather than the direct LAN gateway;
+- contain no static market token, analysis token, OpenD credential, or other
+  `EXPO_PUBLIC_*` development credential.
+
+This local runtime does not claim that production gate has passed.
+
+## Prerequisites and private configuration
+
+- OpenD is installed from the official source, logged in to the user's
+  Singapore moomoo account, and entitled for US quotes.
+- The Mac and iPhone share a mutually reachable private network.
+- Node 22, the checked-in mobile dependencies, the market-gateway virtual
+  environment, and its CA bundle are present at the paths validated by the
+  runtime.
 - The installed Expo development client follows
-  [iphone-dev-client.md](iphone-dev-client.md). Keep the existing Metro process
-  when it is already serving the correct worktree.
+  [iphone-dev-client.md](iphone-dev-client.md).
 
-The desktop trading application is not a substitute for OpenD. Do not expose
-port `11111` on the LAN and do not put an account identifier, login material,
-watchlist, cookie, bearer token, or runtime output in the repository.
+Service credentials remain in the operator-owned
+`~/.us-stock-helper/lan.env`. Its parent must be mode `0700`, the file must be
+mode `0600`, and its contents are inert `KEY=VALUE` data. Do not `source` it,
+put shell syntax in it, print it, or copy it into the repository. The runtime
+parser supplies only the allowlisted values each component needs; market and
+Metro never receive the Anthropic key, and analysis never receives the market
+token.
+
+The durable stack requires these operator values; describe them in an editor,
+not by exporting or echoing them in shell history:
+
+| Key | Purpose |
+| --- | --- |
+| `MOOMOO_GATEWAY_ALLOWED_CLIENTS` | exact household-LAN CIDR allowed to reach `8766` |
+| `MOOMOO_GATEWAY_TOKEN` | high-entropy, short-lived Debug gateway token |
+| `ANALYSIS_API_ALLOWED_CLIENTS` | exact household-LAN CIDR allowed to reach `8770` |
+| `US_STOCK_HELPER_CONTACT_EMAIL` | reachable contact for public-source User-Agent policy |
+| `ANTHROPIC_API_KEY` | optional, analysis-only key for explicit paid adviser actions |
+
+Mobile Debug endpoints belong in ignored `apps/mobile/.env.local` or
+`apps/mobile/.env`. They must point to the Mac LAN address on `8766` and
+`8770`, with `EXPO_PUBLIC_INITIAL_DEMO_MODE=false`. This project does not use
+`config.yaml`; the private service env and ignored Expo env are the two
+intentional local configuration boundaries.
+
+`EXPO_PUBLIC_MARKET_API_DEV_TOKEN` must exactly equal the current
+`MOOMOO_GATEWAY_TOKEN` in `lan.env`. Leave
+`EXPO_PUBLIC_ANALYSIS_API_DEV_TOKEN` empty; use the one-time pairing flow and
+let the app store the revocable analysis token in Keychain. To rotate the Debug
+market token, update `lan.env` and `.env.local` together, run
+`python3 scripts/local_runtime.py reinstall`, then reload the development
+client from the restarted Metro. Do not leave either side on the prior value.
+
+## Install and operate the stack
+
+Run every lifecycle command from the exact worktree that should remain pinned:
+
+```bash
+python3 scripts/local_runtime.py install
+python3 scripts/local_runtime.py status
+python3 scripts/local_runtime.py status --json
+python3 scripts/local_runtime.py health
+python3 scripts/local_runtime.py health --json
+python3 scripts/local_runtime.py reinstall
+python3 scripts/local_runtime.py uninstall
+```
+
+- `install` validates all four rendered plists and all ownership boundaries
+  before installing or bootstrapping any label.
+- `status` reports each fixed component independently and reports legacy
+  `8081`/`8083` listeners without changing them.
+- `health` makes bounded, credential-free checks. A protected `401`/`403` is
+  evidence that the LAN boundary is reachable, not permission to print or
+  bypass a credential.
+- `reinstall` is the normal way to load runtime/code/configuration changes. It
+  operates only after exact ownership has been re-established.
+- `uninstall` boots out and removes only the four exact managed plists. It
+  preserves `~/.us-stock-helper/lan.env`,
+  `~/.us-stock-helper/state/devices.sqlite3`, all logs, and forensic
+  quarantine artifacts.
+
+An unknown listener on `8765`, `8766`, `8770`, or `8088` makes a mutating
+command fail closed and receives no signal. Inspect the full executable,
+arguments, working directory, PID, and start time before deciding what owns an
+unexpected process.
+
+## OpenD offline recovery
+
+Do not restart the gateways merely because OpenD is offline.
+
+1. Start OpenD, log in, and wait until its UI shows the quote service as
+   connected on `127.0.0.1:11111`.
+2. Run `python3 scripts/local_runtime.py health` again. The loopback gateway
+   should recover on a later request without a gateway restart.
+3. If OpenD is healthy but a gateway remains wedged, first run
+   `python3 scripts/local_runtime.py status`. Then restart only the exact owned
+   label that needs recovery:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.franz.us-stock-helper.market-loopback"
+launchctl kickstart -k "gui/$(id -u)/com.franz.us-stock-helper.market-lan"
+```
+
+Choose one command, not both by habit, and re-run status and health afterward.
+Never replace an exact-label restart with a port-based kill. The same isolation
+rule applies to the other two managed labels when explicitly testing restart
+behavior:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.franz.us-stock-helper.analysis-api"
+launchctl kickstart -k "gui/$(id -u)/com.franz.us-stock-helper.metro"
+```
+
+For ordinary updates use `reinstall`; direct `kickstart -k` is an exceptional
+single-component recovery or acceptance step.
+
+## Fresh-shell durability proof
+
+After a successful install, close the shell or Codex session that issued it.
+Open a fresh terminal, enter the same worktree, and run:
+
+```bash
+python3 scripts/local_runtime.py status
+python3 scripts/local_runtime.py health
+```
+
+All four labels must still be independently observable. This fresh-shell gate,
+not the lifetime of a foreground supervisor, proves terminal independence.
 
 ## Deterministic offline proof
 
@@ -38,54 +186,28 @@ Expected:
 PASS snapshot=NVDA candles>0 valid_participation>0 future_rows=0
 ```
 
-The replay contains only the contract timestamps and numeric market rows needed
-to reproduce validation. The smoke fails closed on an unhealthy OpenD, an
-empty candle series, a future source child, unordered or duplicate candles,
-misaligned participation, any invalid share without tolerance, a partial
-repair, or an accidental transaction capability.
+The replay contains only contract timestamps and numeric market rows. It fails
+closed on an unhealthy OpenD, empty or invalid candles, future data, incomplete
+repairs, or an accidental transaction capability. Fixtures are an explicitly
+selected Demo/offline proof; Real mode never falls back to them.
 
-## Latest loopback gateway and live smoke
+## Live smoke
 
-First identify listeners. Do not stop a process based on a port number alone:
-
-```bash
-lsof -nP -iTCP:11111 -sTCP:LISTEN
-lsof -nP -iTCP:8765 -sTCP:LISTEN
-ps -p <8765-pid> -o pid=,ppid=,command=
-```
-
-If port `8765` is owned by an older gateway, record its PID and full command.
-Stop only the PID whose command is the Python
-`us_stock_helper_market_gateway` process on `8765`; never stop OpenD or an
-unrelated listener. Start the gateway from the current worktree using the
-Python environment that contains the moomoo SDK:
+First confirm runtime state through the lifecycle CLI, then issue one live
+daily snapshot through the loopback gateway:
 
 ```bash
-umask 077
-PYTHONPATH=services/analysis_core:services/market_gateway/src \
-  services/market_gateway/.venv/bin/python \
-  -m us_stock_helper_market_gateway
-```
+python3 scripts/local_runtime.py status
+python3 scripts/local_runtime.py health
 
-In another terminal:
-
-```bash
 PYTHONPATH=services/analysis_core:services/market_gateway/src \
   python3 services/market_gateway/scripts/smoke_real_snapshot.py \
-  --symbol NVDA --interval 5m --count 200 \
+  --contract-version v3 --symbol SOFI --interval day --count 250 \
   --base-url http://127.0.0.1:8765
 ```
 
-With `--contract-version v2` (the compatibility default), the validator issues
-only `GET /health` and `GET /stock-snapshot`. With `--contract-version v3`, it
-issues only `GET /health` and `GET /v3/stock-snapshot`. There is no smoke
-fallback between versions. A v3 response must have the exact section contract
-and a usable quote or non-empty completed-candle section; anomalous holdings or
-a stale optional section remain precise local limitations rather than a Demo
-substitution.
-
 For the complete Watchlist gate, use one paired device for the whole run and
-write only a permission-restricted report below `/tmp`:
+write only a permission-restricted report outside the repository:
 
 ```bash
 umask 077
@@ -94,89 +216,60 @@ PYTHONPATH=services/device_auth/src \
   python3 scripts/smoke_live.py \
   --gateway-url http://127.0.0.1:8765 \
   --analysis-url "http://${MAC_LAN_IP}:8770" \
-  --device-database /Users/franz/.us-stock-helper/state/devices.sqlite3 \
+  --device-database "$HOME/.us-stock-helper/state/devices.sqlite3" \
   --all-watchlist --snapshot-version v3 \
   --interval day --count 250 --horizon short \
   --report /tmp/us-stock-helper-watchlist-v3.json
 ```
 
-The batch deliberately reads market data from the loopback gateway on 8765.
-The analysis process is the LAN-bound, device-authenticated service on 8770,
-so `MAC_LAN_IP` must be an address covered by its explicit client allowlist;
-do not widen that allowlist merely to make a smoke command pass.
+The batch reads market data from loopback `8765` and device-authenticated
+analysis from `8770`. Do not widen the client allowlist merely to make the
+smoke pass. It preserves Watchlist order, uses one device token until its
+guaranteed revocation, and excludes provider text, credentials, response
+reasons, and environment data from its mode-`0600` report.
 
-The configured live acceptance currently expects 46 source items, but the
-script deliberately does not hard-code that count. It preserves `/watchlist`
-order, rejects empty/duplicate codes, runs one v3 snapshot and one daily
-decision per source item, and reuses the one device token until its guaranteed
-revocation. The report is mode `0600` and contains only fixed classifications
-and allowlisted contract metadata; it excludes response reasons, warnings,
-provider messages, credentials, and environment data.
+## Quarantine artifacts and manual review
 
-## Temporary iPhone LAN runtime
+Trusted plist replacement/removal never overwrites or automatically deletes an
+unknown same-user file. Prior verified plists and failed stages therefore stay
+under `~/Library/LaunchAgents` with names ending in `.tombstone` or `.staged`.
+They are mode `0600`, never end in `.plist`, and are ignored by exact-path
+runtime ownership and by launchd plist loading.
 
-For the already paired local development setup, keep all three read-only
-services in one foreground supervisor:
+The runtime caps the combined `.tombstone`/`.staged` artifacts at `1024` per
+managed target. At the cap, mutation fails closed with a quarantine-full error;
+it does not weaken the check or bulk-delete evidence. Ordinary uninstall also
+leaves these artifacts intact.
 
-```bash
-scripts/run_local_dev_stack.sh
-```
+The first hash in each artifact name identifies the canonical target:
 
-The canonical development listeners are loopback gateway `8765`, LAN gateway
-`8766`, analysis `8770`, and Metro `8088`. A still-running Metro on `8083` is
-legacy migration state only, not the canonical next-step runtime; inspect it
-before deliberately moving the client to `8088`. Before any restart, verify each PID's
-full command and current working directory and confirm it belongs to this
-worktree. Do not stop an unknown process merely because it owns a familiar
-port, including `8081`.
+| Artifact prefix | Managed plist |
+| --- | --- |
+| `.us-stock-helper.75f62f3f7959fd0a.` | `com.franz.us-stock-helper.market-loopback.plist` |
+| `.us-stock-helper.066f2c2eda3c50cd.` | `com.franz.us-stock-helper.market-lan.plist` |
+| `.us-stock-helper.ff4111646502099f.` | `com.franz.us-stock-helper.analysis-api.plist` |
+| `.us-stock-helper.4c02da3b685845a8.` | `com.franz.us-stock-helper.metro.plist` |
 
-It reads the existing operator-owned
-`~/.us-stock-helper/lan.env`, writes only redacted process logs under `/tmp`,
-and stops the remaining services if any one of them exits. It does not contain
-or print the market token, device credentials, or an Anthropic key. Run it in a
-terminal or a user launch job when the stack must survive a calling shell.
+Do not enumerate this directory with a shell wildcard or `find`. Read-only
+inspection is limited to one exact literal artifact path supplied by a reviewed
+lifecycle diagnostic. For that one path, an auditor may `lstat`, open
+read-only/no-follow, `fstat`, hash, and parse the plist only after verifying all
+of these conditions:
 
-The lower-level commands below remain useful when bringing up only the market
-gateway or rotating the LAN token.
+- the path is directly under the current user's `~/Library/LaunchAgents`;
+- `lstat` and the opened descriptor identify the same regular file owned by the
+  current uid at mode `0600`;
+- its basename has exactly one of the four prefixes in the table above and ends
+  in `.tombstone` or `.staged`, never `.plist`;
+- its label and fixed launch contract match the mapped managed plist;
+- every operation remains read-only and emits no credential-bearing content.
 
-Choose the Mac's active LAN address and the exact CIDR that contains only the
-phone network. Generate a fresh 32-byte token for every session:
-
-```bash
-export MOOMOO_GATEWAY_ALLOW_LAN=1
-export MOOMOO_GATEWAY_HOST=0.0.0.0
-export MOOMOO_GATEWAY_ALLOWED_CLIENTS=192.168.50.0/24
-export MOOMOO_GATEWAY_TOKEN="$(openssl rand -hex 32)"
-PYTHONPATH=services/analysis_core:services/market_gateway/src \
-  services/market_gateway/.venv/bin/python \
-  -m us_stock_helper_market_gateway
-```
-
-Use the real Mac LAN IP, not loopback, in the development client:
-
-```bash
-cd apps/mobile
-export EXPO_PUBLIC_MARKET_API_URL=http://192.168.50.10:8765
-export EXPO_PUBLIC_MARKET_API_DEV_TOKEN="$MOOMOO_GATEWAY_TOKEN"
-npm run start:dev-client -- --lan --port 8088
-```
-
-Run Metro from a shell that has received the same in-memory runtime token; do
-not paste it into a committed script or shell history. The smoke CLI also reads
-`MOOMOO_GATEWAY_TOKEN` from its environment and sends it only in the
-Authorization header, so the LAN path can be checked before opening the app:
-
-```bash
-PYTHONPATH=services/analysis_core:services/market_gateway/src \
-  python3 services/market_gateway/scripts/smoke_real_snapshot.py \
-  --symbol NVDA --interval 5m --count 200 \
-  --base-url http://192.168.50.10:8765
-```
-
-Replace the example IP and CIDR with the current network values. The temporary
-LAN token is development-only. It must never be committed, logged, hardcoded,
-stored in a fixture, or included in a release build. Production runtime rejects
-development tokens.
+This runbook intentionally provides no delete, move, glob, directory-inventory,
+recursive-cleanup, or automated-retention command. If the `1024` cap is reached,
+stop the lifecycle mutation, preserve every artifact, and escalate either to a
+reviewed lifecycle-tool change or to a separately approved manual forensic
+procedure. Read-only verification does not authorize cleanup. If any ownership
+or content is unclear, leave the artifact in place.
 
 ## Physical iPhone acceptance
 
@@ -186,31 +279,22 @@ Confirm the device is connected before making any device claim:
 xcrun devicectl list devices
 ```
 
-If it is absent, stop device acceptance and report `DONE_WITH_CONCERNS`; do not
-infer installation or launch success. If it is connected, follow the signed
-install and launch steps in [iphone-dev-client.md](iphone-dev-client.md), then
-record each observed result:
+If it is absent, stop device acceptance rather than inferring success. If it is
+connected, follow [iphone-dev-client.md](iphone-dev-client.md), then verify:
 
-- Dashboard watchlist matches moomoo.
-- SOFI plus CRCL, AVGO, GRRR, SMTC, LULU, PTON, ETSY, and GPCR open without
-  duplicate rows or render errors.
-- Actual completed K-lines appear.
-- The selected default says `日K`, every successful decision states
-  `interval: day`, and the complete Magic Nine sequence stays attached to the
-  daily candles.
-- Quote/chart/decision remain visible when holdings are anomalous or
-  unavailable. Aggregate percentages above 100 retain the exact fixed warning
-  and never trigger a full-page malformed state or Demo badge in Real mode.
-- Supported K-lines have aligned, constant-height stacked participation bars.
-- Every available bar totals exactly 100%; unsupported older bars are visibly
-  missing, never interpolated or repaired.
-- RSI, MACD, MA5, and Magic Nine show the same decision cutoff.
-- After an intentional OpenD stop, the app becomes unavailable without
-  crashing; after OpenD restarts and logs in, it returns to live without
+- Dashboard Watchlist matches moomoo and audited symbols open without duplicate
+  rows or render errors.
+- The chart defaults to `日K`; every successful decision states `interval: day`;
+  Magic Nine and other indicators share the daily cutoff.
+- Quote, chart, and decision remain available when optional holdings are
+  anomalous or unavailable.
+- Current-session flow remains separate from the daily price basis.
+- After an intentional OpenD stop, Real mode becomes unavailable without a
+  crash; after OpenD restarts and logs in, live daily data returns without
   splicing an unknown interval.
-- A live screen contains no forecast and no fixture conclusion.
+- No Real screen contains a fixture conclusion or Demo badge.
 
-Do not stop OpenD until the initial live state is recorded. Do not call any
+Do not stop OpenD until the initial live state is recorded, and do not call any
 transaction endpoint during this test.
 
 ## Final safety checks
@@ -225,6 +309,6 @@ rg -n \
 git status --short
 ```
 
-Both searches must have no matches. Keep any live response or process log under
-a permission-restricted temporary directory outside the repository, redact it
-before sharing, and delete it after the acceptance record is written.
+Both searches must have no matches. Keep live responses and reports outside the
+repository with mode `0600`, redact them before sharing, and remove them only
+under the operator's normal audited retention process.

@@ -68,7 +68,7 @@ Alternatives were rejected for this slice:
 
 ### 3.1 Immediate durable local runtime
 
-Install five independent user-level LaunchAgents:
+Install four independent user-level LaunchAgents for the immediate P0:
 
 | Service | Bind | Purpose |
 | --- | --- | --- |
@@ -76,26 +76,38 @@ Install five independent user-level LaunchAgents:
 | LAN market gateway | `0.0.0.0:8766` | temporary direct iPhone market access |
 | analysis API | `0.0.0.0:8770` | paired read-only analysis access |
 | Expo dev-client Metro | `0.0.0.0:8088` | development bundle only |
-| background worker | no listener | collection, scan, alert, and close jobs |
 
 Each service has its own label, restart policy, log files, and minimal
 environment. A failure in one service must not terminate the others.
 
+There is no P0 background-worker LaunchAgent. Durable scheduled collection,
+scans, alerts, and close jobs require the real SQLite lease/job implementation
+described in section 3.3 and are deferred to their own delivery slice. The
+runtime must not install a placeholder process or claim a fake worker merely to
+make the service count reach five.
+
 The move from the currently running Metro port `8083` to the canonical `8088`
 is an explicit migration. The installer records PID, process start time,
 executable, absolute repository working directory, command fingerprint, and
-listening port, then rechecks that complete identity immediately before any
-signal. A process is project-owned when it has an installer ownership marker or
-all executable/directory/command/port fingerprints match a known project launch;
-parent PID is not an ownership requirement because an Expo process can be
-reparented to PID 1 after its terminal exits. Only an unknown listener on the
-target `8088` or a target service port blocks installation. Unknown listeners on
-legacy `8081`/`8083` are reported but left untouched and do not block the new
-stack. A proven project-owned legacy listener may be handed over gracefully.
-The installer sends `TERM`, waits up to 15 seconds, verifies the exact recorded
-PID and start time exited, and never escalates to an unrelated PID. It then
-updates the development URL, mobile environment, runbooks, and health checks
-together.
+listening port. Ownership is established only when every link agrees: the
+private ownership manifest is in `installed` state; each installed plist digest
+matches that manifest; launchctl reports the exact plist path, program, and full
+argument vector; exactly one listener PID equals launchd's PID; and that PID's
+live process identity has a valid start-time observation plus the exact
+executable, absolute working directory, and command fingerprint. No marker,
+port, command, or fingerprint is sufficient by itself. Parent PID is not an
+ownership requirement because an Expo process can be reparented to PID 1 after
+its terminal exits.
+
+Only an unknown listener on target `8088` or a target service port blocks
+installation. Unknown listeners on legacy `8081`/`8083` are reported but left
+untouched and do not block the new stack. They are always report-only: the
+installer never signals them, never automatically hands them over, and never
+infers permission from a familiar command or port. Any separately approved
+manual retirement must re-establish the exact process identity outside this
+lifecycle transaction. The migration updates the development URL, mobile
+environment, runbooks, and health checks together without touching legacy
+listeners.
 
 The installer is idempotent and non-interactive. It must:
 
@@ -138,11 +150,16 @@ boundary so the only persistent device credential is the revocable Keychain
 pairing token. Plain HTTP LAN traffic is visibly labelled a development-only
 transport and is not accepted as the final production security boundary.
 
-### 3.3 Durable worker, storage, and recovery
+### 3.3 Deferred durable worker, storage, and recovery
 
-The background worker is the sole scheduler. Request-serving APIs do not own
-recurring jobs. It uses a private SQLite database in WAL mode with ordered,
-transactional schema migrations. Initial tables are:
+This section is the required target design for a later implementation slice,
+not a description of the four-agent P0. No worker process or LaunchAgent exists
+until the SQLite lease/job model, migrations, and crash recovery below are
+implemented and tested.
+
+Once implemented, the background worker is the sole scheduler. Request-serving
+APIs do not own recurring jobs. It uses a private SQLite database in WAL mode
+with ordered, transactional schema migrations. Initial tables are:
 
 ```text
 schema_migrations
@@ -804,17 +821,29 @@ casino-like motion or a second visual system.
 - real point-in-time violations remain excluded and explicitly reported;
 - all new contracts begin with failing tests and pass after implementation.
 
-### Slice 2: make the service survive the session
+### Slice 2: make the four services survive the session
 
-- install/status/uninstall scripts and five LaunchAgents;
+- install/status/health/reinstall/uninstall CLI and four LaunchAgents;
 - close the launching terminal/Codex session and verify services remain;
-- kill each child and verify launchd restarts only that service;
+- restart each exact label with `launchctl kickstart -k` and verify the other
+  three process identities do not change;
 - verify logs and installed configuration contain no current secrets;
 - verify iPhone access, paired authentication, Debug-token rotation, and OpenD
   offline/recovery behavior;
-- prove worker lease/crash recovery and idempotent database migrations.
+- report legacy `8081`/`8083` listeners without signalling or automatically
+  handing them over.
 
-### Slice 3: daily-trader capital flow
+### Slice 3: implement the durable worker
+
+- implement the private SQLite WAL schema, ordered migrations, transactional
+  leases, heartbeat, and deterministic idempotency keys before installing a
+  worker LaunchAgent;
+- prove lease expiry/crash recovery, idempotent writes, and idempotent database
+  migrations;
+- keep scheduled scans, alerts, and close jobs explicitly unavailable until
+  that proof passes; never substitute a placeholder or request-serving timer.
+
+### Slice 4: daily-trader capital flow
 
 - current-session summary and five-minute trend for SOFI and representative
   positive/negative/empty symbols;
@@ -823,7 +852,7 @@ casino-like motion or a second visual system.
 - daily price chart remains daily while the session-flow card remains useful;
 - exact proxy disclosure is visible and accessible.
 
-### Slice 4: real Dashboard, Discover, and Alerts
+### Slice 5: real Dashboard, Discover, and Alerts
 
 - Watchlist-first deterministic scan;
 - real market verdict and coverage;
@@ -831,7 +860,7 @@ casino-like motion or a second visual system.
 - partial failures do not block other rows or sections;
 - no automatic LLM calls in network/request tests.
 
-### Slice 5: News, Journal, Agent, and adviser parity
+### Slice 6: News, Journal, Agent, and adviser parity
 
 - registered-source News panel, coverage, health, and evidence citations, then
   a separately gated lawful Watchlist-wide symbol-search source before the
@@ -843,7 +872,7 @@ casino-like motion or a second visual system.
 - explicit full council route in mobile with usage/cost display;
 - model failures abstain while deterministic analysis remains usable.
 
-### Slice 6: household-LAN milestone hardening
+### Slice 7: household-LAN milestone hardening
 
 - typecheck and all unit/integration suites pass;
 - 46-symbol live smoke passes or reports section-level provider limitations
@@ -855,7 +884,7 @@ casino-like motion or a second visual system.
 This slice is a household-LAN milestone only. It must not be reported as an
 independent production iPhone deployment.
 
-### Slice 7: independent iPhone production deployment
+### Slice 8: independent iPhone production deployment
 
 - deploy the paired API and background worker to the user-selected Singapore host;
 - expose only a managed HTTPS hostname with valid TLS; OpenD and private service
