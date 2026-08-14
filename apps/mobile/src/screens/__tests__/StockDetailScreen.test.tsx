@@ -759,6 +759,11 @@ it("keeps the demo stock page free of a news surface it cannot fill", async () =
   expect(view.queryByTestId("decision-news")).toBeNull();
   expect(view.getByTestId("institutional-holdings-card")).toBeTruthy();
   expect(view.queryByTestId("institutional-holdings-empty")).toBeNull();
+  expect(
+    view.getAllByTestId("magic-nine-series-marker", {
+      includeHiddenElements: true,
+    }),
+  ).toHaveLength(7);
 });
 
 it("names what each still-dark card is waiting on", async () => {
