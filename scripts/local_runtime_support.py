@@ -10,8 +10,10 @@ from __future__ import annotations
 import ctypes
 import errno
 import grp
+import hashlib
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -70,7 +72,9 @@ class FileSystemRunner:
     close_fd: Callable[[int], None]
     mkdir: Callable[[PathLike, int], None]
     chmod: Callable[[PathLike, int], None]
-    replace: Callable[[PathLike, PathLike], None]
+    replace: Callable[..., None]
+    rename_exclusive: Callable[[int, str, int, str], None]
+    listdir: Callable[[int], list[str]]
     unlink: Callable[[PathLike], None]
     mkstemp: Callable[..., tuple[int, str]]
     geteuid: Callable[[], int]
@@ -134,6 +138,41 @@ def _load_acl_library() -> ctypes.CDLL | None:
     except (AttributeError, OSError):
         return None
     return library
+
+
+def _rename_exclusive(
+    source_directory: int,
+    source_name: str,
+    destination_directory: int,
+    destination_name: str,
+) -> None:
+    """Atomically rename without overwriting an existing entry or symlink."""
+
+    if sys.platform != "darwin":
+        raise OSError(errno.ENOTSUP, "exclusive rename is unavailable")
+    library = ctypes.CDLL(None, use_errno=True)
+    function = library.renameatx_np
+    function.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    function.restype = ctypes.c_int
+    rename_exclusive = 0x00000004
+    rename_nofollow_any = 0x00000010
+    ctypes.set_errno(0)
+    result = function(
+        source_directory,
+        os.fsencode(source_name),
+        destination_directory,
+        os.fsencode(destination_name),
+        rename_exclusive | rename_nofollow_any,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, "exclusive rename failed")
 
 
 _LIBC = _load_acl_library()
@@ -304,6 +343,8 @@ DEFAULT_FILE_SYSTEM = FileSystemRunner(
     mkdir=os.mkdir,
     chmod=os.chmod,
     replace=os.replace,
+    rename_exclusive=_rename_exclusive,
+    listdir=os.listdir,
     unlink=os.unlink,
     mkstemp=tempfile.mkstemp,
     geteuid=os.geteuid,
@@ -641,8 +682,13 @@ def atomic_write_private_file(
         _repair_existing_private_file(file_path, filesystem=filesystem)
 
     descriptor: int | None = None
+    parent_descriptor: int | None = None
     temporary_name: str | None = None
     try:
+        parent_descriptor = _open_directory_descriptor(
+            file_path.parent,
+            filesystem=filesystem,
+        )
         descriptor, temporary_name = filesystem.mkstemp(
             prefix=f".{file_path.name}.", dir=str(file_path.parent)
         )
@@ -652,15 +698,21 @@ def atomic_write_private_file(
             mode=PRIVATE_FILE_MODE,
             filesystem=filesystem,
         )
-        remaining = memoryview(content)
-        while remaining:
-            written = filesystem.write_fd(descriptor, remaining)
+        offset = 0
+        while offset < len(content):
+            written = filesystem.write_fd(descriptor, content[offset:])
             if written <= 0:
                 raise OSError("short private file write")
-            remaining = remaining[written:]
+            offset += written
         filesystem.fsync(descriptor)
-        filesystem.replace(temporary_name, file_path)
+        filesystem.replace(
+            Path(temporary_name).name,
+            file_path.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
         temporary_name = None
+        filesystem.fsync(parent_descriptor)
         _validate_private_descriptor(
             descriptor,
             expected="file",
@@ -680,6 +732,403 @@ def atomic_write_private_file(
                 filesystem.unlink(temporary_name)
             except OSError:
                 pass
+        if parent_descriptor is not None:
+            try:
+                filesystem.close_fd(parent_descriptor)
+            except OSError:
+                pass
+
+
+_MAX_TRUSTED_ARTIFACTS_PER_TARGET = 1024
+
+
+def _open_trusted_parent(
+    file_path: Path,
+    *,
+    filesystem: FileSystemRunner,
+) -> int:
+    descriptor: int | None = None
+    try:
+        descriptor = _open_directory_descriptor(
+            file_path.parent,
+            filesystem=filesystem,
+        )
+        metadata = _require_owned_descriptor(
+            descriptor,
+            expected="directory",
+            filesystem=filesystem,
+        )
+        if stat.S_IMODE(metadata.st_mode) & 0o022:
+            raise RuntimeConfigurationError("trusted parent directory is unsafe")
+        return descriptor
+    except BaseException:
+        if descriptor is not None:
+            try:
+                filesystem.close_fd(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+def _tombstone_prefix(target_name: str) -> str:
+    token = hashlib.sha256(os.fsencode(target_name)).hexdigest()[:16]
+    return f".us-stock-helper.{token}."
+
+
+def _require_trusted_artifact_capacity(
+    parent_descriptor: int,
+    target_name: str,
+    *,
+    filesystem: FileSystemRunner,
+) -> None:
+    prefix = _tombstone_prefix(target_name)
+    artifacts = [
+        name
+        for name in filesystem.listdir(parent_descriptor)
+        if name.startswith(prefix)
+        and (name.endswith(".tombstone") or name.endswith(".staged"))
+    ]
+    if len(artifacts) >= _MAX_TRUSTED_ARTIFACTS_PER_TARGET:
+        raise RuntimeConfigurationError("trusted file quarantine is full")
+
+
+def _restore_tombstone_exclusive(
+    parent_descriptor: int,
+    tombstone_name: str,
+    target_name: str,
+    expected_digest: str,
+    *,
+    filesystem: FileSystemRunner,
+) -> bool:
+    """Restore only the captured inode and never overwrite a new target."""
+
+    try:
+        if (
+            _existing_private_digest_at(
+                parent_descriptor,
+                tombstone_name,
+                filesystem=filesystem,
+            )
+            != expected_digest
+        ):
+            return False
+        try:
+            filesystem.rename_exclusive(
+                parent_descriptor,
+                tombstone_name,
+                parent_descriptor,
+                target_name,
+            )
+        except OSError:
+            # Resolve a callback/syscall result that may have committed before
+            # reporting an error.  No path is ever overwritten during this
+            # observation.
+            if (
+                _existing_private_digest_at(
+                    parent_descriptor,
+                    target_name,
+                    filesystem=filesystem,
+                )
+                != expected_digest
+            ):
+                return False
+        filesystem.fsync(parent_descriptor)
+        return True
+    except (OSError, RuntimeConfigurationError, TypeError, ValueError):
+        return False
+
+
+def _capture_exact_tombstone(
+    parent_descriptor: int,
+    target_name: str,
+    expected_digest: str,
+    capture_holder: list[str],
+    *,
+    filesystem: FileSystemRunner,
+) -> str:
+    """Move a CAS-matched target aside with Darwin's no-clobber primitive."""
+
+    prefix = _tombstone_prefix(target_name)
+
+    for _ in range(16):
+        tombstone_name = f"{prefix}{secrets.token_hex(16)}.tombstone"
+        capture_holder.append(tombstone_name)
+        try:
+            filesystem.rename_exclusive(
+                parent_descriptor,
+                target_name,
+                parent_descriptor,
+                tombstone_name,
+            )
+        except BaseException as error:
+            restored = _restore_tombstone_exclusive(
+                parent_descriptor,
+                tombstone_name,
+                target_name,
+                expected_digest,
+                filesystem=filesystem,
+            )
+            if (
+                isinstance(error, OSError)
+                and error.errno == errno.EEXIST
+                and not restored
+            ):
+                capture_holder.pop()
+                continue
+            raise
+        try:
+            moved_digest = _existing_private_digest_at(
+                parent_descriptor,
+                tombstone_name,
+                filesystem=filesystem,
+            )
+        except BaseException:
+            _restore_tombstone_exclusive(
+                parent_descriptor,
+                tombstone_name,
+                target_name,
+                expected_digest,
+                filesystem=filesystem,
+            )
+            raise
+        if moved_digest != expected_digest:
+            if moved_digest is not None:
+                _restore_tombstone_exclusive(
+                    parent_descriptor,
+                    tombstone_name,
+                    target_name,
+                    moved_digest,
+                    filesystem=filesystem,
+                )
+            raise RuntimeConfigurationError("trusted file ownership changed")
+        return tombstone_name
+    raise RuntimeConfigurationError("trusted file quarantine is unavailable")
+
+
+def quarantine_trusted_file(
+    path: PathLike,
+    *,
+    expected_existing_digest: str,
+    filesystem: FileSystemRunner = DEFAULT_FILE_SYSTEM,
+) -> Path:
+    """Remove a trusted path by retaining its exact object as a tombstone.
+
+    Tombstones intentionally end in ``.tombstone`` (never ``.plist``), are
+    excluded from exact-path runtime ownership, and are capped per target.
+    They are kept for explicit/manual forensic cleanup because conditional
+    unlink cannot be made race-free against another same-UID process.
+    """
+
+    file_path = Path(path)
+    parent_descriptor: int | None = None
+    capture_holder: list[str] = []
+    committed = False
+    try:
+        parent_descriptor = _open_trusted_parent(file_path, filesystem=filesystem)
+        if (
+            _existing_private_digest_at(
+                parent_descriptor,
+                file_path.name,
+                filesystem=filesystem,
+            )
+            != expected_existing_digest
+        ):
+            raise RuntimeConfigurationError("trusted file ownership changed")
+        _require_trusted_artifact_capacity(
+            parent_descriptor,
+            file_path.name,
+            filesystem=filesystem,
+        )
+        try:
+            tombstone_name = _capture_exact_tombstone(
+                parent_descriptor,
+                file_path.name,
+                expected_existing_digest,
+                capture_holder,
+                filesystem=filesystem,
+            )
+            if (
+                _existing_private_digest_at(
+                    parent_descriptor,
+                    file_path.name,
+                    filesystem=filesystem,
+                )
+                is not None
+            ):
+                raise RuntimeConfigurationError("trusted file ownership changed")
+            filesystem.fsync(parent_descriptor)
+            committed = True
+            return file_path.parent / tombstone_name
+        except BaseException:
+            if capture_holder and not committed:
+                _restore_tombstone_exclusive(
+                    parent_descriptor,
+                    capture_holder[-1],
+                    file_path.name,
+                    expected_existing_digest,
+                    filesystem=filesystem,
+                )
+            raise
+    except RuntimeConfigurationError:
+        raise
+    except (OSError, TypeError, ValueError):
+        raise RuntimeConfigurationError(
+            "trusted file could not be quarantined"
+        ) from None
+    finally:
+        if parent_descriptor is not None:
+            try:
+                filesystem.close_fd(parent_descriptor)
+            except OSError:
+                pass
+
+
+def atomic_write_trusted_file(
+    path: PathLike,
+    content: bytes,
+    *,
+    expected_existing_digest: str | None,
+    filesystem: FileSystemRunner = DEFAULT_FILE_SYSTEM,
+) -> None:
+    """Install a ``0600`` file using only no-clobber atomic renames."""
+
+    file_path = Path(path)
+    parent_descriptor: int | None = None
+    file_descriptor: int | None = None
+    temporary_name: str | None = None
+    capture_holder: list[str] = []
+    published = False
+    try:
+        parent_descriptor = _open_trusted_parent(file_path, filesystem=filesystem)
+        actual_digest = _existing_private_digest_at(
+            parent_descriptor,
+            file_path.name,
+            filesystem=filesystem,
+        )
+        if actual_digest != expected_existing_digest:
+            raise RuntimeConfigurationError("trusted file ownership changed")
+
+        _require_trusted_artifact_capacity(
+            parent_descriptor,
+            file_path.name,
+            filesystem=filesystem,
+        )
+        file_descriptor, temporary_name = filesystem.mkstemp(
+            prefix=f"{_tombstone_prefix(file_path.name)}stage.",
+            suffix=".staged",
+            dir=str(file_path.parent),
+        )
+        _repair_private_descriptor(
+            file_descriptor,
+            expected="file",
+            mode=PRIVATE_FILE_MODE,
+            filesystem=filesystem,
+        )
+        offset = 0
+        while offset < len(content):
+            written = filesystem.write_fd(file_descriptor, content[offset:])
+            if written <= 0:
+                raise OSError("short trusted file write")
+            offset += written
+        filesystem.fsync(file_descriptor)
+        temporary_basename = Path(temporary_name).name
+
+        try:
+            if expected_existing_digest is not None:
+                _capture_exact_tombstone(
+                    parent_descriptor,
+                    file_path.name,
+                    expected_existing_digest,
+                    capture_holder,
+                    filesystem=filesystem,
+                )
+            filesystem.rename_exclusive(
+                parent_descriptor,
+                temporary_basename,
+                parent_descriptor,
+                file_path.name,
+            )
+            published = True
+            temporary_name = None
+            filesystem.fsync(parent_descriptor)
+            if (
+                _existing_private_digest_at(
+                    parent_descriptor,
+                    file_path.name,
+                    filesystem=filesystem,
+                )
+                != hashlib.sha256(content).hexdigest()
+            ):
+                raise RuntimeConfigurationError("trusted file ownership changed")
+        except BaseException:
+            if (
+                capture_holder
+                and not published
+                and expected_existing_digest is not None
+            ):
+                _restore_tombstone_exclusive(
+                    parent_descriptor,
+                    capture_holder[-1],
+                    file_path.name,
+                    expected_existing_digest,
+                    filesystem=filesystem,
+                )
+            raise
+    except RuntimeConfigurationError:
+        raise
+    except (OSError, TypeError, ValueError):
+        raise RuntimeConfigurationError("trusted file could not be written") from None
+    finally:
+        if file_descriptor is not None:
+            try:
+                filesystem.close_fd(file_descriptor)
+            except OSError:
+                pass
+        # Unknown same-UID races make pathname-based cleanup unsafe.  Failed
+        # stages and verified prior versions therefore remain non-.plist,
+        # mode-0600 forensic artifacts instead of being conditionally unlinked.
+        if parent_descriptor is not None:
+            try:
+                filesystem.close_fd(parent_descriptor)
+            except OSError:
+                pass
+
+
+def _existing_private_digest_at(
+    parent_descriptor: int,
+    name: str,
+    *,
+    filesystem: FileSystemRunner,
+) -> str | None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = filesystem.open_fd(name, flags, dir_fd=parent_descriptor)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise RuntimeConfigurationError("trusted file is unavailable") from None
+    try:
+        _validate_private_descriptor(
+            descriptor,
+            expected="file",
+            mode=PRIVATE_FILE_MODE,
+            filesystem=filesystem,
+        )
+        digest = hashlib.sha256()
+        while True:
+            chunk = filesystem.read_fd(descriptor, 64 * 1024)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+    except OSError:
+        raise RuntimeConfigurationError("trusted file is unavailable") from None
+    finally:
+        filesystem.close_fd(descriptor)
 
 
 def _read_all(
