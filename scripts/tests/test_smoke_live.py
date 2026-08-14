@@ -1538,6 +1538,95 @@ class BatchParserAndWatchlistTests(unittest.TestCase):
                         expected_count=250,
                     )
 
+    def test_v3_quote_contract_matches_the_mobile_decoder(self) -> None:
+        mutations = (
+            (("sections", "quote", "source"), "evil-provider"),
+            (("sections", "quote", "methodVersion"), "wrong-method"),
+            (("sections", "quote", "data", "source"), "evil-provider"),
+            (("sections", "quote", "data", "methodVersion"), "wrong-method"),
+            (("sections", "quote", "data", "institutionalIdentity"), True),
+            (("sections", "quote", "data", "changePercent"), float("inf")),
+            (("sections", "quote", "data", "asOf"), "2026-07-25T11:59:57Z"),
+            (("sections", "quote", "data", "availableAt"), "2026-07-25T11:59:59Z"),
+            (("sections", "quote", "data", "asOf"), "2099-01-01T00:00:00Z"),
+            (("sections", "quote", "data", "availableAt"), "2099-01-01T00:00:00Z"),
+            (("sections", "quote", "data", "qualityStatus"), "delayed"),
+        )
+        for path, value in mutations:
+            with self.subTest(path=path):
+                payload = snapshot_v3_payload("AVGO")
+                target = payload
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_candle_contract_matches_the_mobile_decoder(self) -> None:
+        mutations = (
+            (("sections", "candles", "source"), "evil-provider"),
+            (("sections", "candles", "methodVersion"), "wrong-method"),
+            (("sections", "candles", "data", "priceAdjustment"), "backward"),
+            (("sections", "candles", "data", "candles", 0, "institutionalIdentity"), True),
+            (("sections", "candles", "data", "candles", 0, "source"), "evil-provider"),
+            (("sections", "candles", "data", "candles", 0, "asOf"), "2026-07-24T19:59:59Z"),
+            (("sections", "candles", "data", "candles", 0, "availableAt"), "2026-07-24T20:00:02Z"),
+            (("sections", "candles", "data", "candles", 0, "receivedAt"), "2026-07-24T20:00:03Z"),
+            (("sections", "candles", "data", "candles", 0, "asOf"), "2099-01-01T00:00:00Z"),
+            (("sections", "candles", "data", "candles", 0, "availableAt"), "2099-01-01T00:00:00Z"),
+            (("sections", "candles", "data", "candles", 0, "receivedAt"), "2099-01-01T00:00:00Z"),
+            (("sections", "candles", "data", "candles", 0, "qualityStatus"), "delayed"),
+            (("sections", "candles", "data", "candles", 0, "methodVersion"), "wrong-method"),
+            (("sections", "candles", "data", "candles", 0, "priceAdjustment"), "unadjusted"),
+            (("sections", "candles", "asOf"), "2026-07-24T19:59:59Z"),
+            (("sections", "candles", "availableAt"), "2026-07-24T20:00:02Z"),
+        )
+        for path, value in mutations:
+            with self.subTest(path=path):
+                payload = snapshot_v3_payload("AVGO")
+                target = payload
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_candle_section_available_at_is_the_maximum_row_availability(
+        self,
+    ) -> None:
+        payload = snapshot_v3_payload("AVGO")
+        candles = payload["sections"]["candles"]
+        later_row = deepcopy(candles["data"]["candles"][0])
+        earlier_row = deepcopy(later_row)
+        earlier_row.update(
+            {
+                "timestamp": "2026-07-24T19:59:00Z",
+                "asOf": "2026-07-24T19:59:00Z",
+                "availableAt": "2026-07-24T20:00:02Z",
+            }
+        )
+        candles["data"]["candles"] = [earlier_row, later_row]
+        candles["availableAt"] = "2026-07-24T20:00:02Z"
+
+        SMOKE.validate_snapshot_v3(
+            payload,
+            expected_symbol="AVGO",
+            expected_interval="day",
+            expected_count=250,
+        )
+
     def test_v3_empty_validated_candles_make_the_snapshot_partial(self) -> None:
         payload = snapshot_v3_payload("AVGO")
         payload["sections"]["candles"]["data"]["candles"] = []

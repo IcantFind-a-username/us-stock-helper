@@ -646,45 +646,118 @@ def _validate_v3_unrequested_section(
 
 
 def _v3_quote_is_usable(envelope: dict[str, Any]) -> bool:
-    if (
-        envelope["availabilityStatus"] not in {"live", "delayed"}
-        or envelope["qualityStatus"] != "validated"
-        or not isinstance(envelope["data"], dict)
-    ):
+    if envelope["availabilityStatus"] not in {"live", "delayed"}:
         return False
-    price = envelope["data"].get("price")
-    return (
-        not isinstance(price, bool)
-        and isinstance(price, (int, float))
-        and math.isfinite(float(price))
-        and float(price) > 0
+    data = envelope["data"]
+    if (
+        envelope["source"] != "moomoo"
+        or envelope["methodVersion"] != "provider-quote-v1"
+        or not isinstance(data, dict)
+        or data.get("institutionalIdentity") is True
+        or data.get("source") != "moomoo"
+        or data.get("methodVersion") != "provider-quote-v1"
+        or data.get("qualityStatus") != "live"
+    ):
+        raise SmokeFailure("snapshot quote source contract is invalid")
+    data_as_of = _timestamp(data.get("asOf"), "sections.quote.data.asOf")
+    data_available_at = _timestamp(
+        data.get("availableAt"), "sections.quote.data.availableAt"
     )
+    section_as_of = _timestamp(envelope["asOf"], "sections.quote.asOf")
+    section_available_at = _timestamp(
+        envelope["availableAt"], "sections.quote.availableAt"
+    )
+    if (
+        data_as_of != section_as_of
+        or data_available_at != section_available_at
+        or data_as_of > data_available_at
+    ):
+        raise SmokeFailure("snapshot quote metadata contradicts its data")
+    try:
+        price = _number(data.get("price"), "sections.quote.data.price")
+        _number(data.get("changePercent"), "sections.quote.data.changePercent")
+    except SmokeFailure as error:
+        message = (
+            "snapshot validated quote is unusable"
+            if envelope["qualityStatus"] == "validated"
+            else "snapshot quote data is invalid"
+        )
+        raise SmokeFailure(message) from error
+    if price <= 0:
+        if envelope["qualityStatus"] == "validated":
+            raise SmokeFailure("snapshot validated quote is unusable")
+        raise SmokeFailure("snapshot quote price must be positive")
+    return envelope["qualityStatus"] == "validated"
 
 
 def _v3_candles_are_usable(
     envelope: dict[str, Any],
     cutoff: datetime,
 ) -> bool:
+    if envelope["availabilityStatus"] not in {"live", "delayed"}:
+        return False
+    data = envelope["data"]
     if (
-        envelope["availabilityStatus"] not in {"live", "delayed"}
-        or envelope["qualityStatus"] != "validated"
-        or not isinstance(envelope["data"], dict)
+        envelope["source"] != "moomoo"
+        or envelope["methodVersion"] != "provider-completed-candle-v1"
+        or not isinstance(data, dict)
     ):
+        raise SmokeFailure("snapshot candle source contract is invalid")
+    price_adjustment = data.get("priceAdjustment")
+    candles = data.get("candles")
+    if (
+        price_adjustment not in {"forward-adjusted", "unadjusted"}
+        or not isinstance(candles, list)
+    ):
+        raise SmokeFailure("snapshot candle data contract is invalid")
+    if not candles:
         return False
-    candles = envelope["data"].get("candles")
-    if not isinstance(candles, list) or not candles:
-        return False
+    section_as_of = _timestamp(envelope["asOf"], "sections.candles.asOf")
+    section_available_at = _timestamp(
+        envelope["availableAt"], "sections.candles.availableAt"
+    )
+    section_received_at = _timestamp(
+        envelope["receivedAt"], "sections.candles.receivedAt"
+    )
     previous: datetime | None = None
+    row_available_times: list[datetime] = []
     for index, raw in enumerate(candles):
         candle = _record(raw, f"sections.candles.data.candles[{index}]")
-        if candle.get("complete") is not True:
-            return False
+        if (
+            candle.get("institutionalIdentity") is True
+            or candle.get("complete") is not True
+            or candle.get("source") != "moomoo"
+            or candle.get("priceAdjustment") != price_adjustment
+            or candle.get("qualityStatus") != "live"
+            or candle.get("methodVersion") != "provider-completed-candle-v1"
+        ):
+            raise SmokeFailure("snapshot candle row contract is invalid")
         closed_at = _timestamp(
             candle.get("timestamp"),
             f"sections.candles.data.candles[{index}].timestamp",
         )
-        if closed_at > cutoff or (previous is not None and closed_at <= previous):
-            return False
+        row_as_of = _timestamp(
+            candle.get("asOf"),
+            f"sections.candles.data.candles[{index}].asOf",
+        )
+        row_available_at = _timestamp(
+            candle.get("availableAt"),
+            f"sections.candles.data.candles[{index}].availableAt",
+        )
+        row_received_at = _timestamp(
+            candle.get("receivedAt"),
+            f"sections.candles.data.candles[{index}].receivedAt",
+        )
+        if (
+            row_as_of != closed_at
+            or closed_at > row_available_at
+            or row_available_at > section_available_at
+            or row_received_at < row_available_at
+            or row_received_at > section_received_at
+            or row_received_at > cutoff
+            or (previous is not None and closed_at <= previous)
+        ):
+            raise SmokeFailure("snapshot candle row time is invalid")
         values = [
             _number(candle.get(field), f"sections.candles.data.candles[{index}].{field}")
             for field in ("open", "high", "low", "close", "volume")
@@ -697,9 +770,12 @@ def _v3_candles_are_usable(
             or low > min(open_price, close)
             or high < low
         ):
-            return False
+            raise SmokeFailure("snapshot candle row values are invalid")
         previous = closed_at
-    return True
+        row_available_times.append(row_available_at)
+    if section_as_of != previous or section_available_at != max(row_available_times):
+        raise SmokeFailure("snapshot candle metadata contradicts its rows")
+    return envelope["qualityStatus"] == "validated"
 
 
 def _get_json(

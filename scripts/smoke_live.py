@@ -1033,17 +1033,50 @@ def validate_snapshot_v3(
 
 
 def _usable_v3_quote(envelope: dict[str, Any], stage: str) -> float | None:
+    if envelope["availabilityStatus"] not in {"live", "delayed"}:
+        return None
+    data = envelope["data"]
     if (
-        envelope["availabilityStatus"] not in {"live", "delayed"}
-        or envelope["qualityStatus"] != "validated"
-        or not isinstance(envelope["data"], dict)
+        envelope["source"] != "moomoo"
+        or envelope["methodVersion"] != "provider-quote-v1"
+        or not isinstance(data, dict)
+        or data.get("institutionalIdentity") is True
+        or data.get("source") != "moomoo"
+        or data.get("methodVersion") != "provider-quote-v1"
+        or data.get("qualityStatus") != "live"
     ):
-        return None
-    try:
-        price = _finite(envelope["data"].get("price"), stage, "quote.price")
-    except StageFailure:
-        return None
-    return price if price > 0 else None
+        raise StageFailure(
+            stage,
+            "snapshot quote source contract invalid",
+            classification="contract-error",
+        )
+    data_as_of = _timestamp(data.get("asOf"), stage, "quote.data.asOf")
+    data_available_at = _timestamp(
+        data.get("availableAt"), stage, "quote.data.availableAt"
+    )
+    section_as_of = _timestamp(envelope["asOf"], stage, "quote.asOf")
+    section_available_at = _timestamp(
+        envelope["availableAt"], stage, "quote.availableAt"
+    )
+    if (
+        data_as_of != section_as_of
+        or data_available_at != section_available_at
+        or data_as_of > data_available_at
+    ):
+        raise StageFailure(
+            stage,
+            "snapshot quote metadata mismatch",
+            classification="contract-error",
+        )
+    price = _finite(data.get("price"), stage, "quote.price")
+    _finite(data.get("changePercent"), stage, "quote.changePercent")
+    if price <= 0:
+        raise StageFailure(
+            stage,
+            "snapshot quote price invalid",
+            classification="contract-error",
+        )
+    return price if envelope["qualityStatus"] == "validated" else None
 
 
 def _usable_v3_candles(
@@ -1051,29 +1084,103 @@ def _usable_v3_candles(
     cutoff: datetime,
     stage: str,
 ) -> tuple[list[float], datetime | None]:
+    if envelope["availabilityStatus"] not in {"live", "delayed"}:
+        return [], None
+    data = envelope["data"]
     if (
-        envelope["availabilityStatus"] not in {"live", "delayed"}
-        or envelope["qualityStatus"] != "validated"
-        or not isinstance(envelope["data"], dict)
+        envelope["source"] != "moomoo"
+        or envelope["methodVersion"] != "provider-completed-candle-v1"
+        or not isinstance(data, dict)
     ):
+        raise StageFailure(
+            stage,
+            "snapshot candle source contract invalid",
+            classification="contract-error",
+        )
+    price_adjustment = data.get("priceAdjustment")
+    candles = data.get("candles")
+    if (
+        price_adjustment not in {"forward-adjusted", "unadjusted"}
+        or not isinstance(candles, list)
+    ):
+        raise StageFailure(
+            stage,
+            "snapshot candle data contract invalid",
+            classification="contract-error",
+        )
+    if not candles:
         return [], None
-    candles = envelope["data"].get("candles")
-    if not isinstance(candles, list) or not candles:
-        return [], None
+    section_as_of = _timestamp(envelope["asOf"], stage, "candles.asOf")
+    section_available_at = _timestamp(
+        envelope["availableAt"], stage, "candles.availableAt"
+    )
+    section_received_at = _timestamp(
+        envelope["receivedAt"], stage, "candles.receivedAt"
+    )
     closes: list[float] = []
     previous: datetime | None = None
+    row_available_times: list[datetime] = []
     for index, raw in enumerate(candles):
         candle = _object(raw, stage, f"sections.candles.data.candles[{index}]")
-        if candle.get("complete") is not True:
-            raise StageFailure(stage, "snapshot candle incomplete", classification="contract-error")
+        if (
+            candle.get("institutionalIdentity") is True
+            or candle.get("complete") is not True
+            or candle.get("source") != "moomoo"
+            or candle.get("priceAdjustment") != price_adjustment
+            or candle.get("qualityStatus") != "live"
+            or candle.get("methodVersion") != "provider-completed-candle-v1"
+        ):
+            raise StageFailure(
+                stage,
+                "snapshot candle row contract invalid",
+                classification="contract-error",
+            )
         closed_at = _timestamp(candle.get("timestamp"), stage, "candle.timestamp")
-        if closed_at > cutoff or (previous is not None and closed_at <= previous):
+        row_as_of = _timestamp(candle.get("asOf"), stage, "candle.asOf")
+        row_available_at = _timestamp(
+            candle.get("availableAt"), stage, "candle.availableAt"
+        )
+        row_received_at = _timestamp(
+            candle.get("receivedAt"), stage, "candle.receivedAt"
+        )
+        if (
+            row_as_of != closed_at
+            or closed_at > row_available_at
+            or row_available_at > section_available_at
+            or row_received_at < row_available_at
+            or row_received_at > section_received_at
+            or row_received_at > cutoff
+            or (previous is not None and closed_at <= previous)
+        ):
             raise StageFailure(stage, "snapshot candle time invalid", classification="contract-error")
-        close = _finite(candle.get("close"), stage, "candle.close")
-        if close <= 0:
-            raise StageFailure(stage, "snapshot candle close invalid", classification="contract-error")
+        values = [
+            _finite(candle.get(field), stage, f"candle.{field}")
+            for field in ("open", "high", "low", "close", "volume")
+        ]
+        open_price, high, low, close, volume = values
+        if (
+            min(open_price, high, low, close) <= 0
+            or volume < 0
+            or high < max(open_price, close)
+            or low > min(open_price, close)
+            or high < low
+        ):
+            raise StageFailure(
+                stage,
+                "snapshot candle values invalid",
+                classification="contract-error",
+            )
         closes.append(close)
         previous = closed_at
+        row_available_times.append(row_available_at)
+    if section_as_of != previous or section_available_at != max(row_available_times):
+        raise StageFailure(
+            stage,
+            "snapshot candle section metadata mismatch",
+            classification="contract-error",
+        )
+    if envelope["qualityStatus"] != "validated":
+        return [], None
     return closes, previous
 
 

@@ -21,8 +21,13 @@
       "availableAt": "2026-07-25T11:59:58Z",
       "receivedAt": "2026-07-25T11:59:59Z",
       "data": {
+        "source": "moomoo",
+        "asOf": "2026-07-25T11:59:58Z",
+        "availableAt": "2026-07-25T11:59:58Z",
         "price": 184.25,
-        "changePercent": 1.5
+        "changePercent": 1.5,
+        "qualityStatus": "live",
+        "methodVersion": "provider-quote-v1"
       },
       "errorCode": null,
       "reason": null,
@@ -42,12 +47,19 @@
         "candles": [
           {
             "timestamp": "2026-07-24T20:00:00Z",
+            "source": "moomoo",
+            "asOf": "2026-07-24T20:00:00Z",
+            "availableAt": "2026-07-24T20:00:01Z",
+            "receivedAt": "2026-07-24T20:00:02Z",
+            "priceAdjustment": "forward-adjusted",
             "complete": true,
             "open": 180.0,
             "high": 185.0,
             "low": 179.5,
             "close": 184.0,
-            "volume": 1250000.0
+            "volume": 1250000.0,
+            "qualityStatus": "live",
+            "methodVersion": "provider-completed-candle-v1"
           }
         ]
       },

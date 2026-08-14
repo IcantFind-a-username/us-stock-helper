@@ -123,7 +123,9 @@ scripts/run_local_dev_stack.sh
 ```
 
 The canonical development listeners are loopback gateway `8765`, LAN gateway
-`8766`, analysis `8770`, and Metro `8083`. Before any restart, verify each PID's
+`8766`, analysis `8770`, and Metro `8088`. A still-running Metro on `8083` is
+legacy migration state only, not the canonical next-step runtime; inspect it
+before deliberately moving the client to `8088`. Before any restart, verify each PID's
 full command and current working directory and confirm it belongs to this
 worktree. Do not stop an unknown process merely because it owns a familiar
 port, including `8081`.
