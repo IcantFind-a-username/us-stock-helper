@@ -8,7 +8,10 @@ import {
   waitFor,
 } from "@testing-library/react-native";
 
-import { decodeStockSnapshotEnvelope } from "@/data/marketGateway";
+import {
+  decodeStockSnapshotEnvelope,
+  decodeStockSnapshotV3Envelope,
+} from "@/data/marketGateway";
 import {
   createMarketRepository,
   MarketDataError,
@@ -20,6 +23,7 @@ import { AppStateProvider } from "@/state/AppStateProvider";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
 
 import { stockSnapshotFixture } from "../../data/__tests__/stockSnapshot.fixture";
+import { stockSnapshotV3Fixture } from "../../data/__tests__/stockSnapshotV3.fixture";
 import { FullChartScreen } from "../FullChartScreen";
 
 const mockBack = jest.fn();
@@ -38,6 +42,29 @@ function liveSnapshot() {
   return decodeStockSnapshotEnvelope(stockSnapshotFixture(), {
     now: new Date("2026-07-25T16:00:00.000Z"),
   });
+}
+
+function completedDailyCandlesSnapshot() {
+  const payload = stockSnapshotV3Fixture();
+  payload.interval = "day";
+  payload.count = 250;
+  const sections = payload.sections as unknown as Record<string, unknown>;
+  sections.quote = {
+    availabilityStatus: "unavailable",
+    qualityStatus: "invalid",
+    source: null,
+    asOf: null,
+    availableAt: null,
+    receivedAt: null,
+    data: null,
+    errorCode: "QUOTE_UNAVAILABLE",
+    reason: "实时报价不可用",
+    warnings: [],
+    anomalies: [],
+    methodVersion: "unavailable-v1",
+  };
+  payload.status = "partial";
+  return decodeStockSnapshotV3Envelope(payload);
 }
 
 function deferred<T>() {
@@ -124,6 +151,28 @@ it("renders the same live snapshot with selectable candles and both indicators",
     view.getByRole("button", { name: /NVDA 图表摘要，2 根已完成 K 线/ }),
   );
   expect(view.getByLabelText(/NVDA 收盘时间 2026-07-25T15:50:00.000Z/)).toBeTruthy();
+});
+
+it("labels a verified candles-only daily chart as completed K lines", async () => {
+  const queries: { symbol: string; interval: string; count: number }[] = [];
+  const view = await renderChart({
+    repository: repositoryWithSnapshot(async (query) => {
+      queries.push(query);
+      return completedDailyCandlesSnapshot();
+    }),
+  });
+
+  await waitFor(() => expect(view.getByText("NVDA 专业图表")).toBeTruthy());
+  expect(queries).toEqual([{ symbol: "NVDA", interval: "day", count: 250 }]);
+  expect(
+    view.getByText("已完成K线 · 截止 2026-07-25 15:59:50 UTC"),
+  ).toBeTruthy();
+  expect(view.getByText("日线 · 已完成K线")).toBeTruthy();
+  expect(view.toJSON()).not.toHaveTextContent(/实时只读|实时行情/);
+  expect(view.getByTestId("stock-chart-card")).toBeTruthy();
+  expect(
+    view.getByRole("button", { name: /NVDA 图表摘要/ }).props.accessibilityLabel,
+  ).toContain("最新日K收盘 141.50，实时报价不可用");
 });
 
 it("starts on daily candles and loads intraday only after the reader asks", async () => {

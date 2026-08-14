@@ -134,7 +134,7 @@ export function FullChartScreen() {
           <Text style={stock.demoData ? styles.demo : styles.live}>
             {dataStatus === "demo"
               ? "演示快照"
-              : `${dataStatus === "stale" ? "缓存数据" : "实时只读"} · 截止 ${formatUtc(stock.source.asOf)}`}
+              : `${dataStatus === "stale" ? "缓存数据" : stock.quote ? "实时只读" : "已完成K线"} · 截止 ${formatUtc(stock.source.asOf)}`}
           </Text>
         </View>
         <View style={styles.back} />
