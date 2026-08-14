@@ -12,6 +12,14 @@ default. Intraday intervals are chart views, not an implicit basis for every
 short-, swing- and long-horizon conclusion. Each response carries `interval`
 so clients can state the analytical basis instead of guessing it.
 
+The analysis service does not read `/stock-snapshot`, `/v2/stock-snapshot`, or
+`/v3/stock-snapshot`. Its deterministic price path reads only `/candles` with
+`interval=day` by default, so delayed holdings, current-session order-size flow,
+and every other optional snapshot section cannot change a score or its daily
+price basis. A live quote remains a separate Watchlist/current-session value.
+The two point-in-time boundaries on that candle envelope are defined below;
+the decision still prices from the latest completed daily close.
+
 ## Safety invariants
 
 - The path allowlist is exactly `GET /health`, `GET /decision` and
@@ -109,15 +117,17 @@ the app stores that token in the Keychain rather than in the bundle.
 
 ## Point-in-time mapping of gateway candles
 
-Completed daily candles arrive through `GET /candles`; the envelope's `asOf` is
-the decision cutoff. The gateway states two instants per completed candle, and
-both are required:
-`availableAt` is when the exchange published the bar and is the earliest moment
-the chain may claim to have known it, `receivedAt` is when the gateway itself
-held it. `availableAt` becomes the bar's `available_at`; `receivedAt` is checked
-against it and against the candles envelope's `asOf`. Neither is ever defaulted
-or substituted for the other — doing so would move the moment of knowledge
-earlier than it really was.
+Completed daily candles arrive through `GET /candles`. The envelope's `asOf` is
+the latest data publication/measurement boundary; its `availableAt` is the
+batch receipt boundary at which the gateway held the response. The gateway
+also states two required instants per completed candle: row `availableAt` is
+when the exchange published the bar and is the earliest moment the chain may
+claim to have known it, while row `receivedAt` is when the gateway itself held
+that row. The boundary enforces `row.availableAt <= envelope.asOf`,
+`row.receivedAt <= envelope.availableAt`, and
+`envelope.asOf <= envelope.availableAt`. Row `availableAt` becomes the domain
+bar's `available_at`. No instant is defaulted or substituted for another —
+doing so would move the moment of knowledge earlier than it really was.
 
 Deterministic `currentPrice` intentionally remains the latest completed daily
 close. Live quotes are a separate Watchlist/current-session input and never

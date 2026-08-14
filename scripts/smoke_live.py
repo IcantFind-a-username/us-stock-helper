@@ -15,13 +15,12 @@ redeems it at `/v1/device-pairings` — and it reads `/decision` with that token
 and nothing else. If any of that is faked, the gate is worth exactly as much as
 the suite it exists to backstop.
 
-Two rules shape the reporting. A failure has to be locatable from the printed
-output alone: the stage, the URL, the HTTP status, the service's own error code
-and the local exception all go to stderr, because "smoke failed" sends the
-reader back to a terminal to reproduce it. And a field that was never measured
-is never reported as a zero: an indicator series that is empty because its
-warm-up has not elapsed is a different fact from one that is empty because
-nothing computed it, and the two are printed differently.
+Two rules shape the reporting. A failure is located with only a fixed local
+stage, classification, and numeric HTTP status; response text, exception text,
+credentials, environment values, and raw bodies never reach stdout, stderr, or
+the JSON report. A field that was never measured is also never reported as a
+zero: an indicator series that is empty because its warm-up has not elapsed is
+a different fact from one that is empty because nothing computed it.
 
 Read-only by construction: this reads two HTTP surfaces and runs the operator's
 own pairing and revocation commands. There is no order path anywhere in it.
@@ -33,15 +32,16 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +49,127 @@ DEFAULT_GATEWAY_URL = "http://127.0.0.1:8765"
 DEFAULT_ANALYSIS_URL = "http://192.168.0.59:8770"
 DEFAULT_DEVICE_DATABASE = "~/.us-stock-helper/state/devices.sqlite3"
 PAIRING_PATH = "/v1/device-pairings"
+SNAPSHOT_PATHS = {
+    "v2": "/stock-snapshot",
+    "v3": "/v3/stock-snapshot",
+}
+
+V3_SECTION_NAMES = (
+    "quote",
+    "candles",
+    "technical",
+    "currentSessionFlow",
+    "holdings",
+    "fundamentals",
+    "marketContext",
+    "news",
+    "forecastDecision",
+)
+V3_REQUESTED_SECTIONS = V3_SECTION_NAMES[:5]
+V3_UNREQUESTED_SECTIONS = V3_SECTION_NAMES[5:]
+V3_TOP_LEVEL_FIELDS = {
+    "schemaVersion",
+    "status",
+    "symbol",
+    "interval",
+    "count",
+    "decisionCutoff",
+    "requestedSections",
+    "sections",
+}
+V3_ENVELOPE_FIELDS = {
+    "availabilityStatus",
+    "qualityStatus",
+    "source",
+    "asOf",
+    "availableAt",
+    "receivedAt",
+    "data",
+    "errorCode",
+    "reason",
+    "warnings",
+    "anomalies",
+    "methodVersion",
+}
+SAFE_SECTION_ERROR_CODES = frozenset(
+    {
+        "AUTH_REQUIRED",
+        "CANDLES_UNAVAILABLE",
+        "CLIENT_NOT_ALLOWED",
+        "CURRENT_SESSION_FLOW_UNAVAILABLE",
+        "HOLDINGS_UNAVAILABLE",
+        "INVALID_ARGUMENT",
+        "INVALID_NUMERIC_VALUE",
+        "INVALID_REPORTING_PERIOD",
+        "LOGIN_REQUIRED",
+        "MALFORMED_PROVIDER_DATA",
+        "METHOD_NOT_ALLOWED",
+        "MISSING_REQUIRED_FIELD",
+        "NOT_REQUESTED",
+        "OPEND_OFFLINE",
+        "ORIGIN_NOT_ALLOWED",
+        "OUT_OF_ORDER_HOLDINGS_ROW",
+        "PATH_NOT_ALLOWED",
+        "PERMISSION_DENIED",
+        "PROVIDER_ERROR",
+        "QUOTA_EXCEEDED",
+        "SDK_UNAVAILABLE",
+        "SECTION_UNAVAILABLE",
+        "STALE_DATA",
+        "UNSUPPORTED_CAPABILITY",
+        "WRONG_HOLDINGS_SOURCE",
+        "FUTURE_HOLDINGS_ROW",
+    }
+)
+SAFE_HOLDINGS_ANOMALY_CODES = frozenset(
+    {
+        "AGGREGATE_PERCENT_ABOVE_100",
+        "FUTURE_HOLDINGS_ROW",
+        "INVALID_NUMERIC_VALUE",
+        "INVALID_REPORTING_PERIOD",
+        "MISSING_REQUIRED_FIELD",
+        "OUT_OF_ORDER_HOLDINGS_ROW",
+        "WRONG_HOLDINGS_SOURCE",
+    }
+)
+_US_WATCHLIST_CODE = re.compile(r"^US\.([A-Z][A-Z0-9.-]{0,9})$")
+_STAGES = frozenset(
+    {
+        "gateway_health",
+        "watchlist",
+        "gateway_snapshot",
+        "issue_pairing_code",
+        "redeem_pairing_code",
+        "analysis_health",
+        "decision",
+        "price_crosscheck",
+        "phone_gateway_health",
+        "phone_gateway_snapshot",
+        "report_write",
+        "report_path",
+        "revoke_smoke_device",
+    }
+)
+_CLASSIFICATIONS = frozenset(
+    {
+        "auth-failed",
+        "contract-error",
+        "http-error",
+        "invalid-report-path",
+        "io-error",
+        "provider-quota",
+        "service-unavailable",
+        "stage-failed",
+    }
+)
+_CLASSIFICATION_BY_SERVER_CODE = {
+    "AUTH_REQUIRED": "auth-failed",
+    "AUTH_UNAVAILABLE": "auth-failed",
+    "CLIENT_NOT_ALLOWED": "auth-failed",
+    "INVALID_PAIRING_CODE": "auth-failed",
+    "PAIRING_UNAVAILABLE": "service-unavailable",
+    "QUOTA_EXCEEDED": "provider-quota",
+}
 
 DIRECTIONS = frozenset({"bearish", "neutral", "bullish"})
 # One snapshot of a thousand candles is well under a megabyte; the ceiling is
@@ -146,14 +267,7 @@ _BLAME_ORDER = (
 
 
 class StageFailure(Exception):
-    """One named step of the live path, and everything known about why it failed.
-
-    The fields are carried separately rather than folded into a message so that
-    the renderer can state each one, including the ones that do not apply. A
-    reader who sees `server_code: none` knows the service never answered; a
-    reader who sees a message with no code cannot tell that from a code nobody
-    bothered to print.
-    """
+    """One named step with private diagnostics and a safe public rendering."""
 
     def __init__(
         self,
@@ -166,6 +280,7 @@ class StageFailure(Exception):
         server_message: str | None = None,
         cause: BaseException | None = None,
         hint: str | None = None,
+        classification: str | None = None,
     ) -> None:
         super().__init__(detail)
         self.stage = stage
@@ -176,6 +291,14 @@ class StageFailure(Exception):
         self.server_message = server_message
         self.cause = cause
         self.hint = hint or (_HINTS.get(server_code) if server_code else None)
+        derived = _CLASSIFICATION_BY_SERVER_CODE.get(
+            server_code or "",
+            "http-error" if http_status is not None else "stage-failed",
+        )
+        selected = classification or derived
+        self.classification = (
+            selected if selected in _CLASSIFICATIONS else "stage-failed"
+        )
         # Filled in when a run fails in more than one place. One stage is
         # raised, but the others have to travel with it: a reader who is told
         # only about the blamed stage will go and fix the wrong thing.
@@ -183,25 +306,22 @@ class StageFailure(Exception):
 
     def summary(self) -> str:
         return (
-            f"{self.stage} (http_status {_stated(self.http_status)},"
-            f" server_code {_stated(self.server_code)})"
+            f"{self._safe_stage()} (classification {self.classification},"
+            f" http_status {_stated(self.http_status)})"
         )
 
     def render(self) -> str:
         lines = [
-            f"FAIL stage={self.stage}",
-            f"  detail: {self.detail}",
-            f"  url: {_stated(self.url)}",
+            f"FAIL stage={self._safe_stage()}",
+            f"  classification: {self.classification}",
             f"  http_status: {_stated(self.http_status)}",
-            f"  server_code: {_stated(self.server_code)}",
-            f"  server_message: {_stated(self.server_message)}",
-            f"  local_exception: {_exception_text(self.cause)}",
         ]
         if self.also_failed:
             lines.append(f"  also_failed: {'; '.join(self.also_failed)}")
-        if self.hint:
-            lines.append(f"  hint: {self.hint}")
         return "\n".join(lines)
+
+    def _safe_stage(self) -> str:
+        return self.stage if self.stage in _STAGES else "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +329,7 @@ class SmokeConfig:
     gateway_url: str = DEFAULT_GATEWAY_URL
     analysis_url: str = DEFAULT_ANALYSIS_URL
     symbol: str = "NVDA"
-    interval: str = "5m"
+    interval: str = "day"
     horizon: str = "short"
     count: int = 200
     label: str | None = None
@@ -222,6 +342,9 @@ class SmokeConfig:
     # rather than skipped in silence.
     phone_gateway_url: str | None = None
     phone_gateway_token: str | None = None
+    all_watchlist: bool = False
+    snapshot_version: str = "v2"
+    report_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +355,14 @@ class SnapshotFacts:
     last_closed_at: datetime
     series_lengths: Mapping[str, int]
     notes: tuple[str, ...] = ()
+    snapshot_status: str = "live"
+    interval: str = ""
+    section_statuses: Mapping[str, Mapping[str, str | None]] = field(
+        default_factory=dict
+    )
+    holdings_quality: str | None = None
+    holdings_anomalies: tuple[Mapping[str, Any], ...] = ()
+    snapshot_version: str = "v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,15 +372,40 @@ class DecisionFacts:
     factor_coverage: float
     current_price: float | None
     cutoff: datetime
+    interval: str = "day"
 
 
 # --- the live transport ---------------------------------------------------
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: Request,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        del new_url
+        raise HTTPError(
+            request.full_url,
+            code,
+            message,
+            headers,
+            file_pointer,
+        )
+
+
+def _strict_urlopen(request: Request, *, timeout: float) -> Any:
+    return build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
+
+
 def http_transport(
     *,
     timeout: float = 10.0,
-    opener: Callable[..., Any] = urlopen,
+    opener: Callable[..., Any] | None = None,
 ) -> Callable[..., Any]:
     """A JSON call that fails with the reason rather than with a category.
 
@@ -258,6 +414,8 @@ def http_transport(
     most callers never read. Reading it here is what makes a 500 from the
     analysis chain distinguishable from an unreachable port.
     """
+
+    open_request = opener or _strict_urlopen
 
     def request(
         stage: str,
@@ -276,7 +434,7 @@ def http_transport(
             headers["Authorization"] = f"Bearer {token}"
         prepared = Request(url, data=data, headers=headers, method=method)
         try:
-            with opener(prepared, timeout=timeout) as response:
+            with open_request(prepared, timeout=timeout) as response:
                 raw = response.read(MAX_RESPONSE_BYTES)
         except HTTPError as error:
             code, message = _server_error(error)
@@ -456,7 +614,7 @@ def validate_analysis_health(payload: Any) -> None:
         )
 
 
-def validate_snapshot(
+def validate_snapshot_v2(
     payload: Any,
     *,
     expected_symbol: str,
@@ -569,11 +727,387 @@ def validate_snapshot(
     )
 
 
+# Kept for callers of the original single-symbol smoke API.
+validate_snapshot = validate_snapshot_v2
+
+
+def validate_snapshot_v3(
+    payload: Any,
+    *,
+    expected_symbol: str,
+    expected_interval: str,
+    expected_count: int,
+    stage: str = "gateway_snapshot",
+    now: datetime | None = None,
+) -> SnapshotFacts:
+    snapshot = _object(payload, stage, "snapshot")
+    if set(snapshot) != V3_TOP_LEVEL_FIELDS:
+        raise StageFailure(
+            stage,
+            "snapshot top-level fields mismatch",
+            classification="contract-error",
+        )
+    if snapshot.get("schemaVersion") != "3":
+        raise StageFailure(stage, "snapshot contract mismatch", classification="contract-error")
+    symbol = expected_symbol.strip().upper()
+    if snapshot.get("symbol") != symbol:
+        raise StageFailure(stage, "snapshot symbol mismatch", classification="contract-error")
+    if snapshot.get("interval") != expected_interval:
+        raise StageFailure(stage, "snapshot interval mismatch", classification="contract-error")
+    count = snapshot.get("count")
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != expected_count
+    ):
+        raise StageFailure(stage, "snapshot count mismatch", classification="contract-error")
+    cutoff = _timestamp(snapshot.get("decisionCutoff"), stage, "decisionCutoff")
+    current_time = now or datetime.now(tz=timezone.utc)
+    if cutoff > current_time:
+        raise StageFailure(
+            stage,
+            "snapshot cutoff is in the future",
+            classification="contract-error",
+        )
+    if snapshot.get("requestedSections") != list(V3_REQUESTED_SECTIONS):
+        raise StageFailure(
+            stage,
+            "snapshot requested sections mismatch",
+            classification="contract-error",
+        )
+    sections = _object(snapshot.get("sections"), stage, "sections")
+    if set(sections) != set(V3_SECTION_NAMES):
+        raise StageFailure(stage, "snapshot sections mismatch", classification="contract-error")
+
+    section_statuses: dict[str, dict[str, str | None]] = {}
+    envelopes: dict[str, dict[str, Any]] = {}
+    for name in V3_SECTION_NAMES:
+        envelope = _object(sections.get(name), stage, f"sections.{name}")
+        if set(envelope) != V3_ENVELOPE_FIELDS:
+            raise StageFailure(
+                stage,
+                "snapshot section envelope mismatch",
+                classification="contract-error",
+            )
+        availability = envelope.get("availabilityStatus")
+        quality = envelope.get("qualityStatus")
+        if availability not in {"live", "delayed", "stale", "unavailable"}:
+            raise StageFailure(stage, "snapshot availability invalid", classification="contract-error")
+        if quality not in {"validated", "partial", "anomalous", "invalid"}:
+            raise StageFailure(stage, "snapshot quality invalid", classification="contract-error")
+        source = envelope.get("source")
+        if source is not None and (
+            not isinstance(source, str) or not source.strip()
+        ):
+            raise StageFailure(
+                stage,
+                "snapshot section source invalid",
+                classification="contract-error",
+            )
+        method_version = envelope.get("methodVersion")
+        if not isinstance(method_version, str) or not method_version.strip():
+            raise StageFailure(
+                stage,
+                "snapshot section method invalid",
+                classification="contract-error",
+            )
+        error_code = envelope.get("errorCode")
+        if error_code is not None and (
+            not isinstance(error_code, str) or not error_code.strip()
+        ):
+            raise StageFailure(stage, "snapshot error code invalid", classification="contract-error")
+        if error_code is not None and error_code not in SAFE_SECTION_ERROR_CODES:
+            raise StageFailure(stage, "snapshot error code unknown", classification="contract-error")
+        reason = envelope.get("reason")
+        if reason is not None and (
+            not isinstance(reason, str) or not reason.strip()
+        ):
+            raise StageFailure(
+                stage,
+                "snapshot section reason invalid",
+                classification="contract-error",
+            )
+        warnings = envelope.get("warnings")
+        raw_anomalies = envelope.get("anomalies")
+        if (
+            not isinstance(warnings, list)
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in warnings
+            )
+            or not isinstance(raw_anomalies, list)
+        ):
+            raise StageFailure(stage, "snapshot section arrays invalid", classification="contract-error")
+        for anomaly in raw_anomalies:
+            if not isinstance(anomaly, dict):
+                raise StageFailure(
+                    stage,
+                    "snapshot section anomaly invalid",
+                    classification="contract-error",
+                )
+            anomaly_code = anomaly.get("code")
+            anomaly_reason = anomaly.get("reason")
+            row_index = anomaly.get("rowIndex")
+            if (
+                not isinstance(anomaly_code, str)
+                or not anomaly_code.strip()
+                or not isinstance(anomaly_reason, str)
+                or not anomaly_reason.strip()
+                or (
+                    "rowIndex" in anomaly
+                    and (
+                        isinstance(row_index, bool)
+                        or not isinstance(row_index, (int, float))
+                        or not math.isfinite(float(row_index))
+                        or not float(row_index).is_integer()
+                        or row_index < 0
+                    )
+                )
+            ):
+                raise StageFailure(
+                    stage,
+                    "snapshot section anomaly invalid",
+                    classification="contract-error",
+                )
+        time_fields = ("asOf", "availableAt", "receivedAt")
+        raw_times = {field: envelope.get(field) for field in time_fields}
+        times = {
+            field: _timestamp(value, stage, f"sections.{name}.{field}")
+            for field, value in raw_times.items()
+            if value is not None
+        }
+        if any(value > cutoff for value in times.values()):
+            raise StageFailure(
+                stage,
+                "snapshot section time after cutoff",
+                classification="contract-error",
+            )
+        if availability == "stale" and times:
+            raise StageFailure(
+                stage,
+                "snapshot stale section time invalid",
+                classification="contract-error",
+            )
+        if availability in {"live", "delayed"} and len(times) != len(time_fields):
+            raise StageFailure(
+                stage,
+                "snapshot available section time incomplete",
+                classification="contract-error",
+            )
+        for earlier, later in zip(time_fields, time_fields[1:]):
+            if (
+                earlier in times
+                and later in times
+                and times[earlier] > times[later]
+            ):
+                raise StageFailure(
+                    stage,
+                    "snapshot section time order invalid",
+                    classification="contract-error",
+                )
+        data = envelope.get("data")
+        state_invalid = False
+        if availability in {"live", "delayed"}:
+            state_invalid = (
+                quality == "invalid"
+                or source is None
+                or len(times) != len(time_fields)
+                or data is None
+                or error_code is not None
+                or reason is not None
+            )
+        elif availability == "stale":
+            state_invalid = (
+                quality != "invalid"
+                or source is not None
+                or bool(times)
+                or data is not None
+                or error_code is None
+                or reason is None
+            )
+        else:
+            state_invalid = (
+                quality != "invalid"
+                or (data is not None and data != [])
+                or error_code is None
+                or reason is None
+            )
+        if state_invalid:
+            raise StageFailure(
+                stage,
+                "snapshot section availability state invalid",
+                classification="contract-error",
+            )
+        envelopes[name] = envelope
+        section_statuses[name] = {
+            "availabilityStatus": availability,
+            "qualityStatus": quality,
+            "errorCode": error_code,
+        }
+
+    for name in V3_UNREQUESTED_SECTIONS:
+        envelope = envelopes[name]
+        if not (
+            envelope["availabilityStatus"] == "unavailable"
+            and envelope["qualityStatus"] == "invalid"
+            and envelope["source"] is None
+            and envelope["asOf"] is None
+            and envelope["availableAt"] is None
+            and envelope["receivedAt"] is None
+            and envelope["data"] is None
+            and envelope["errorCode"] == "NOT_REQUESTED"
+            and envelope["warnings"] == []
+            and envelope["anomalies"] == []
+            and envelope["methodVersion"] == "unavailable-v1"
+        ):
+            raise StageFailure(stage, "unrequested section invalid", classification="contract-error")
+
+    quote_price = _usable_v3_quote(envelopes["quote"], stage)
+    quote = envelopes["quote"]
+    if (
+        quote["availabilityStatus"] in {"live", "delayed"}
+        and quote["qualityStatus"] == "validated"
+        and quote_price is None
+    ):
+        raise StageFailure(
+            stage,
+            "snapshot validated quote is unusable",
+            classification="contract-error",
+        )
+    closes, last_closed_at = _usable_v3_candles(
+        envelopes["candles"], cutoff, stage
+    )
+    holdings = envelopes["holdings"]
+    if (
+        holdings["availabilityStatus"] in {"live", "delayed"}
+        and holdings["qualityStatus"] == "validated"
+        and (
+            not isinstance(holdings["data"], list)
+            or not holdings["data"]
+        )
+    ):
+        raise StageFailure(
+            stage,
+            "snapshot validated holdings are unusable",
+            classification="contract-error",
+        )
+    if quote_price is None and not closes:
+        raise StageFailure(stage, "snapshot has no usable price section", classification="contract-error")
+    requested_valid = all(
+        envelopes[name]["availabilityStatus"] in {"live", "delayed"}
+        and envelopes[name]["qualityStatus"] == "validated"
+        for name in V3_REQUESTED_SECTIONS
+    ) and bool(closes)
+    expected_status = "live" if requested_valid else "partial"
+    if snapshot.get("status") != expected_status:
+        raise StageFailure(stage, "snapshot status mismatch", classification="contract-error")
+
+    anomalies: list[dict[str, Any]] = []
+    for anomaly in holdings["anomalies"]:
+        if not isinstance(anomaly, dict):
+            raise StageFailure(stage, "holdings anomaly invalid", classification="contract-error")
+        code = anomaly.get("code")
+        row_index = anomaly.get("rowIndex")
+        if not isinstance(code, str) or code not in SAFE_HOLDINGS_ANOMALY_CODES:
+            raise StageFailure(stage, "holdings anomaly code invalid", classification="contract-error")
+        safe = {"code": code}
+        if row_index is not None:
+            safe["rowIndex"] = int(row_index)
+        anomalies.append(safe)
+
+    price = closes[-1] if closes else quote_price
+    assert price is not None
+    return SnapshotFacts(
+        candle_count=len(closes),
+        last_close=price,
+        recent_closes=tuple(closes[-RECENT_CANDLES:]),
+        last_closed_at=last_closed_at or cutoff,
+        series_lengths={},
+        snapshot_status=expected_status,
+        interval=expected_interval,
+        section_statuses=section_statuses,
+        holdings_quality=str(holdings["qualityStatus"]),
+        holdings_anomalies=tuple(anomalies),
+        snapshot_version="v3",
+    )
+
+
+def _usable_v3_quote(envelope: dict[str, Any], stage: str) -> float | None:
+    if (
+        envelope["availabilityStatus"] not in {"live", "delayed"}
+        or envelope["qualityStatus"] != "validated"
+        or not isinstance(envelope["data"], dict)
+    ):
+        return None
+    try:
+        price = _finite(envelope["data"].get("price"), stage, "quote.price")
+    except StageFailure:
+        return None
+    return price if price > 0 else None
+
+
+def _usable_v3_candles(
+    envelope: dict[str, Any],
+    cutoff: datetime,
+    stage: str,
+) -> tuple[list[float], datetime | None]:
+    if (
+        envelope["availabilityStatus"] not in {"live", "delayed"}
+        or envelope["qualityStatus"] != "validated"
+        or not isinstance(envelope["data"], dict)
+    ):
+        return [], None
+    candles = envelope["data"].get("candles")
+    if not isinstance(candles, list) or not candles:
+        return [], None
+    closes: list[float] = []
+    previous: datetime | None = None
+    for index, raw in enumerate(candles):
+        candle = _object(raw, stage, f"sections.candles.data.candles[{index}]")
+        if candle.get("complete") is not True:
+            raise StageFailure(stage, "snapshot candle incomplete", classification="contract-error")
+        closed_at = _timestamp(candle.get("timestamp"), stage, "candle.timestamp")
+        if closed_at > cutoff or (previous is not None and closed_at <= previous):
+            raise StageFailure(stage, "snapshot candle time invalid", classification="contract-error")
+        close = _finite(candle.get("close"), stage, "candle.close")
+        if close <= 0:
+            raise StageFailure(stage, "snapshot candle close invalid", classification="contract-error")
+        closes.append(close)
+        previous = closed_at
+    return closes, previous
+
+
+def validate_watchlist(payload: Any) -> tuple[str, ...]:
+    stage = "watchlist"
+    watchlist = _object(payload, stage, "watchlist")
+    if watchlist.get("schemaVersion") != "1" or watchlist.get("source") != "moomoo":
+        raise StageFailure(stage, "watchlist envelope invalid", classification="contract-error")
+    if watchlist.get("session") != "healthy":
+        raise StageFailure(stage, "watchlist unavailable", classification="service-unavailable")
+    items = watchlist.get("items")
+    if not isinstance(items, list) or not items:
+        raise StageFailure(stage, "watchlist is empty", classification="contract-error")
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise StageFailure(stage, "watchlist item invalid", classification="contract-error")
+        code = item.get("code")
+        match = _US_WATCHLIST_CODE.fullmatch(code) if isinstance(code, str) else None
+        if match is None or match.group(1) in seen:
+            raise StageFailure(stage, "watchlist code invalid or duplicate", classification="contract-error")
+        symbol = match.group(1)
+        seen.add(symbol)
+        symbols.append(symbol)
+    return tuple(symbols)
+
+
 def validate_decision(
     payload: Any,
     *,
     expected_symbol: str,
     expected_horizon: str,
+    expected_interval: str | None = None,
 ) -> DecisionFacts:
     """The scored answer the phone renders, or a named failure."""
 
@@ -590,6 +1124,13 @@ def validate_decision(
             stage,
             f"the decision is for horizon {decision.get('horizon')!r}, not"
             f" {expected_horizon!r}",
+        )
+    interval = decision.get("interval")
+    if expected_interval is not None and interval != expected_interval:
+        raise StageFailure(
+            stage,
+            "the decision interval does not match the daily analysis basis",
+            classification="contract-error",
         )
 
     status = decision.get("status")
@@ -664,6 +1205,7 @@ def validate_decision(
         factor_coverage=coverage,
         current_price=current_price,
         cutoff=cutoff,
+        interval=str(interval or ""),
     )
 
 
@@ -679,6 +1221,11 @@ def cross_check_price(decision: DecisionFacts, snapshot: SnapshotFacts) -> str:
         return (
             "price-crosscheck: not measured (the decision states no forecast, so"
             " it named no price to tie back to a candle)"
+        )
+    if not snapshot.recent_closes:
+        return (
+            "price-crosscheck: not measured (the snapshot has a usable quote but"
+            " no completed candle to compare)"
         )
     for close in snapshot.recent_closes:
         if math.isclose(close, decision.current_price, rel_tol=1e-9, abs_tol=0.0):
@@ -710,8 +1257,20 @@ def run_smoke(
     revoke_device: Callable[[str], None],
     log: Callable[[str], None],
 ) -> None:
-    gateway = config.gateway_url.rstrip("/")
-    analysis = config.analysis_url.rstrip("/")
+    report_path = _validated_report_path(config.report_path)
+    if config.snapshot_version not in SNAPSHOT_PATHS:
+        raise StageFailure(
+            "gateway_snapshot",
+            "snapshot version is unsupported",
+            classification="contract-error",
+        )
+    gateway = _validated_origin(config.gateway_url, "gateway_health")
+    analysis = _validated_origin(config.analysis_url, "analysis_health")
+    phone_gateway = (
+        _validated_origin(config.phone_gateway_url, "phone_gateway_health")
+        if config.phone_gateway_url is not None
+        else None
+    )
 
     log(f"stage=gateway_health {gateway}/health")
     validate_gateway_health(
@@ -719,99 +1278,304 @@ def run_smoke(
     )
     log("  gateway session: healthy")
 
+    if config.all_watchlist:
+        log(f"stage=watchlist {gateway}/watchlist")
+        symbols = validate_watchlist(
+            request(
+                "watchlist",
+                "GET",
+                f"{gateway}/watchlist",
+                token=config.gateway_token,
+            )
+        )
+        log(f"  watchlist symbols: {len(symbols)}")
+    else:
+        symbols = (_canonical_request_symbol(config.symbol),)
+
     label = config.label or f"smoke-{_iso(datetime.now(tz=timezone.utc))}"
-    log(f"stage=issue_pairing_code label={label}")
+    log("stage=issue_pairing_code")
     code = issue_pairing_code(label)
     log("  pairing code issued (not printed here)")
 
     log(f"stage=redeem_pairing_code {analysis}{PAIRING_PATH}")
-    device_id, token = _credential(
-        request(
-            "redeem_pairing_code",
-            "POST",
-            f"{analysis}{PAIRING_PATH}",
-            body={"pairingCode": code},
-        )
+    pairing_reply = request(
+        "redeem_pairing_code",
+        "POST",
+        f"{analysis}{PAIRING_PATH}",
+        body={"pairingCode": code},
     )
-    log(f"  paired device: {device_id}")
-
-    failures: list[StageFailure] = []
-    decision_facts: DecisionFacts | None = None
-    snapshot_facts: SnapshotFacts | None = None
-
+    device_id = _device_id(pairing_reply)
+    primary: BaseException | None = None
+    cleanup: BaseException | None = None
     try:
+        token = _device_token(pairing_reply)
+        log("  paired device credential received")
         log(f"stage=analysis_health {analysis}/health")
         validate_analysis_health(
             request("analysis_health", "GET", f"{analysis}/health", token=token)
         )
         log("  analysis service: ready, and it accepted this device token")
+        failures: list[StageFailure] = []
+        report_items: list[dict[str, Any]] = []
+        for symbol in symbols:
+            decision_facts, decision_report = _read_decision(
+                config,
+                analysis,
+                symbol,
+                token,
+                request,
+                log,
+                failures,
+            )
+            snapshot_facts, snapshot_report = _read_snapshot(
+                config,
+                gateway,
+                symbol,
+                request,
+                log,
+                failures,
+            )
+            if decision_facts is not None and snapshot_facts is not None:
+                try:
+                    result = cross_check_price(decision_facts, snapshot_facts)
+                    log(f"  {result}")
+                except StageFailure as error:
+                    failures.append(error)
+                    log(error.render())
+            report_items.append(
+                {
+                    "symbol": symbol,
+                    "snapshot": snapshot_report,
+                    "decision": decision_report,
+                }
+            )
 
-        query = urlencode({"symbol": config.symbol, "horizon": config.horizon})
-        log(f"stage=decision {analysis}/decision?{query}")
-        decision_facts = validate_decision(
-            request("decision", "GET", f"{analysis}/decision?{query}", token=token),
-            expected_symbol=config.symbol,
-            expected_horizon=config.horizon,
-        )
+        if not config.all_watchlist:
+            _check_phone_gateway(
+                config,
+                phone_gateway,
+                request,
+                log,
+                failures,
+            )
+
+        if report_path is not None:
+            _write_report(
+                report_path,
+                {
+                    "schemaVersion": "1",
+                    "snapshotVersion": config.snapshot_version,
+                    "interval": config.interval,
+                    "count": config.count,
+                    "horizon": config.horizon,
+                    "sourceCount": len(symbols),
+                    "items": report_items,
+                },
+            )
+            log(f"  report entries: {len(report_items)}")
+
+        if failures:
+            raise _blame(failures)
         log(
-            f"  score: {decision_facts.score}"
-            f"  direction: {decision_facts.direction}"
-            f"  factorCoverage: {decision_facts.factor_coverage}"
+            f"PASS symbols={len(symbols)} horizon={config.horizon}"
+            f" interval={config.interval} snapshot={config.snapshot_version}"
         )
-    except StageFailure as error:
-        failures.append(error)
-        log(error.render())
+    except BaseException as error:  # cleanup must also cover interrupts
+        primary = error
+    finally:
+        cleanup = _revoke(device_id, revoke_device, log)
 
-    # The gateway is read even after the decision failed. Which side broke is
-    # the first question, and a report that says the decision was refused while
-    # the gateway was serving candles answers it without a second run.
-    snapshot_query = urlencode(
-        {
-            "symbol": config.symbol,
-            "interval": config.interval,
-            "count": config.count,
-        }
-    )
-    try:
-        log(f"stage=gateway_snapshot {gateway}/stock-snapshot?{snapshot_query}")
-        snapshot_facts = validate_snapshot(
-            request(
-                "gateway_snapshot",
-                "GET",
-                f"{gateway}/stock-snapshot?{snapshot_query}",
-                token=config.gateway_token,
-            ),
-            expected_symbol=config.symbol,
-            expected_interval=config.interval,
-        )
-        log(f"  completed candles: {snapshot_facts.candle_count}")
-        for name, length in snapshot_facts.series_lengths.items():
-            log(f"  indicators.{name}: {length} values, candle-aligned")
-        for note in snapshot_facts.notes:
-            log(f"  note: {note}")
-    except StageFailure as error:
-        failures.append(error)
-        log(error.render())
-
-    _check_phone_gateway(config, request, log, failures)
-
-    if not failures and decision_facts is not None and snapshot_facts is not None:
-        try:
-            log(f"  {cross_check_price(decision_facts, snapshot_facts)}")
-        except StageFailure as error:
-            failures.append(error)
-
-    cleanup = _revoke(device_id, revoke_device, log)
+    if primary is not None:
+        if isinstance(primary, StageFailure) and isinstance(cleanup, StageFailure):
+            primary.also_failed.append(cleanup.summary())
+        raise primary
     if cleanup is not None:
-        failures.append(cleanup)
+        raise cleanup
 
-    if failures:
-        raise _blame(failures)
-    log(
-        f"PASS symbol={config.symbol} horizon={config.horizon}"
-        f" candles={snapshot_facts.candle_count if snapshot_facts else 0}"
-        f" score={decision_facts.score if decision_facts else None}"
+
+def _read_decision(
+    config: SmokeConfig,
+    analysis: str,
+    symbol: str,
+    token: str,
+    request: Callable[..., Any],
+    log: Callable[[str], None],
+    failures: list[StageFailure],
+) -> tuple[DecisionFacts | None, dict[str, Any]]:
+    query = urlencode({"symbol": symbol, "horizon": config.horizon})
+    log(f"stage=decision {analysis}/decision?{query}")
+    try:
+        facts = validate_decision(
+            request("decision", "GET", f"{analysis}/decision?{query}", token=token),
+            expected_symbol=symbol,
+            expected_horizon=config.horizon,
+            expected_interval="day",
+        )
+        log("  decision: live interval=day")
+        return facts, {
+            "httpStatus": 200,
+            "status": "live",
+            "score": facts.score,
+            "factorCoverage": facts.factor_coverage,
+            "interval": facts.interval,
+        }
+    except StageFailure as error:
+        failures.append(error)
+        log(error.render())
+        return None, _failure_report(error)
+
+
+def _read_snapshot(
+    config: SmokeConfig,
+    gateway: str,
+    symbol: str,
+    request: Callable[..., Any],
+    log: Callable[[str], None],
+    failures: list[StageFailure],
+) -> tuple[SnapshotFacts | None, dict[str, Any]]:
+    query = urlencode(
+        {"symbol": symbol, "interval": config.interval, "count": config.count}
     )
+    route = SNAPSHOT_PATHS[config.snapshot_version]
+    url = f"{gateway}{route}?{query}"
+    log(f"stage=gateway_snapshot {url}")
+    try:
+        payload = request(
+            "gateway_snapshot",
+            "GET",
+            url,
+            token=config.gateway_token,
+        )
+        if config.snapshot_version == "v3":
+            facts = validate_snapshot_v3(
+                payload,
+                expected_symbol=symbol,
+                expected_interval=config.interval,
+                expected_count=config.count,
+            )
+        else:
+            facts = validate_snapshot_v2(
+                payload,
+                expected_symbol=symbol,
+                expected_interval=config.interval,
+            )
+        log(f"  completed candles: {facts.candle_count}")
+        return facts, {
+            "httpStatus": 200,
+            "status": facts.snapshot_status,
+            "interval": facts.interval,
+            "candleCount": facts.candle_count,
+            "sections": {
+                name: dict(facts.section_statuses[name])
+                for name in V3_SECTION_NAMES
+                if name in facts.section_statuses
+            },
+            "holdings": {
+                "qualityStatus": facts.holdings_quality,
+                "anomalies": [dict(item) for item in facts.holdings_anomalies],
+            },
+        }
+    except StageFailure as error:
+        failures.append(error)
+        log(error.render())
+        return None, _failure_report(error)
+
+
+def _failure_report(error: StageFailure) -> dict[str, Any]:
+    return {
+        "httpStatus": error.http_status,
+        "classification": error.classification,
+    }
+
+
+def _validated_report_path(report_path: Path | None) -> Path | None:
+    if report_path is None:
+        return None
+    resolved = report_path.expanduser().resolve(strict=False)
+    tmp_root = Path("/tmp").resolve()
+    if resolved == tmp_root or tmp_root not in resolved.parents:
+        raise StageFailure(
+            "report_path",
+            "report must be written below /tmp",
+            classification="invalid-report-path",
+        )
+    return resolved
+
+
+def _write_report(path: Path, report: Mapping[str, Any]) -> None:
+    previous_umask = os.umask(0o077)
+    descriptor: int | None = None
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = None
+            json.dump(report, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.write("\n")
+    except (OSError, TypeError, ValueError) as error:
+        raise StageFailure(
+            "report_write",
+            "the private report could not be written",
+            cause=error,
+            classification="io-error",
+        ) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.umask(previous_umask)
+
+
+def _canonical_request_symbol(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    if normalized.startswith("US."):
+        normalized = normalized[3:]
+    if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", normalized) is None:
+        raise StageFailure(
+            "gateway_snapshot",
+            "request symbol is invalid",
+            classification="contract-error",
+        )
+    return normalized
+
+
+def _validated_origin(value: str, stage: str) -> str:
+    if not isinstance(value, str) or not value or any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in value
+    ):
+        raise StageFailure(
+            stage,
+            "service origin is invalid",
+            classification="contract-error",
+        )
+    normalized = value.rstrip("/")
+    parsed = urlsplit(normalized)
+    try:
+        parsed.port
+    except ValueError as error:
+        raise StageFailure(
+            stage,
+            "service origin is invalid",
+            classification="contract-error",
+        ) from error
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise StageFailure(
+            stage,
+            "service origin must be a credential-free HTTP(S) origin",
+            classification="contract-error",
+        )
+    return normalized
 
 
 def _blame(failures: list[StageFailure]) -> StageFailure:
@@ -830,6 +1594,7 @@ def _blame(failures: list[StageFailure]) -> StageFailure:
 
 def _check_phone_gateway(
     config: SmokeConfig,
+    origin: str | None,
     request: Callable[..., Any],
     log: Callable[[str], None],
     failures: list[StageFailure],
@@ -843,16 +1608,14 @@ def _check_phone_gateway(
     exists to break, so the unchecked case is printed as loudly as a result.
     """
 
-    if not config.phone_gateway_url:
+    if origin is None:
         log(
             "  phone-gateway: NOT CHECKED. The app reads candles from its own"
-            " origin (see apps/mobile/.env), which is a different socket from"
-            " the one the analysis service reads. Pass --phone-gateway-url and"
-            " MOOMOO_GATEWAY_TOKEN to cover it."
+            " origin, which is a different socket from the one the analysis"
+            " service reads. Pass the explicit phone gateway options to cover it."
         )
         return
 
-    origin = config.phone_gateway_url.rstrip("/")
     query = urlencode(
         {"symbol": config.symbol, "interval": config.interval, "count": config.count}
     )
@@ -867,18 +1630,29 @@ def _check_phone_gateway(
             ),
             stage="phone_gateway_health",
         )
-        log(f"stage=phone_gateway_snapshot {origin}/stock-snapshot?{query}")
-        facts = validate_snapshot(
-            request(
-                "phone_gateway_snapshot",
-                "GET",
-                f"{origin}/stock-snapshot?{query}",
-                token=config.phone_gateway_token,
-            ),
-            expected_symbol=config.symbol,
-            expected_interval=config.interval,
-            stage="phone_gateway_snapshot",
+        route = SNAPSHOT_PATHS[config.snapshot_version]
+        log(f"stage=phone_gateway_snapshot {origin}{route}?{query}")
+        payload = request(
+            "phone_gateway_snapshot",
+            "GET",
+            f"{origin}{route}?{query}",
+            token=config.phone_gateway_token,
         )
+        if config.snapshot_version == "v3":
+            facts = validate_snapshot_v3(
+                payload,
+                expected_symbol=config.symbol,
+                expected_interval=config.interval,
+                expected_count=config.count,
+                stage="phone_gateway_snapshot",
+            )
+        else:
+            facts = validate_snapshot_v2(
+                payload,
+                expected_symbol=config.symbol,
+                expected_interval=config.interval,
+                stage="phone_gateway_snapshot",
+            )
         log(f"  completed candles the app would draw: {facts.candle_count}")
     except StageFailure as error:
         failures.append(error)
@@ -889,12 +1663,12 @@ def _revoke(
     device_id: str,
     revoke_device: Callable[[str], None],
     log: Callable[[str], None],
-) -> StageFailure | None:
-    log(f"stage=revoke_smoke_device {device_id}")
+) -> BaseException | None:
+    log_failure = _cleanup_log(log, "stage=revoke_smoke_device")
     try:
         revoke_device(device_id)
     except StageFailure as error:
-        log(error.render())
+        _cleanup_log(log, error.render())
         return error
     except Exception as error:  # noqa: BLE001 - any failure here leaves a credential
         leftover = StageFailure(
@@ -903,26 +1677,49 @@ def _revoke(
             " service; revoke it by hand",
             cause=error,
         )
-        log(leftover.render())
+        _cleanup_log(log, leftover.render())
         return leftover
-    log(f"  revoked: {device_id}")
+    except BaseException as error:
+        return error
+    success_log_failure = _cleanup_log(log, "  paired smoke device revoked")
+    return log_failure or success_log_failure
+
+
+def _cleanup_log(
+    log: Callable[[str], None],
+    message: str,
+) -> BaseException | None:
+    try:
+        log(message)
+    except BaseException as error:  # revocation must not depend on its output sink
+        return error
     return None
 
 
-def _credential(payload: Any) -> tuple[str, str]:
+def _device_id(payload: Any) -> str:
     stage = "redeem_pairing_code"
     reply = _object(payload, stage, "pairing reply")
     device_id = reply.get("deviceId")
-    token = reply.get("deviceToken")
     if not isinstance(device_id, str) or not device_id.strip():
         raise StageFailure(stage, "the pairing reply carries no deviceId")
+    return device_id
+
+
+def _device_token(payload: Any) -> str:
+    stage = "redeem_pairing_code"
+    reply = _object(payload, stage, "pairing reply")
+    token = reply.get("deviceToken")
     if not isinstance(token, str) or not token.strip():
         raise StageFailure(
             stage,
             "the pairing reply carries no deviceToken, so nothing can be"
             " authenticated with it",
         )
-    return device_id, token
+    return token
+
+
+def _credential(payload: Any) -> tuple[str, str]:
+    return _device_id(payload), _device_token(payload)
 
 
 # --- entry point ----------------------------------------------------------
@@ -939,7 +1736,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--horizon", default="short", choices=("short", "swing", "long"))
     parser.add_argument(
         "--interval",
-        default="5m",
+        default="day",
         help=(
             "must match the interval the analysis service scores, otherwise the"
             " price cross-check compares different bars"
@@ -949,16 +1746,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--count",
         type=int,
         default=200,
-        help="candles to request; match ANALYSIS_API_CANDLE_COUNT",
+        help="candles to request; match the analysis service's configured count",
     )
     parser.add_argument("--gateway-url", default=DEFAULT_GATEWAY_URL)
     parser.add_argument("--analysis-url", default=DEFAULT_ANALYSIS_URL)
+    parser.add_argument("--all-watchlist", action="store_true")
+    parser.add_argument(
+        "--snapshot-version",
+        choices=("v2", "v3"),
+        default="v2",
+    )
+    parser.add_argument("--report", default=None)
     parser.add_argument(
         "--phone-gateway-url",
         default=None,
         help=(
             "the origin the app reads candles from, which is not the one the"
-            " analysis service reads; needs MOOMOO_GATEWAY_TOKEN. Reported as"
+            " analysis service reads; needs its private runtime token. Reported as"
             " NOT CHECKED when omitted"
         ),
     )
@@ -997,6 +1801,9 @@ def main(
         gateway_token=os.environ.get("MOOMOO_GATEWAY_TOKEN") or None,
         phone_gateway_url=arguments.phone_gateway_url,
         phone_gateway_token=os.environ.get("MOOMOO_GATEWAY_TOKEN") or None,
+        all_watchlist=arguments.all_watchlist,
+        snapshot_version=arguments.snapshot_version,
+        report_path=Path(arguments.report) if arguments.report else None,
     )
     try:
         runner(
@@ -1012,6 +1819,22 @@ def main(
         )
     except StageFailure as failure:
         print(failure.render(), file=err, flush=True)
+        return 1
+    except KeyboardInterrupt:
+        print(
+            "FAIL stage=unknown\n  classification: stage-failed\n"
+            "  http_status: none",
+            file=err,
+            flush=True,
+        )
+        return 1
+    except Exception:
+        print(
+            "FAIL stage=unknown\n  classification: stage-failed\n"
+            "  http_status: none",
+            file=err,
+            flush=True,
+        )
         return 1
     return 0
 

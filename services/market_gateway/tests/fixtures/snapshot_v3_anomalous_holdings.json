@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "3",
+  "status": "partial",
+  "symbol": "AVGO",
+  "interval": "day",
+  "count": 250,
+  "decisionCutoff": "2026-07-25T12:00:00Z",
+  "requestedSections": [
+    "quote",
+    "candles",
+    "technical",
+    "currentSessionFlow",
+    "holdings"
+  ],
+  "sections": {
+    "quote": {
+      "availabilityStatus": "live",
+      "qualityStatus": "validated",
+      "source": "moomoo",
+      "asOf": "2026-07-25T11:59:58Z",
+      "availableAt": "2026-07-25T11:59:58Z",
+      "receivedAt": "2026-07-25T11:59:59Z",
+      "data": {
+        "price": 184.25,
+        "changePercent": 1.5
+      },
+      "errorCode": null,
+      "reason": null,
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "provider-quote-v1"
+    },
+    "candles": {
+      "availabilityStatus": "live",
+      "qualityStatus": "validated",
+      "source": "moomoo",
+      "asOf": "2026-07-24T20:00:00Z",
+      "availableAt": "2026-07-24T20:00:01Z",
+      "receivedAt": "2026-07-24T20:00:02Z",
+      "data": {
+        "priceAdjustment": "forward-adjusted",
+        "candles": [
+          {
+            "timestamp": "2026-07-24T20:00:00Z",
+            "complete": true,
+            "open": 180.0,
+            "high": 185.0,
+            "low": 179.5,
+            "close": 184.0,
+            "volume": 1250000.0
+          }
+        ]
+      },
+      "errorCode": null,
+      "reason": null,
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "provider-completed-candle-v1"
+    },
+    "technical": {
+      "availabilityStatus": "live",
+      "qualityStatus": "validated",
+      "source": "analysis-core",
+      "asOf": "2026-07-24T20:00:00Z",
+      "availableAt": "2026-07-25T12:00:00Z",
+      "receivedAt": "2026-07-25T12:00:00Z",
+      "data": {},
+      "errorCode": null,
+      "reason": null,
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "analysis-core-indicators-v1"
+    },
+    "currentSessionFlow": {
+      "availabilityStatus": "live",
+      "qualityStatus": "validated",
+      "source": "moomoo",
+      "asOf": "2026-07-25T11:58:00Z",
+      "availableAt": "2026-07-25T11:58:01Z",
+      "receivedAt": "2026-07-25T11:58:02Z",
+      "data": [],
+      "errorCode": null,
+      "reason": null,
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "provider-capital-flow-normalized-v1"
+    },
+    "holdings": {
+      "availabilityStatus": "delayed",
+      "qualityStatus": "anomalous",
+      "source": "moomoo-delayed-institutional-disclosure",
+      "asOf": "2026-03-31T20:00:00Z",
+      "availableAt": "2026-05-16T14:00:00Z",
+      "receivedAt": "2026-07-25T11:59:59Z",
+      "data": [
+        {
+          "period": "2026/Q1",
+          "reportedAt": "2026-03-31T20:00:00Z",
+          "reportedAtBasis": "reporting-period-end",
+          "availableAt": "2026-05-16T14:00:00Z",
+          "source": "moomoo-delayed-institutional-disclosure",
+          "institutionCount": 100,
+          "institutionCountChange": 2,
+          "sharesHeld": 2000000.0,
+          "sharesHeldChange": 100000.0,
+          "holdingPercent": 345.937,
+          "holdingPercentChange": 0.4
+        }
+      ],
+      "errorCode": null,
+      "reason": null,
+      "warnings": [
+        "供应商返回的聚合持仓比例超过 100%，不能按唯一股份占比直接解释"
+      ],
+      "anomalies": [
+        {
+          "rowIndex": 0,
+          "code": "AGGREGATE_PERCENT_ABOVE_100",
+          "reason": "供应商返回的聚合持仓比例超过 100%，不能按唯一股份占比直接解释"
+        }
+      ],
+      "methodVersion": "reported-holdings-v2-anomaly-aware"
+    },
+    "fundamentals": {
+      "availabilityStatus": "unavailable",
+      "qualityStatus": "invalid",
+      "source": null,
+      "asOf": null,
+      "availableAt": null,
+      "receivedAt": null,
+      "data": null,
+      "errorCode": "NOT_REQUESTED",
+      "reason": "此切片未请求该数据",
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "unavailable-v1"
+    },
+    "marketContext": {
+      "availabilityStatus": "unavailable",
+      "qualityStatus": "invalid",
+      "source": null,
+      "asOf": null,
+      "availableAt": null,
+      "receivedAt": null,
+      "data": null,
+      "errorCode": "NOT_REQUESTED",
+      "reason": "此切片未请求该数据",
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "unavailable-v1"
+    },
+    "news": {
+      "availabilityStatus": "unavailable",
+      "qualityStatus": "invalid",
+      "source": null,
+      "asOf": null,
+      "availableAt": null,
+      "receivedAt": null,
+      "data": null,
+      "errorCode": "NOT_REQUESTED",
+      "reason": "此切片未请求该数据",
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "unavailable-v1"
+    },
+    "forecastDecision": {
+      "availabilityStatus": "unavailable",
+      "qualityStatus": "invalid",
+      "source": null,
+      "asOf": null,
+      "availableAt": null,
+      "receivedAt": null,
+      "data": null,
+      "errorCode": "NOT_REQUESTED",
+      "reason": "此切片未请求该数据",
+      "warnings": [],
+      "anomalies": [],
+      "methodVersion": "unavailable-v1"
+    }
+  }
+}

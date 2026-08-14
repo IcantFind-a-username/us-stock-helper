@@ -33,6 +33,24 @@ brokerage context, order endpoint, or order-capable route.
 
 ## Mobile JSON contract
 
+Snapshot routes are versioned without compatibility guessing:
+
+- `GET /stock-snapshot` and `GET /v2/stock-snapshot` return only legacy
+  `schemaVersion: "2"`.
+- `GET /v3/stock-snapshot` returns only the sectioned
+  `schemaVersion: "3"` contract. It always emits the fixed nine section
+  envelopes and identifies the five requested Slice-1 sections. A usable quote
+  or at least one validated completed candle keeps the result usable even when
+  an optional requested section is stale, unavailable, or anomalous.
+- Real mode never substitutes fixture data after a provider, validation,
+  authentication, timeout, or version failure.
+
+The v3 `holdings` section is delayed regulatory/provider disclosure. Its
+percentages may represent aggregate reporting and can exceed 100%; those values
+are preserved and marked anomalous. `currentSessionFlow` is same-session
+order-size flow with `institutionalIdentity: false`. These are separate
+features and must not be presented as the same institutional activity signal.
+
 A successful watchlist or quote snapshot has this shape:
 
 ```json
@@ -102,6 +120,8 @@ curl --fail --silent --show-error \
   'http://127.0.0.1:8765/quotes?symbols=NVDA,TSLA'
 curl --fail --silent --show-error \
   'http://127.0.0.1:8765/candles?symbol=NVDA&interval=5m&count=200'
+curl --fail --silent --show-error \
+  'http://127.0.0.1:8765/v3/stock-snapshot?symbol=NVDA&interval=day&count=250'
 curl --fail --silent --show-error \
   'http://127.0.0.1:8765/capital-flow?symbol=NVDA'
 curl --fail --silent --show-error \

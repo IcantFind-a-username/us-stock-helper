@@ -5,10 +5,13 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from copy import deepcopy
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from urllib.request import Request
 
 
@@ -19,6 +22,10 @@ SCRIPT = (
 FIXTURE = (
     REPOSITORY_ROOT
     / "services/market_gateway/tests/fixtures/nvda_snapshot_redacted.json"
+)
+V3_FIXTURE = (
+    REPOSITORY_ROOT
+    / "services/market_gateway/tests/fixtures/snapshot_v3_anomalous_holdings.json"
 )
 SPEC = importlib.util.spec_from_file_location("smoke_real_snapshot", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -586,6 +593,470 @@ class SmokeRealSnapshotTests(unittest.TestCase):
             )
 
         self.assertEqual(requests, ["http://127.0.0.1:8765/health"])
+
+    def test_default_live_transport_refuses_redirects_before_forwarding_a_bearer(
+        self,
+    ) -> None:
+        requests: list[tuple[str, str | None]] = []
+        fixture = valid_snapshot()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+                requests.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/health":
+                    self.send_response(302)
+                    self.send_header("Location", "/redirected-health")
+                    self.end_headers()
+                    return
+                payload = (
+                    {
+                        "schemaVersion": "1",
+                        "source": "moomoo",
+                        "session": "healthy",
+                        "items": [{"status": "healthy"}],
+                    }
+                    if self.path == "/redirected-health"
+                    else fixture
+                )
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: Any) -> None:
+                return None
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaises(SMOKE.SmokeFailure):
+                SMOKE.load_live_snapshot(
+                    f"http://127.0.0.1:{server.server_port}",
+                    symbol="NVDA",
+                    interval="5m",
+                    count=200,
+                    authorization_token="redirect-bearer-canary",
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+        self.assertEqual(requests, [("/health", "Bearer redirect-bearer-canary")])
+
+
+class SnapshotV3ValidationTests(unittest.TestCase):
+    def fixture(self) -> dict[str, Any]:
+        return json.loads(V3_FIXTURE.read_text(encoding="utf-8"))
+
+    def validate(self, payload: dict[str, Any]) -> None:
+        SMOKE.validate_snapshot_v3(
+            payload,
+            expected_symbol="AVGO",
+            expected_interval="day",
+            expected_count=250,
+            now=SMOKE._timestamp(
+                "2026-07-25T12:00:01Z",
+                "now",
+            ),
+        )
+
+    def test_anomalous_holdings_fixture_is_a_usable_partial_snapshot(self) -> None:
+        payload = self.fixture()
+
+        self.validate(payload)
+
+        self.assertEqual(payload["status"], "partial")
+        self.assertEqual(
+            payload["sections"]["holdings"]["data"][0]["holdingPercent"],
+            345.937,
+        )
+
+    def test_local_stale_invalid_null_section_is_a_precise_limitation(self) -> None:
+        payload = self.fixture()
+        payload["sections"]["currentSessionFlow"] = {
+            "availabilityStatus": "stale",
+            "qualityStatus": "invalid",
+            "source": None,
+            "asOf": None,
+            "availableAt": None,
+            "receivedAt": None,
+            "data": None,
+            "errorCode": "STALE_DATA",
+            "reason": "当前交易时段资金流数据不可用",
+            "warnings": [],
+            "anomalies": [],
+            "methodVersion": "unavailable-v1",
+        }
+
+        self.validate(payload)
+
+    def test_unavailable_holdings_may_retain_only_batch_receipt_provenance(
+        self,
+    ) -> None:
+        payload = self.fixture()
+        payload["sections"]["holdings"] = {
+            "availabilityStatus": "unavailable",
+            "qualityStatus": "invalid",
+            "source": "moomoo-delayed-institutional-disclosure",
+            "asOf": None,
+            "availableAt": None,
+            "receivedAt": "2026-07-25T11:59:59Z",
+            "data": [],
+            "errorCode": "HOLDINGS_UNAVAILABLE",
+            "reason": "机构持仓数据不可用",
+            "warnings": [],
+            "anomalies": [],
+            "methodVersion": "reported-holdings-v2-anomaly-aware",
+        }
+
+        self.validate(payload)
+
+    def test_stale_requires_null_times_and_live_requires_complete_times(self) -> None:
+        mutations = []
+        payload = self.fixture()
+        payload["sections"]["currentSessionFlow"].update(
+            {
+                "availabilityStatus": "stale",
+                "qualityStatus": "invalid",
+                "source": None,
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": "2026-07-25T11:59:59Z",
+                "data": None,
+                "errorCode": "STALE_DATA",
+                "reason": "当前交易时段资金流数据不可用",
+                "methodVersion": "unavailable-v1",
+            }
+        )
+        mutations.append(("stale-with-receipt", payload))
+        payload = self.fixture()
+        payload["sections"]["quote"]["asOf"] = None
+        mutations.append(("live-with-missing-as-of", payload))
+
+        for case, payload in mutations:
+            with self.subTest(case=case):
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_section_availability_states_match_the_mobile_contract(self) -> None:
+        mutations: list[tuple[str, dict[str, Any]]] = []
+
+        payload = self.fixture()
+        payload["sections"]["quote"]["qualityStatus"] = "invalid"
+        mutations.append(("live-invalid", payload))
+
+        payload = self.fixture()
+        payload["sections"]["holdings"]["source"] = None
+        mutations.append(("delayed-without-source", payload))
+
+        for field_name, value in (
+            ("qualityStatus", "partial"),
+            ("source", "moomoo"),
+            ("data", {}),
+            ("errorCode", None),
+            ("reason", None),
+        ):
+            payload = self.fixture()
+            payload["sections"]["currentSessionFlow"] = {
+                "availabilityStatus": "stale",
+                "qualityStatus": "invalid",
+                "source": None,
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": None,
+                "data": None,
+                "errorCode": "STALE_DATA",
+                "reason": "provider-message-canary",
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "unavailable-v1",
+            }
+            payload["sections"]["currentSessionFlow"][field_name] = value
+            mutations.append((f"stale-{field_name}", payload))
+
+        for field_name, value in (
+            ("qualityStatus", "partial"),
+            ("data", {}),
+            ("errorCode", None),
+            ("reason", None),
+        ):
+            payload = self.fixture()
+            payload["sections"]["holdings"] = {
+                "availabilityStatus": "unavailable",
+                "qualityStatus": "invalid",
+                "source": "moomoo-delayed-institutional-disclosure",
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": "2026-07-25T11:59:59Z",
+                "data": [],
+                "errorCode": "HOLDINGS_UNAVAILABLE",
+                "reason": "provider-message-canary",
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "reported-holdings-v2-anomaly-aware",
+            }
+            payload["sections"]["holdings"][field_name] = value
+            mutations.append((f"unavailable-{field_name}", payload))
+
+        for case, payload in mutations:
+            with self.subTest(case=case):
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_warning_strings_must_be_non_empty(self) -> None:
+        for warning in ("", "   ", 1):
+            with self.subTest(warning=warning):
+                payload = self.fixture()
+                payload["sections"]["technical"]["warnings"] = [warning]
+
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_anomaly_shape_is_validated_in_every_section(self) -> None:
+        anomalies: tuple[Any, ...] = (
+            "not-an-object",
+            {"code": "", "reason": "reason"},
+            {"code": "CODE", "reason": ""},
+            {"code": "CODE", "reason": "reason", "rowIndex": True},
+            {"code": "CODE", "reason": "reason", "rowIndex": -1},
+            {"code": "CODE", "reason": "reason", "rowIndex": 1.5},
+        )
+        for anomaly in anomalies:
+            with self.subTest(anomaly=anomaly):
+                payload = self.fixture()
+                payload["sections"]["technical"]["anomalies"] = [anomaly]
+
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_requires_exact_top_level_requested_sections_and_section_names(self) -> None:
+        mutations = []
+        payload = self.fixture()
+        payload["extra"] = True
+        mutations.append(payload)
+        payload = self.fixture()
+        payload["requestedSections"].reverse()
+        mutations.append(payload)
+        payload = self.fixture()
+        payload["requestedSections"].append("quote")
+        mutations.append(payload)
+        payload = self.fixture()
+        del payload["sections"]["news"]
+        mutations.append(payload)
+        payload = self.fixture()
+        payload["sections"]["extra"] = deepcopy(payload["sections"]["news"])
+        mutations.append(payload)
+
+        for payload in mutations:
+            with self.subTest(keys=tuple(payload)):
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_requires_exact_section_envelope_fields_and_supported_enums(self) -> None:
+        mutations = []
+        payload = self.fixture()
+        del payload["sections"]["quote"]["receivedAt"]
+        mutations.append(payload)
+        payload = self.fixture()
+        payload["sections"]["quote"]["extra"] = True
+        mutations.append(payload)
+        payload = self.fixture()
+        payload["sections"]["quote"]["availabilityStatus"] = "demo"
+        mutations.append(payload)
+        payload = self.fixture()
+        payload["sections"]["quote"]["qualityStatus"] = "live"
+        mutations.append(payload)
+
+        for payload in mutations:
+            with self.subTest(envelope=payload["sections"]["quote"]):
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_rejects_future_or_misordered_section_timestamps(self) -> None:
+        mutations = []
+        payload = self.fixture()
+        payload["sections"]["quote"]["receivedAt"] = "2026-07-25T12:00:01Z"
+        mutations.append(payload)
+        payload = self.fixture()
+        payload["sections"]["quote"]["availableAt"] = "2026-07-25T11:59:57Z"
+        mutations.append(payload)
+
+        for payload in mutations:
+            with self.subTest(envelope=payload["sections"]["quote"]):
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_requires_exact_unrequested_envelopes(self) -> None:
+        for name in ("fundamentals", "marketContext", "news", "forecastDecision"):
+            with self.subTest(name=name):
+                payload = self.fixture()
+                payload["sections"][name]["errorCode"] = "SECTION_UNAVAILABLE"
+                with self.assertRaises(SMOKE.SmokeFailure):
+                    self.validate(payload)
+
+    def test_rejects_neither_usable_quote_nor_non_empty_completed_candles(self) -> None:
+        payload = self.fixture()
+        for name in ("quote", "candles"):
+            payload["sections"][name].update(
+                {
+                    "availabilityStatus": "unavailable",
+                    "qualityStatus": "invalid",
+                    "source": None,
+                    "asOf": None,
+                    "availableAt": None,
+                    "receivedAt": None,
+                    "data": None,
+                    "errorCode": "SECTION_UNAVAILABLE",
+                    "reason": "此数据切片不可用",
+                    "warnings": [],
+                    "anomalies": [],
+                    "methodVersion": "unavailable-v1",
+                }
+            )
+        payload["status"] = "unavailable"
+
+        with self.assertRaisesRegex(
+            SMOKE.SmokeFailure,
+            "usable quote or completed candles",
+        ):
+            self.validate(payload)
+
+    def test_live_validated_quote_must_be_semantically_usable(self) -> None:
+        for price in (None, True, 0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(price=price):
+                payload = self.fixture()
+                payload["sections"]["quote"]["data"]["price"] = price
+
+                with self.assertRaisesRegex(
+                    SMOKE.SmokeFailure,
+                    "validated quote is unusable",
+                ):
+                    self.validate(payload)
+
+    def test_empty_validated_candles_make_the_snapshot_partial(self) -> None:
+        payload = self.fixture()
+        payload["sections"]["candles"]["data"]["candles"] = []
+        payload["sections"]["holdings"]["qualityStatus"] = "validated"
+        payload["sections"]["holdings"]["anomalies"] = []
+        payload["status"] = "live"
+
+        with self.assertRaisesRegex(SMOKE.SmokeFailure, "status"):
+            self.validate(payload)
+
+        payload["status"] = "partial"
+        self.validate(payload)
+
+    def test_live_validated_holdings_must_be_non_empty(self) -> None:
+        payload = self.fixture()
+        payload["sections"]["holdings"].update(
+            {"qualityStatus": "validated", "data": [], "anomalies": []}
+        )
+        payload["status"] = "live"
+
+        with self.assertRaises(SMOKE.SmokeFailure):
+            self.validate(payload)
+
+    def test_v2_and_v3_validators_reject_the_other_schema(self) -> None:
+        with self.assertRaises(SMOKE.SmokeFailure):
+            SMOKE.validate_snapshot_v2(
+                self.fixture(),
+                expected_symbol="AVGO",
+                expected_interval="day",
+            )
+        with self.assertRaises(SMOKE.SmokeFailure):
+            self.validate(valid_snapshot())
+
+    def test_v3_fixture_cli_passes_only_when_v3_is_selected(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--fixture",
+                str(V3_FIXTURE),
+                "--contract-version",
+                "v3",
+                "--symbol",
+                "AVGO",
+                "--interval",
+                "day",
+                "--count",
+                "250",
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ContractVersionDispatchTests(unittest.TestCase):
+    def test_contract_version_defaults_to_v2(self) -> None:
+        self.assertEqual(SMOKE._parser().parse_args([]).contract_version, "v2")
+
+    def test_each_cli_version_dispatches_only_its_exact_validator(self) -> None:
+        for version, expected in (("v2", "v2"), ("v3", "v3")):
+            with self.subTest(version=version):
+                called: list[str] = []
+                with (
+                    patch.object(SMOKE, "load_live_snapshot", return_value={}),
+                    patch.object(
+                        SMOKE,
+                        "validate_snapshot_v2",
+                        side_effect=lambda *args, **kwargs: called.append("v2"),
+                    ),
+                    patch.object(
+                        SMOKE,
+                        "validate_snapshot_v3",
+                        side_effect=lambda *args, **kwargs: called.append("v3"),
+                    ),
+                    patch("builtins.print"),
+                ):
+                    self.assertEqual(
+                        SMOKE.main(["--contract-version", version]),
+                        0,
+                    )
+                self.assertEqual(called, [expected])
+
+    def test_each_version_requests_only_its_exact_snapshot_route(self) -> None:
+        health = {
+            "schemaVersion": "1",
+            "source": "moomoo",
+            "session": "healthy",
+            "items": [{"status": "healthy"}],
+        }
+        for version, path in (
+            ("v2", "/stock-snapshot"),
+            ("v3", "/v3/stock-snapshot"),
+        ):
+            with self.subTest(version=version):
+                requests: list[str] = []
+
+                def opener(request: Request, *, timeout: float) -> JsonResponse:
+                    requests.append(request.full_url)
+                    return JsonResponse(health if request.full_url.endswith("/health") else {})
+
+                SMOKE.load_live_snapshot(
+                    "http://gateway",
+                    symbol="NVDA",
+                    interval="day",
+                    count=250,
+                    contract_version=version,
+                    opener=opener,
+                )
+
+                self.assertEqual(
+                    requests,
+                    [
+                        "http://gateway/health",
+                        f"http://gateway{path}?symbol=NVDA&interval=day&count=250",
+                    ],
+                )
 
 
 if __name__ == "__main__":

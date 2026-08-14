@@ -35,8 +35,10 @@ If `/health` reports:
   required quote entitlement in the moomoo account.
 - `quota-exceeded`: wait for the provider window to reset; do not retry in a
   tight loop.
-- `stale` or `malformed`: keep the app on its explicit fixture fallback and
-  inspect OpenD/SDK versions before changing the validation gate.
+- `stale` or `malformed`: keep Real mode explicitly unavailable and inspect
+  OpenD/SDK versions before changing the validation gate. Fixtures are only for
+  an explicitly selected Demo/offline replay; Real mode never falls back to
+  them.
 - `unsupported-capability`: upgrade the SDK/OpenD only after checking the
   official method/version requirements. Do not substitute generated values.
 

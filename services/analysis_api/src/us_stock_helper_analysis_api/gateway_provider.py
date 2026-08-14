@@ -63,14 +63,27 @@ class MarketGatewayProvider:
             raise MarketGatewayUnavailable(
                 "the gateway answered for a different symbol or interval"
             )
-        cutoff = _timestamp(payload, "asOf")
+        data_cutoff = _timestamp(payload, "asOf")
+        receipt_cutoff = _timestamp(payload, "availableAt")
+        if data_cutoff > receipt_cutoff:
+            raise MarketGatewayUnavailable(
+                "the gateway published data after it held the response"
+            )
         candles = payload.get("items")
         if not isinstance(candles, list):
             raise MarketGatewayUnavailable(
                 "the gateway response carries no candle series"
             )
         bars = tuple(
-            _bar(symbol, interval, duration, item, cutoff) for item in candles
+            _bar(
+                symbol,
+                interval,
+                duration,
+                item,
+                data_cutoff,
+                receipt_cutoff,
+            )
+            for item in candles
         )
         # The chain reads the last bar as the current price, so a series that
         # arrives newest-first would price the decision off an old close —
@@ -191,7 +204,8 @@ def _bar(
     interval: str,
     duration: timedelta,
     item: Any,
-    cutoff: datetime,
+    data_cutoff: datetime,
+    receipt_cutoff: datetime,
 ) -> OHLCVBar:
     if not isinstance(item, dict):
         raise MarketGatewayUnavailable("a completed candle is malformed")
@@ -207,8 +221,14 @@ def _bar(
     received_at = _timestamp(item, "receivedAt")
     if received_at < available_at:
         raise MarketGatewayUnavailable("a candle was received before it was published")
-    if available_at > cutoff or received_at > cutoff:
-        raise MarketGatewayUnavailable("a candle is later than the decision cutoff")
+    if available_at > data_cutoff:
+        raise MarketGatewayUnavailable(
+            "a candle was published after the envelope data cutoff"
+        )
+    if received_at > receipt_cutoff:
+        raise MarketGatewayUnavailable(
+            "a candle was received after the envelope receipt cutoff"
+        )
     prices = {name: _number(item, name) for name in ("open", "high", "low", "close")}
     volume = _number(item, "volume")
     try:

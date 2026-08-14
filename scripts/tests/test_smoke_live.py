@@ -12,15 +12,26 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import stat
 import sys
+import tempfile
+import threading
 import unittest
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPOSITORY_ROOT / "scripts/smoke_live.py"
+V3_FIXTURE = (
+    REPOSITORY_ROOT
+    / "services/market_gateway/tests/fixtures/snapshot_v3_anomalous_holdings.json"
+)
 SPEC = importlib.util.spec_from_file_location("smoke_live", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 SMOKE = importlib.util.module_from_spec(SPEC)
@@ -146,6 +157,7 @@ def decision_payload(count: int = 80) -> dict[str, Any]:
         "status": "live",
         "symbol": "NVDA",
         "horizon": "short",
+        "interval": "day",
         "decisionCutoff": iso(BASE + timedelta(minutes=5 * count + 1)),
         "score": score_block(),
         "baselineScore": score_block(),
@@ -250,7 +262,11 @@ def run(transport_: FakeTransport, operator: Operator | None = None):
     operator = operator or Operator()
     lines: list[str] = []
     SMOKE.run_smoke(
-        SMOKE.SmokeConfig(gateway_url="http://gateway", analysis_url="http://analysis"),
+        SMOKE.SmokeConfig(
+            gateway_url="http://gateway",
+            analysis_url="http://analysis",
+            interval="5m",
+        ),
         request=transport_,
         issue_pairing_code=operator.issue,
         revoke_device=operator.revoke,
@@ -274,10 +290,9 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        rendered = caught.exception.render()
-        self.assertIn("rsi", rendered)
-        self.assertIn("79", rendered)
-        self.assertIn("80", rendered)
+        self.assertIn("rsi", caught.exception.detail)
+        self.assertIn("79", caught.exception.detail)
+        self.assertIn("80", caught.exception.detail)
 
     def test_rejects_a_series_that_was_never_measured(self) -> None:
         payload = snapshot_payload()
@@ -286,7 +301,7 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        self.assertIn("ma5", caught.exception.render())
+        self.assertIn("ma5", caught.exception.detail)
 
     def test_reports_but_accepts_a_series_below_its_warm_up_length(self) -> None:
         payload = snapshot_payload(count=30)
@@ -305,7 +320,7 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        self.assertIn("seriesAlignedTo", caught.exception.render())
+        self.assertIn("seriesAlignedTo", caught.exception.detail)
 
     def test_rejects_a_missing_indicator(self) -> None:
         payload = snapshot_payload()
@@ -314,11 +329,11 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        rendered = caught.exception.render()
-        self.assertIn("ma20", rendered)
+        detail = caught.exception.detail
+        self.assertIn("ma20", detail)
         # An indicator that is absent has to read as absent. "not an object" is
         # what a reader would chase into a serializer that is working fine.
-        self.assertIn("absent", rendered)
+        self.assertIn("absent", detail)
 
     def test_rejects_an_empty_candle_series(self) -> None:
         payload = snapshot_payload()
@@ -327,7 +342,7 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        self.assertIn("completedCandles", caught.exception.render())
+        self.assertIn("completedCandles", caught.exception.detail)
 
     def test_rejects_candles_that_are_out_of_order(self) -> None:
         payload = snapshot_payload()
@@ -339,7 +354,7 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        self.assertIn("order", caught.exception.render())
+        self.assertIn("order", caught.exception.detail)
 
     def test_rejects_an_incomplete_candle(self) -> None:
         payload = snapshot_payload()
@@ -348,7 +363,7 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        self.assertIn("complete", caught.exception.render())
+        self.assertIn("complete", caught.exception.detail)
 
     def test_rejects_a_snapshot_for_another_symbol(self) -> None:
         payload = snapshot_payload()
@@ -357,7 +372,7 @@ class SnapshotValidationTests(unittest.TestCase):
             SMOKE.validate_snapshot(
                 payload, expected_symbol="NVDA", expected_interval="5m"
             )
-        self.assertIn("AAPL", caught.exception.render())
+        self.assertIn("AAPL", caught.exception.detail)
 
 
 class DecisionValidationTests(unittest.TestCase):
@@ -380,62 +395,61 @@ class DecisionValidationTests(unittest.TestCase):
         payload["notes"] = ["No completed candles were available at the cutoff."]
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        rendered = caught.exception.render()
-        self.assertIn("unavailable", rendered)
-        self.assertIn("No completed candles", rendered)
+        self.assertIn("unavailable", caught.exception.detail)
+        self.assertNotIn("No completed candles", caught.exception.render())
 
     def test_rejects_a_null_score(self) -> None:
         payload = decision_payload()
         payload["score"] = None
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        self.assertIn("score", caught.exception.render())
+        self.assertIn("score", caught.exception.detail)
 
     def test_rejects_a_score_with_no_value(self) -> None:
         payload = decision_payload()
         payload["score"]["value"] = None
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        self.assertIn("score.value", caught.exception.render())
+        self.assertIn("score.value", caught.exception.detail)
 
     def test_rejects_an_unknown_direction(self) -> None:
         payload = decision_payload()
         payload["score"]["direction"] = "sideways"
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        self.assertIn("sideways", caught.exception.render())
+        self.assertIn("sideways", caught.exception.detail)
 
     def test_rejects_a_coverage_of_zero(self) -> None:
         payload = decision_payload()
         payload["score"]["factorCoverage"] = 0.0
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        self.assertIn("factorCoverage", caught.exception.render())
+        self.assertIn("factorCoverage", caught.exception.detail)
 
     def test_rejects_an_unmeasured_coverage(self) -> None:
         payload = decision_payload()
         payload["score"]["factorCoverage"] = None
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        rendered = caught.exception.render()
-        self.assertIn("factorCoverage", rendered)
+        detail = caught.exception.detail
+        self.assertIn("factorCoverage", detail)
         # Coverage that was never measured is a different fact from coverage
         # that came out at zero, and the report has to say which one it is.
-        self.assertIn("not measured", rendered)
+        self.assertIn("not measured", detail)
 
     def test_rejects_an_empty_contribution_list(self) -> None:
         payload = decision_payload()
         payload["score"]["contributions"] = []
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        self.assertIn("contributions", caught.exception.render())
+        self.assertIn("contributions", caught.exception.detail)
 
     def test_rejects_an_answer_for_another_symbol(self) -> None:
         payload = decision_payload()
         payload["symbol"] = "AAPL"
         with self.assertRaises(SMOKE.StageFailure) as caught:
             self.validate(payload)
-        self.assertIn("AAPL", caught.exception.render())
+        self.assertIn("AAPL", caught.exception.detail)
 
     def test_reports_an_absent_forecast_as_unmeasured_rather_than_zero(self) -> None:
         payload = decision_payload()
@@ -483,7 +497,7 @@ class PriceCrossCheckTests(unittest.TestCase):
         )
         with self.assertRaises(SMOKE.StageFailure) as caught:
             SMOKE.cross_check_price(detached, snapshot)
-        self.assertIn("1.23", caught.exception.render())
+        self.assertIn("1.23", caught.exception.detail)
 
     def test_states_plainly_when_there_was_no_price_to_check(self) -> None:
         decision, snapshot = self.facts()
@@ -499,30 +513,31 @@ class PriceCrossCheckTests(unittest.TestCase):
 
 
 class StageFailureRenderingTests(unittest.TestCase):
-    def test_names_the_stage_the_status_the_server_code_and_the_local_error(self) -> None:
-        cause = ValueError("connection reset")
+    def test_names_only_the_stage_fixed_classification_and_http_status(self) -> None:
+        canary = "raw-provider-canary"
         failure = SMOKE.StageFailure(
             "decision",
-            "the analysis service refused the decision request",
-            url="http://analysis/decision?symbol=NVDA",
+            canary,
+            url=f"http://analysis/decision?secret={canary}",
             http_status=500,
-            server_code="ANALYSIS_FAILED",
-            server_message="The decision chain could not be evaluated",
-            cause=cause,
+            server_code=canary,
+            server_message=canary,
+            cause=ValueError(canary),
+            classification="http-error",
         )
         rendered = failure.render()
         self.assertIn("stage=decision", rendered)
         self.assertIn("http_status: 500", rendered)
-        self.assertIn("server_code: ANALYSIS_FAILED", rendered)
-        self.assertIn("ValueError", rendered)
-        self.assertIn("connection reset", rendered)
-        self.assertIn("http://analysis/decision?symbol=NVDA", rendered)
+        self.assertIn("classification: http-error", rendered)
+        self.assertNotIn(canary, rendered)
+        self.assertNotIn("server_message", rendered)
+        self.assertNotIn("local_exception", rendered)
+        self.assertNotIn("url:", rendered)
 
     def test_distinguishes_a_field_that_does_not_apply_from_one_left_blank(self) -> None:
         rendered = SMOKE.StageFailure("issue_pairing_code", "the terminal failed").render()
         self.assertIn("http_status: none", rendered)
-        self.assertIn("server_code: none", rendered)
-        self.assertIn("local_exception: none", rendered)
+        self.assertIn("classification:", rendered)
 
 
 class RunSmokeTests(unittest.TestCase):
@@ -602,7 +617,9 @@ class RunSmokeTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure):
             SMOKE.run_smoke(
                 SMOKE.SmokeConfig(
-                    gateway_url="http://gateway", analysis_url="http://analysis"
+                    gateway_url="http://gateway",
+                    analysis_url="http://analysis",
+                    interval="5m",
                 ),
                 request=sent,
                 issue_pairing_code=operator.issue,
@@ -625,7 +642,9 @@ class RunSmokeTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure) as caught:
             SMOKE.run_smoke(
                 SMOKE.SmokeConfig(
-                    gateway_url="http://gateway", analysis_url="http://analysis"
+                    gateway_url="http://gateway",
+                    analysis_url="http://analysis",
+                    interval="5m",
                 ),
                 request=sent,
                 issue_pairing_code=operator.issue,
@@ -633,7 +652,7 @@ class RunSmokeTests(unittest.TestCase):
                 log=lines.append,
             )
         self.assertEqual(caught.exception.stage, "decision")
-        self.assertTrue(any("sqlite is locked" in line for line in lines))
+        self.assertNotIn("sqlite is locked", "\n".join(lines))
 
     def test_a_failed_revocation_alone_still_fails_the_gate(self) -> None:
         sent = transport()
@@ -657,7 +676,7 @@ class RunSmokeTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure) as caught:
             run(sent, operator)
         self.assertEqual(caught.exception.stage, "gateway_health")
-        self.assertIn("degraded", caught.exception.render())
+        self.assertIn("degraded", caught.exception.detail)
         # Nothing was paired, so a gateway that cannot serve candles does not
         # leave a credential behind on the way out.
         self.assertEqual(operator.issued_labels, [])
@@ -677,7 +696,7 @@ class RunSmokeTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure) as caught:
             run(sent)
         self.assertEqual(caught.exception.stage, "gateway_health")
-        self.assertIn("unhealthy", caught.exception.render())
+        self.assertIn("unhealthy", caught.exception.detail)
 
     def test_refuses_an_analysis_service_that_is_not_ready(self) -> None:
         sent = transport(
@@ -687,7 +706,7 @@ class RunSmokeTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure) as caught:
             run(sent, operator)
         self.assertEqual(caught.exception.stage, "analysis_health")
-        self.assertIn("starting", caught.exception.render())
+        self.assertIn("starting", caught.exception.detail)
         # It got as far as pairing, so the credential is still cleaned up.
         self.assertEqual(operator.revoked, ["dev-1"])
 
@@ -703,7 +722,7 @@ class RunSmokeTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure) as caught:
             run(sent)
         self.assertEqual(caught.exception.stage, "redeem_pairing_code")
-        self.assertIn("deviceToken", caught.exception.render())
+        self.assertIn("deviceToken", caught.exception.detail)
 
 
 class PhoneGatewayTests(unittest.TestCase):
@@ -729,6 +748,7 @@ class PhoneGatewayTests(unittest.TestCase):
             SMOKE.SmokeConfig(
                 gateway_url="http://gateway",
                 analysis_url="http://analysis",
+                interval="5m",
                 phone_gateway_url="http://phone-gateway",
                 phone_gateway_token="gateway-token",
             ),
@@ -811,19 +831,18 @@ class CompoundFailureTests(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "gateway_snapshot")
         self.assertEqual(caught.exception.server_code, "QUOTA_EXCEEDED")
 
-    def test_names_every_other_stage_that_failed_with_its_code(self) -> None:
+    def test_names_every_other_stage_with_only_safe_status_metadata(self) -> None:
         with self.assertRaises(SMOKE.StageFailure) as caught:
             run(self.both_failing())
         rendered = caught.exception.render()
         self.assertIn("also_failed", rendered)
         self.assertIn("decision", rendered)
-        self.assertIn("ANALYSIS_FAILED", rendered)
+        self.assertNotIn("ANALYSIS_FAILED", rendered)
         self.assertIn("500", rendered)
 
-    def test_prints_every_failure_in_full_not_as_a_one_line_summary(self) -> None:
-        # A one-line summary drops the status and the service's own code, which
-        # is exactly what a reader needs from a stage that is not the one being
-        # blamed. Both failures have to appear in full, whichever is raised.
+    def test_prints_each_failure_with_safe_multiline_fields(self) -> None:
+        # A one-line summary drops the fixed classification and numeric status.
+        # Both failures retain those safe fields without forwarding server text.
         printed: list[str] = []
         operator = Operator()
         with self.assertRaises(SMOKE.StageFailure):
@@ -837,9 +856,10 @@ class CompoundFailureTests(unittest.TestCase):
                 log=printed.append,
             )
         joined = "\n".join(printed)
-        self.assertIn("ANALYSIS_FAILED", joined)
+        self.assertNotIn("ANALYSIS_FAILED", joined)
         self.assertIn("http_status: 500", joined)
-        self.assertIn("QUOTA_EXCEEDED", joined)
+        self.assertNotIn("QUOTA_EXCEEDED", joined)
+        self.assertIn("classification: provider-quota", joined)
         self.assertIn("http_status: 429", joined)
 
     def test_a_lone_failure_names_no_others(self) -> None:
@@ -876,7 +896,7 @@ class PairingCodeParsingTests(unittest.TestCase):
             SMOKE.parse_pairing_code("DATABASE_UNREADABLE: the file is not readable\n")
         rendered = caught.exception.render()
         self.assertEqual(caught.exception.stage, "issue_pairing_code")
-        self.assertIn("DATABASE_UNREADABLE", rendered)
+        self.assertNotIn("DATABASE_UNREADABLE", rendered)
 
 
 class OperatorTerminalTests(unittest.TestCase):
@@ -907,20 +927,20 @@ class OperatorTerminalTests(unittest.TestCase):
         self.assertIn("/tmp/devices.sqlite3", command)
         self.assertIn("smoke", command)
 
-    def test_quotes_the_terminal_when_the_pair_command_fails(self) -> None:
+    def test_sanitizes_the_terminal_when_the_pair_command_fails(self) -> None:
         issue, _, _ = self.terminal((2, "", "DATABASE_UNREADABLE: refusing a shared file"))
         with self.assertRaises(SMOKE.StageFailure) as caught:
             issue("smoke")
         rendered = caught.exception.render()
         self.assertEqual(caught.exception.stage, "issue_pairing_code")
-        self.assertIn("DATABASE_UNREADABLE", rendered)
+        self.assertNotIn("DATABASE_UNREADABLE", rendered)
 
     def test_revocation_failure_names_its_own_stage(self) -> None:
         _, revoke, _ = self.terminal((1, "", "unknown-device: dev-9"))
         with self.assertRaises(SMOKE.StageFailure) as caught:
             revoke("dev-9")
         self.assertEqual(caught.exception.stage, "revoke_smoke_device")
-        self.assertIn("unknown-device", caught.exception.render())
+        self.assertNotIn("unknown-device", caught.exception.render())
 
 
 class RecordingStream(io.StringIO):
@@ -972,7 +992,7 @@ class ExitCodeTests(unittest.TestCase):
         self.assertEqual(code, 1)
         printed = err.getvalue()
         self.assertIn("stage=decision", printed)
-        self.assertIn("ANALYSIS_FAILED", printed)
+        self.assertNotIn("ANALYSIS_FAILED", printed)
         self.assertIn("500", printed)
 
     def test_exits_non_zero_when_a_service_cannot_be_reached_at_all(self) -> None:
@@ -986,7 +1006,7 @@ class ExitCodeTests(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         code = SMOKE.main([], runner=offline, stdout=out, stderr=err)
         self.assertEqual(code, 1)
-        self.assertIn("Connection refused", err.getvalue())
+        self.assertNotIn("Connection refused", err.getvalue())
 
 
 class HttpFailureTranslationTests(unittest.TestCase):
@@ -1006,8 +1026,8 @@ class HttpFailureTranslationTests(unittest.TestCase):
             request("decision", "GET", "http://analysis/decision")
         rendered = caught.exception.render()
         self.assertIn("http_status: 401", rendered)
-        self.assertIn("AUTH_REQUIRED", rendered)
-        self.assertIn("A paired device token is required", rendered)
+        self.assertNotIn("AUTH_REQUIRED", rendered)
+        self.assertNotIn("A paired device token is required", rendered)
 
     def test_states_the_local_exception_when_nothing_answered(self) -> None:
         request = SMOKE.http_transport(
@@ -1016,7 +1036,7 @@ class HttpFailureTranslationTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure) as caught:
             request("gateway_health", "GET", "http://gateway/health")
         rendered = caught.exception.render()
-        self.assertIn("Connection refused", rendered)
+        self.assertNotIn("Connection refused", rendered)
         self.assertIn("http_status: none", rendered)
 
     def test_names_the_stage_when_a_service_answers_with_something_else(self) -> None:
@@ -1024,7 +1044,50 @@ class HttpFailureTranslationTests(unittest.TestCase):
         with self.assertRaises(SMOKE.StageFailure) as caught:
             request("analysis_health", "GET", "http://analysis/health")
         self.assertEqual(caught.exception.stage, "analysis_health")
-        self.assertIn("JSON", caught.exception.render())
+        self.assertIn("JSON", caught.exception.detail)
+
+    def test_default_transport_refuses_redirects_before_forwarding_a_bearer(
+        self,
+    ) -> None:
+        requests: list[tuple[str, str | None]] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+                requests.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/source":
+                    self.send_response(302)
+                    self.send_header("Location", "/sink")
+                    self.end_headers()
+                    return
+                body = b"{}"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: Any) -> None:
+                return None
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = SMOKE.http_transport(timeout=1.0)
+            with self.assertRaises(SMOKE.StageFailure) as caught:
+                request(
+                    "gateway_health",
+                    "GET",
+                    f"http://127.0.0.1:{server.server_port}/source",
+                    token="redirect-bearer-canary",
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+        self.assertEqual(caught.exception.http_status, 302)
+        self.assertEqual(requests, [("/source", "Bearer redirect-bearer-canary")])
 
 
 def _raiser(error: BaseException):
@@ -1051,6 +1114,754 @@ def _answering(body: bytes):
         return Response()
 
     return opener
+
+
+def snapshot_v3_payload(
+    symbol: str = "NVDA",
+    *,
+    interval: str = "day",
+    count: int = 250,
+) -> dict[str, Any]:
+    payload = json.loads(V3_FIXTURE.read_text(encoding="utf-8"))
+    payload["symbol"] = symbol
+    payload["interval"] = interval
+    payload["count"] = count
+    return payload
+
+
+class BatchTransport:
+    def __init__(
+        self,
+        codes: list[str],
+        *,
+        fail_stage: str | None = None,
+        failure: BaseException | None = None,
+        stale_flow: bool = False,
+        decision_interval: str = "day",
+        token: str = "device-token-canary",
+        section_error_code: str | None = None,
+        anomaly_code: str | None = None,
+    ) -> None:
+        self.codes = codes
+        self.fail_stage = fail_stage
+        self.failure = failure
+        self.stale_flow = stale_flow
+        self.decision_interval = decision_interval
+        self.token = token
+        self.section_error_code = section_error_code
+        self.anomaly_code = anomaly_code
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(
+        self,
+        stage: str,
+        method: str,
+        url: str,
+        *,
+        token: str | None = None,
+        body: Any = None,
+    ) -> Any:
+        self.calls.append(
+            {"stage": stage, "method": method, "url": url, "token": token, "body": body}
+        )
+        if stage == self.fail_stage:
+            assert self.failure is not None
+            raise self.failure
+        split = urlsplit(url)
+        query = parse_qs(split.query)
+        if split.path == "/health" and split.netloc == "gateway":
+            return {
+                "schemaVersion": "1",
+                "source": "moomoo",
+                "session": "healthy",
+                "items": [{"status": "healthy"}],
+            }
+        if split.path == "/watchlist":
+            return {
+                "schemaVersion": "1",
+                "source": "moomoo",
+                "session": "healthy",
+                "items": [{"code": code} for code in self.codes],
+            }
+        if split.path == "/v1/device-pairings":
+            return {"deviceId": "dev-1", "deviceToken": self.token}
+        if split.path == "/health" and split.netloc == "analysis":
+            return {"status": "ready"}
+        if split.path == "/decision":
+            symbol = query["symbol"][0]
+            payload = decision_payload()
+            payload["symbol"] = symbol
+            payload["interval"] = self.decision_interval
+            payload["forecast"]["currentPrice"] = 184.0
+            return payload
+        if split.path == "/v3/stock-snapshot":
+            symbol = query["symbol"][0]
+            payload = snapshot_v3_payload(
+                symbol,
+                interval=query["interval"][0],
+                count=int(query["count"][0]),
+            )
+            if self.stale_flow:
+                payload["sections"]["currentSessionFlow"] = {
+                    "availabilityStatus": "stale",
+                    "qualityStatus": "invalid",
+                    "source": None,
+                    "asOf": None,
+                    "availableAt": None,
+                    "receivedAt": None,
+                    "data": None,
+                    "errorCode": self.section_error_code or "STALE_DATA",
+                    "reason": "provider-message-canary",
+                    "warnings": ["warning-canary"],
+                    "anomalies": [],
+                    "methodVersion": "unavailable-v1",
+                }
+            if self.anomaly_code is not None:
+                payload["sections"]["holdings"]["anomalies"][0]["code"] = (
+                    self.anomaly_code
+                )
+            return payload
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+
+def batch_config(**overrides: Any) -> Any:
+    values = {
+        "gateway_url": "http://gateway",
+        "analysis_url": "http://analysis",
+        "interval": "day",
+        "count": 250,
+        "all_watchlist": True,
+        "snapshot_version": "v3",
+    }
+    values.update(overrides)
+    return SMOKE.SmokeConfig(**values)
+
+
+class BatchParserAndWatchlistTests(unittest.TestCase):
+    def test_parser_supports_batch_v3_report_and_defaults_to_daily(self) -> None:
+        arguments = SMOKE.build_parser().parse_args(
+            [
+                "--all-watchlist",
+                "--snapshot-version",
+                "v3",
+                "--report",
+                "/tmp/smoke-report.json",
+            ]
+        )
+
+        self.assertTrue(arguments.all_watchlist)
+        self.assertEqual(arguments.snapshot_version, "v3")
+        self.assertEqual(arguments.interval, "day")
+        self.assertEqual(arguments.report, "/tmp/smoke-report.json")
+
+    def test_watchlist_codes_are_canonicalized_in_source_order(self) -> None:
+        payload = {
+            "schemaVersion": "1",
+            "source": "moomoo",
+            "session": "healthy",
+            "items": [{"code": "US.NVDA"}, {"code": "US.BRK.B"}],
+        }
+
+        self.assertEqual(SMOKE.validate_watchlist(payload), ("NVDA", "BRK.B"))
+
+    def test_watchlist_rejects_empty_or_duplicate_canonical_symbols(self) -> None:
+        for items in (
+            [],
+            [{"code": "US.NVDA"}, {"code": "US.NVDA"}],
+            [{"code": "NVDA"}],
+            [{"code": "US."}],
+        ):
+            with self.subTest(items=items):
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_watchlist(
+                        {
+                            "schemaVersion": "1",
+                            "source": "moomoo",
+                            "session": "healthy",
+                            "items": items,
+                        }
+                    )
+
+    def test_single_symbol_v2_never_reads_watchlist(self) -> None:
+        sent = transport()
+        operator = Operator()
+
+        SMOKE.run_smoke(
+            SMOKE.SmokeConfig(
+                gateway_url="http://gateway",
+                analysis_url="http://analysis",
+                symbol="NVDA",
+                interval="5m",
+                snapshot_version="v2",
+            ),
+            request=sent,
+            issue_pairing_code=operator.issue,
+            revoke_device=operator.revoke,
+            log=lambda line: None,
+        )
+
+        self.assertNotIn("watchlist", [call["stage"] for call in sent.calls])
+        self.assertEqual(
+            [call["url"].split("?", 1)[0] for call in sent.calls if call["stage"] == "gateway_snapshot"],
+            ["http://gateway/stock-snapshot"],
+        )
+
+    def test_v3_unavailable_holdings_may_keep_only_received_at(self) -> None:
+        payload = snapshot_v3_payload("AVGO")
+        payload["sections"]["holdings"] = {
+            "availabilityStatus": "unavailable",
+            "qualityStatus": "invalid",
+            "source": "moomoo-delayed-institutional-disclosure",
+            "asOf": None,
+            "availableAt": None,
+            "receivedAt": "2026-07-25T11:59:59Z",
+            "data": [],
+            "errorCode": "HOLDINGS_UNAVAILABLE",
+            "reason": "provider-message-canary",
+            "warnings": [],
+            "anomalies": [],
+            "methodVersion": "reported-holdings-v2-anomaly-aware",
+        }
+
+        facts = SMOKE.validate_snapshot_v3(
+            payload,
+            expected_symbol="AVGO",
+            expected_interval="day",
+            expected_count=250,
+        )
+
+        self.assertEqual(facts.snapshot_status, "partial")
+
+    def test_v3_stale_requires_null_times_and_live_requires_complete_times(self) -> None:
+        mutations = []
+        payload = snapshot_v3_payload("AVGO")
+        payload["sections"]["currentSessionFlow"].update(
+            {
+                "availabilityStatus": "stale",
+                "qualityStatus": "invalid",
+                "source": None,
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": "2026-07-25T11:59:59Z",
+                "data": None,
+                "errorCode": "STALE_DATA",
+                "methodVersion": "unavailable-v1",
+            }
+        )
+        mutations.append(("stale-with-receipt", payload))
+        payload = snapshot_v3_payload("AVGO")
+        payload["sections"]["quote"]["asOf"] = None
+        mutations.append(("live-with-missing-as-of", payload))
+
+        for case, payload in mutations:
+            with self.subTest(case=case):
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_rejects_a_future_decision_cutoff(self) -> None:
+        payload = snapshot_v3_payload("AVGO")
+        payload["decisionCutoff"] = "2026-07-25T12:00:01Z"
+
+        with self.assertRaises(SMOKE.StageFailure):
+            SMOKE.validate_snapshot_v3(
+                payload,
+                expected_symbol="AVGO",
+                expected_interval="day",
+                expected_count=250,
+                now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+            )
+
+    def test_v3_rejects_an_extra_top_level_field(self) -> None:
+        payload = snapshot_v3_payload("AVGO")
+        payload["extra"] = True
+
+        with self.assertRaises(SMOKE.StageFailure):
+            SMOKE.validate_snapshot_v3(
+                payload,
+                expected_symbol="AVGO",
+                expected_interval="day",
+                expected_count=250,
+            )
+
+    def test_v3_validated_sections_require_provenance_data_and_method(self) -> None:
+        for field_name, value in (
+            ("source", None),
+            ("data", None),
+            ("methodVersion", ""),
+        ):
+            with self.subTest(field=field_name):
+                payload = snapshot_v3_payload("AVGO")
+                holdings = payload["sections"]["holdings"]
+                holdings.update(
+                    {
+                        "availabilityStatus": "delayed",
+                        "qualityStatus": "validated",
+                        "errorCode": None,
+                        "reason": None,
+                        "warnings": [],
+                        "anomalies": [],
+                    }
+                )
+                holdings[field_name] = value
+                payload["status"] = "live"
+
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_section_availability_states_enforce_the_mobile_contract(self) -> None:
+        mutations: list[tuple[str, dict[str, Any]]] = []
+
+        payload = snapshot_v3_payload("AVGO")
+        payload["sections"]["quote"]["qualityStatus"] = "invalid"
+        mutations.append(("live-invalid", payload))
+
+        payload = snapshot_v3_payload("AVGO")
+        payload["sections"]["holdings"]["source"] = None
+        mutations.append(("delayed-without-source", payload))
+
+        for field_name, value in (
+            ("qualityStatus", "partial"),
+            ("source", "moomoo"),
+            ("data", {}),
+            ("errorCode", None),
+            ("reason", None),
+        ):
+            payload = snapshot_v3_payload("AVGO")
+            payload["sections"]["currentSessionFlow"].update(
+                {
+                    "availabilityStatus": "stale",
+                    "qualityStatus": "invalid",
+                    "source": None,
+                    "asOf": None,
+                    "availableAt": None,
+                    "receivedAt": None,
+                    "data": None,
+                    "errorCode": "STALE_DATA",
+                    "reason": "provider-message-canary",
+                    "methodVersion": "unavailable-v1",
+                }
+            )
+            payload["sections"]["currentSessionFlow"][field_name] = value
+            mutations.append((f"stale-{field_name}", payload))
+
+        for field_name, value in (
+            ("qualityStatus", "partial"),
+            ("data", {}),
+            ("errorCode", None),
+            ("reason", None),
+        ):
+            payload = snapshot_v3_payload("AVGO")
+            payload["sections"]["holdings"] = {
+                "availabilityStatus": "unavailable",
+                "qualityStatus": "invalid",
+                "source": "moomoo-delayed-institutional-disclosure",
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": "2026-07-25T11:59:59Z",
+                "data": [],
+                "errorCode": "HOLDINGS_UNAVAILABLE",
+                "reason": "provider-message-canary",
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "reported-holdings-v2-anomaly-aware",
+            }
+            payload["sections"]["holdings"][field_name] = value
+            mutations.append((f"unavailable-{field_name}", payload))
+
+        for case, payload in mutations:
+            with self.subTest(case=case):
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_warning_strings_must_be_non_empty(self) -> None:
+        for warning in ("", "   ", 1):
+            with self.subTest(warning=warning):
+                payload = snapshot_v3_payload("AVGO")
+                payload["sections"]["technical"]["warnings"] = [warning]
+
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_anomaly_shape_is_validated_in_every_section(self) -> None:
+        anomalies: tuple[Any, ...] = (
+            "not-an-object",
+            {"code": "", "reason": "reason"},
+            {"code": "CODE", "reason": ""},
+            {"code": "CODE", "reason": "reason", "rowIndex": True},
+            {"code": "CODE", "reason": "reason", "rowIndex": -1},
+            {"code": "CODE", "reason": "reason", "rowIndex": 1.5},
+        )
+        for anomaly in anomalies:
+            with self.subTest(anomaly=anomaly):
+                payload = snapshot_v3_payload("AVGO")
+                payload["sections"]["technical"]["anomalies"] = [anomaly]
+
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_validated_quote_must_be_semantically_usable(self) -> None:
+        for price in (None, True, 0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(price=price):
+                payload = snapshot_v3_payload("AVGO")
+                payload["sections"]["quote"]["data"]["price"] = price
+
+                with self.assertRaises(SMOKE.StageFailure):
+                    SMOKE.validate_snapshot_v3(
+                        payload,
+                        expected_symbol="AVGO",
+                        expected_interval="day",
+                        expected_count=250,
+                    )
+
+    def test_v3_empty_validated_candles_make_the_snapshot_partial(self) -> None:
+        payload = snapshot_v3_payload("AVGO")
+        payload["sections"]["candles"]["data"]["candles"] = []
+        payload["sections"]["holdings"]["qualityStatus"] = "validated"
+        payload["sections"]["holdings"]["anomalies"] = []
+        payload["status"] = "live"
+
+        with self.assertRaises(SMOKE.StageFailure):
+            SMOKE.validate_snapshot_v3(
+                payload,
+                expected_symbol="AVGO",
+                expected_interval="day",
+                expected_count=250,
+            )
+
+        payload["status"] = "partial"
+        facts = SMOKE.validate_snapshot_v3(
+            payload,
+            expected_symbol="AVGO",
+            expected_interval="day",
+            expected_count=250,
+        )
+        self.assertEqual(facts.snapshot_status, "partial")
+
+    def test_v3_live_validated_holdings_must_be_non_empty(self) -> None:
+        payload = snapshot_v3_payload("AVGO")
+        payload["sections"]["holdings"].update(
+            {"qualityStatus": "validated", "data": [], "anomalies": []}
+        )
+        payload["status"] = "live"
+
+        with self.assertRaises(SMOKE.StageFailure):
+            SMOKE.validate_snapshot_v3(
+                payload,
+                expected_symbol="AVGO",
+                expected_interval="day",
+                expected_count=250,
+            )
+
+
+class BatchLifecycleAndReportTests(unittest.TestCase):
+    def run_batch(
+        self,
+        sent: BatchTransport,
+        *,
+        config: Any | None = None,
+        operator: Operator | None = None,
+    ) -> tuple[list[str], Operator]:
+        lines: list[str] = []
+        operator = operator or Operator(code="pairing-code-canary")
+        SMOKE.run_smoke(
+            config or batch_config(),
+            request=sent,
+            issue_pairing_code=operator.issue,
+            revoke_device=operator.revoke,
+            log=lines.append,
+        )
+        return lines, operator
+
+    def test_46_sources_issue_and_redeem_once_then_run_46_pairs(self) -> None:
+        codes = [f"US.S{index}" for index in range(46)]
+        sent = BatchTransport(codes)
+
+        _, operator = self.run_batch(sent)
+
+        stages = [call["stage"] for call in sent.calls]
+        self.assertEqual(len(operator.issued_labels), 1)
+        self.assertEqual(stages.count("redeem_pairing_code"), 1)
+        self.assertEqual(stages.count("gateway_snapshot"), 46)
+        self.assertEqual(stages.count("decision"), 46)
+        self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_anomalous_holdings_and_stale_optional_flow_do_not_block_price(self) -> None:
+        sent = BatchTransport(["US.AVGO"], stale_flow=True)
+
+        lines, _ = self.run_batch(sent)
+
+        self.assertTrue(any(line.startswith("PASS") for line in lines))
+
+    def test_decision_interval_mismatch_fails_and_revokes(self) -> None:
+        sent = BatchTransport(["US.NVDA"], decision_interval="5m")
+        operator = Operator()
+
+        with self.assertRaises(SMOKE.StageFailure):
+            self.run_batch(sent, operator=operator)
+
+        self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_runtime_failure_and_interrupt_each_revoke_exactly_once(self) -> None:
+        for failure in (RuntimeError("runtime-canary"), KeyboardInterrupt("interrupt-canary")):
+            with self.subTest(failure=type(failure).__name__):
+                sent = BatchTransport(
+                    ["US.NVDA"],
+                    fail_stage="analysis_health",
+                    failure=failure,
+                )
+                operator = Operator()
+                with self.assertRaises(type(failure)):
+                    self.run_batch(sent, operator=operator)
+                self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_cleanup_revokes_when_the_log_sink_itself_fails(self) -> None:
+        for failure in (RuntimeError("log-canary"), KeyboardInterrupt("log-canary")):
+            with self.subTest(failure=type(failure).__name__):
+                sent = BatchTransport(["US.NVDA"])
+                operator = Operator()
+
+                def log(line: str) -> None:
+                    if line == "stage=revoke_smoke_device":
+                        raise failure
+
+                with self.assertRaises(type(failure)):
+                    SMOKE.run_smoke(
+                        batch_config(),
+                        request=sent,
+                        issue_pairing_code=operator.issue,
+                        revoke_device=operator.revoke,
+                        log=log,
+                    )
+
+                self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_report_write_failure_still_revokes_exactly_once(self) -> None:
+        sent = BatchTransport(["US.NVDA"])
+        operator = Operator()
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            report_directory = Path(directory) / "report-target"
+            report_directory.mkdir()
+            with self.assertRaises(SMOKE.StageFailure):
+                self.run_batch(
+                    sent,
+                    config=batch_config(report_path=report_directory),
+                    operator=operator,
+                )
+
+        self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_report_is_private_ordered_and_contains_only_allowlisted_facts(self) -> None:
+        sent = BatchTransport(["US.AVGO", "US.NVDA"], stale_flow=True)
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            report_path = Path(directory) / "report.json"
+            lines, operator = self.run_batch(
+                sent,
+                config=batch_config(
+                    report_path=report_path,
+                    gateway_token="gateway-token-canary",
+                ),
+                operator=Operator(code="pairing-code-canary"),
+            )
+            report_text = report_path.read_text(encoding="utf-8")
+            report = json.loads(report_text)
+
+            self.assertEqual(stat.S_IMODE(report_path.stat().st_mode), 0o600)
+            self.assertEqual([item["symbol"] for item in report["items"]], ["AVGO", "NVDA"])
+            self.assertEqual(len(report["items"]), 2)
+            self.assertEqual(report["snapshotVersion"], "v3")
+            self.assertEqual(report["interval"], "day")
+            self.assertEqual(report["items"][0]["decision"]["interval"], "day")
+            self.assertEqual(
+                report["items"][0]["snapshot"]["sections"]["currentSessionFlow"],
+                {
+                    "availabilityStatus": "stale",
+                    "qualityStatus": "invalid",
+                    "errorCode": "STALE_DATA",
+                },
+            )
+            joined = "\n".join(lines) + report_text
+            for canary in (
+                "pairing-code-canary",
+                "device-token-canary",
+                "gateway-token-canary",
+                "provider-message-canary",
+                "warning-canary",
+                "Authorization",
+            ):
+                self.assertNotIn(canary, joined)
+            self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_report_path_outside_tmp_is_rejected_before_pairing(self) -> None:
+        sent = BatchTransport(["US.NVDA"])
+        operator = Operator()
+        with self.assertRaises(SMOKE.StageFailure):
+            self.run_batch(
+                sent,
+                config=batch_config(report_path=REPOSITORY_ROOT / "report.json"),
+                operator=operator,
+            )
+        self.assertEqual(operator.issued_labels, [])
+        self.assertEqual(operator.revoked, [])
+
+    def test_unknown_section_and_anomaly_codes_never_enter_failure_report(self) -> None:
+        canaries = ("section-error-canary", "anomaly-code-canary")
+        sent = BatchTransport(
+            ["US.AVGO"],
+            stale_flow=True,
+            section_error_code=canaries[0],
+            anomaly_code=canaries[1],
+        )
+        operator = Operator()
+        lines: list[str] = []
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            report_path = Path(directory) / "report.json"
+            with self.assertRaises(SMOKE.StageFailure):
+                SMOKE.run_smoke(
+                    batch_config(report_path=report_path),
+                    request=sent,
+                    issue_pairing_code=operator.issue,
+                    revoke_device=operator.revoke,
+                    log=lines.append,
+                )
+            serialized = "\n".join(lines) + report_path.read_text(encoding="utf-8")
+
+        for canary in canaries:
+            self.assertNotIn(canary, serialized)
+        self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_success_output_never_names_environment_keys(self) -> None:
+        sent = transport()
+        lines, _ = run(sent)
+
+        self.assertNotIn("MOOMOO_GATEWAY_TOKEN", "\n".join(lines))
+
+    def test_help_output_never_names_environment_keys(self) -> None:
+        help_text = SMOKE.build_parser().format_help()
+        for environment_key in (
+            "MOOMOO_GATEWAY_TOKEN",
+            "ANALYSIS_API_CANDLE_COUNT",
+        ):
+            self.assertNotIn(environment_key, help_text)
+
+    def test_all_origins_reject_secret_bearing_urls_before_any_side_effect(
+        self,
+    ) -> None:
+        secret = "origin-secret-canary"
+        bad_urls = (
+            f"http://user:{secret}@service",
+            f"http://service?token={secret}",
+            f"http://service#{secret}",
+            f"http://service/path/{secret}",
+            f"http://service\n{secret}",
+            f"http://service {secret}",
+            f"http://service\t{secret}",
+            f"http://service\x00{secret}",
+        )
+        for field_name in (
+            "gateway_url",
+            "analysis_url",
+            "phone_gateway_url",
+        ):
+            for shape_index, bad_url in enumerate(bad_urls):
+                with self.subTest(field=field_name, shape=shape_index):
+                    lines: list[str] = []
+                    calls: list[str] = []
+                    operator = Operator()
+
+                    def no_network(*args: Any, **kwargs: Any) -> Any:
+                        calls.append("called")
+                        raise AssertionError("network must not run")
+
+                    try:
+                        with self.assertRaises(SMOKE.StageFailure):
+                            SMOKE.run_smoke(
+                                batch_config(**{field_name: bad_url}),
+                                request=no_network,
+                                issue_pairing_code=operator.issue,
+                                revoke_device=operator.revoke,
+                                log=lines.append,
+                            )
+                    finally:
+                        self.assertNotIn(secret, "\n".join(lines))
+                        self.assertEqual(calls, [])
+                        self.assertEqual(operator.issued_labels, [])
+                        self.assertEqual(operator.revoked, [])
+
+
+class CanaryFailureSurfaceTests(unittest.TestCase):
+    def test_main_sanitizes_stage_runtime_and_interrupt_failures(self) -> None:
+        canary = "failure-surface-canary"
+        failures: tuple[BaseException, ...] = (
+            SMOKE.StageFailure(
+                "decision",
+                canary,
+                server_message=canary,
+                cause=RuntimeError(canary),
+            ),
+            RuntimeError(canary),
+            KeyboardInterrupt(canary),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                out, err = io.StringIO(), io.StringIO()
+
+                def broken(*args: Any, **kwargs: Any) -> None:
+                    raise failure
+
+                self.assertEqual(
+                    SMOKE.main([], runner=broken, stdout=out, stderr=err),
+                    1,
+                )
+                self.assertNotIn(canary, out.getvalue() + err.getvalue())
+
+    def test_environment_canary_is_not_printed(self) -> None:
+        canary = "environment-value-canary"
+        previous = os.environ.get("MOOMOO_GATEWAY_TOKEN")
+        os.environ["MOOMOO_GATEWAY_TOKEN"] = canary
+        try:
+            out, err = io.StringIO(), io.StringIO()
+            self.assertEqual(
+                SMOKE.main(
+                    [],
+                    runner=lambda *args, **kwargs: (_ for _ in ()).throw(
+                        RuntimeError(canary)
+                    ),
+                    stdout=out,
+                    stderr=err,
+                ),
+                1,
+            )
+            self.assertNotIn(canary, out.getvalue() + err.getvalue())
+        finally:
+            if previous is None:
+                os.environ.pop("MOOMOO_GATEWAY_TOKEN", None)
+            else:
+                os.environ["MOOMOO_GATEWAY_TOKEN"] = previous
 
 
 if __name__ == "__main__":

@@ -25,6 +25,11 @@ From the repository root:
 PYTHONPATH=services/analysis_core:services/market_gateway/src \
   python3 services/market_gateway/scripts/smoke_real_snapshot.py \
   --fixture services/market_gateway/tests/fixtures/nvda_snapshot_redacted.json
+
+PYTHONPATH=services/analysis_core:services/market_gateway/src \
+  python3 services/market_gateway/scripts/smoke_real_snapshot.py \
+  --contract-version v3 --symbol AVGO --interval day --count 250 \
+  --fixture services/market_gateway/tests/fixtures/snapshot_v3_anomalous_holdings.json
 ```
 
 Expected:
@@ -71,10 +76,42 @@ PYTHONPATH=services/analysis_core:services/market_gateway/src \
   --base-url http://127.0.0.1:8765
 ```
 
-The validator issues only `GET /health` and `GET /stock-snapshot`. A valid live
-response has real completed candles, at least one currently covered
-trading-day participation bar, explicit unavailable older bars, one decision
-cutoff for every source child, and no transaction capability.
+With `--contract-version v2` (the compatibility default), the validator issues
+only `GET /health` and `GET /stock-snapshot`. With `--contract-version v3`, it
+issues only `GET /health` and `GET /v3/stock-snapshot`. There is no smoke
+fallback between versions. A v3 response must have the exact section contract
+and a usable quote or non-empty completed-candle section; anomalous holdings or
+a stale optional section remain precise local limitations rather than a Demo
+substitution.
+
+For the complete Watchlist gate, use one paired device for the whole run and
+write only a permission-restricted report below `/tmp`:
+
+```bash
+umask 077
+MAC_LAN_IP="<allowlisted Mac LAN IP>"
+PYTHONPATH=services/device_auth/src \
+  python3 scripts/smoke_live.py \
+  --gateway-url http://127.0.0.1:8765 \
+  --analysis-url "http://${MAC_LAN_IP}:8770" \
+  --device-database /Users/franz/.us-stock-helper/state/devices.sqlite3 \
+  --all-watchlist --snapshot-version v3 \
+  --interval day --count 250 --horizon short \
+  --report /tmp/us-stock-helper-watchlist-v3.json
+```
+
+The batch deliberately reads market data from the loopback gateway on 8765.
+The analysis process is the LAN-bound, device-authenticated service on 8770,
+so `MAC_LAN_IP` must be an address covered by its explicit client allowlist;
+do not widen that allowlist merely to make a smoke command pass.
+
+The configured live acceptance currently expects 46 source items, but the
+script deliberately does not hard-code that count. It preserves `/watchlist`
+order, rejects empty/duplicate codes, runs one v3 snapshot and one daily
+decision per source item, and reuses the one device token until its guaranteed
+revocation. The report is mode `0600` and contains only fixed classifications
+and allowlisted contract metadata; it excludes response reasons, warnings,
+provider messages, credentials, and environment data.
 
 ## Temporary iPhone LAN runtime
 
@@ -84,6 +121,12 @@ services in one foreground supervisor:
 ```bash
 scripts/run_local_dev_stack.sh
 ```
+
+The canonical development listeners are loopback gateway `8765`, LAN gateway
+`8766`, analysis `8770`, and Metro `8083`. Before any restart, verify each PID's
+full command and current working directory and confirm it belongs to this
+worktree. Do not stop an unknown process merely because it owns a familiar
+port, including `8081`.
 
 It reads the existing operator-owned
 `~/.us-stock-helper/lan.env`, writes only redacted process logs under `/tmp`,
@@ -147,8 +190,15 @@ install and launch steps in [iphone-dev-client.md](iphone-dev-client.md), then
 record each observed result:
 
 - Dashboard watchlist matches moomoo.
-- NVDA opens once without duplicate rows or render errors.
+- SOFI plus CRCL, AVGO, GRRR, SMTC, LULU, PTON, ETSY, and GPCR open without
+  duplicate rows or render errors.
 - Actual completed K-lines appear.
+- The selected default says `日K`, every successful decision states
+  `interval: day`, and the complete Magic Nine sequence stays attached to the
+  daily candles.
+- Quote/chart/decision remain visible when holdings are anomalous or
+  unavailable. Aggregate percentages above 100 retain the exact fixed warning
+  and never trigger a full-page malformed state or Demo badge in Real mode.
 - Supported K-lines have aligned, constant-height stacked participation bars.
 - Every available bar totals exactly 100%; unsupported older bars are visibly
   missing, never interpolated or repaired.

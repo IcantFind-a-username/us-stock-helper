@@ -110,6 +110,45 @@ class CandleConversionTests(unittest.TestCase):
         self.assertEqual(bar.volume, 1_000_000.0)
         self.assertTrue(bar.complete)
 
+    def test_envelope_availability_not_last_bar_time_is_the_read_cutoff(self) -> None:
+        payload = candle_envelope(
+            asOf="2026-07-25T15:55:02Z",
+            availableAt="2026-07-25T16:00:00Z",
+        )
+
+        bars = provider(Gateway(payload)).bars_for("NVDA", "5m")
+
+        self.assertEqual(len(bars), 1)
+
+    def test_envelope_publication_after_availability_is_refused(self) -> None:
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(
+                Gateway(
+                    candle_envelope(
+                        [],
+                        asOf="2026-07-25T16:00:01Z",
+                        availableAt="2026-07-25T16:00:00Z",
+                    )
+                )
+            ).bars_for("NVDA", "5m")
+
+    def test_candle_publication_after_envelope_as_of_is_refused(self) -> None:
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(
+                Gateway(
+                    candle_envelope(
+                        [
+                            candle(
+                                availableAt="2026-07-25T16:00:01Z",
+                                receivedAt="2026-07-25T16:00:02Z",
+                            )
+                        ],
+                        asOf="2026-07-25T16:00:00Z",
+                        availableAt="2026-07-25T16:00:05Z",
+                    )
+                )
+            ).bars_for("NVDA", "5m")
+
     def test_bars_keep_the_order_the_gateway_published_them_in(self) -> None:
         second = candle(
             timestamp="2026-07-25T16:00:00Z",
@@ -123,6 +162,7 @@ class CandleConversionTests(unittest.TestCase):
                 candle_envelope(
                     [candle(), second],
                     asOf="2026-07-25T16:00:05Z",
+                    availableAt="2026-07-25T16:00:05Z",
                 )
             )
         ).bars_for("NVDA", "5m")
@@ -156,13 +196,13 @@ class CandleConversionTests(unittest.TestCase):
                 Gateway(candle_envelope([candle(receivedAt="2026-07-25T15:55:01Z")]))
             ).bars_for("NVDA", "5m")
 
-    def test_a_receipt_after_the_decision_cutoff_is_a_temporal_defect(self) -> None:
+    def test_a_receipt_after_envelope_availability_is_a_temporal_defect(self) -> None:
         with self.assertRaises(MarketGatewayUnavailable):
             provider(
                 Gateway(candle_envelope([candle(receivedAt="2026-07-25T16:00:01Z")]))
             ).bars_for("NVDA", "5m")
 
-    def test_a_publication_after_the_decision_cutoff_is_a_temporal_defect(
+    def test_a_publication_after_envelope_as_of_is_a_temporal_defect(
         self,
     ) -> None:
         with self.assertRaises(MarketGatewayUnavailable):

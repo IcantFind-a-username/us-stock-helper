@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 class SmokeFailure(ValueError):
@@ -39,6 +39,46 @@ _PROVENANCE_SOURCES = {
     "analysis-core",
     "moomoo-delayed-institutional-disclosure",
 }
+_V3_TOP_LEVEL_FIELDS = {
+    "schemaVersion",
+    "status",
+    "symbol",
+    "interval",
+    "count",
+    "decisionCutoff",
+    "requestedSections",
+    "sections",
+}
+_V3_SECTION_NAMES = (
+    "quote",
+    "candles",
+    "technical",
+    "currentSessionFlow",
+    "holdings",
+    "fundamentals",
+    "marketContext",
+    "news",
+    "forecastDecision",
+)
+_V3_REQUESTED_SECTIONS = _V3_SECTION_NAMES[:5]
+_V3_UNREQUESTED_SECTIONS = _V3_SECTION_NAMES[5:]
+_V3_ENVELOPE_FIELDS = {
+    "availabilityStatus",
+    "qualityStatus",
+    "source",
+    "asOf",
+    "availableAt",
+    "receivedAt",
+    "data",
+    "errorCode",
+    "reason",
+    "warnings",
+    "anomalies",
+    "methodVersion",
+}
+_V3_AVAILABILITY_STATUSES = {"live", "delayed", "stale", "unavailable"}
+_V3_QUALITY_STATUSES = {"validated", "partial", "anomalous", "invalid"}
+_V3_TOP_LEVEL_STATUSES = {"live", "partial", "unavailable"}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -50,6 +90,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--count", type=int, default=200)
     parser.add_argument("--base-url", default="http://127.0.0.1:8765")
     parser.add_argument("--fixture", type=Path)
+    parser.add_argument(
+        "--contract-version",
+        choices=("v2", "v3"),
+        default="v2",
+    )
     return parser
 
 
@@ -370,7 +415,7 @@ def _validate_indicators(payload: dict[str, Any], cutoff: datetime) -> None:
             )
 
 
-def validate_snapshot(
+def validate_snapshot_v2(
     payload: object,
     *,
     expected_symbol: str,
@@ -406,6 +451,257 @@ def validate_snapshot(
         raise SmokeFailure("warnings must contain only strings")
 
 
+def validate_snapshot_v3(
+    payload: object,
+    *,
+    expected_symbol: str,
+    expected_interval: str,
+    expected_count: int,
+    now: datetime | None = None,
+) -> None:
+    snapshot = _record(payload, "snapshot")
+    _reject_trading_surface(snapshot)
+    if set(snapshot) != _V3_TOP_LEVEL_FIELDS:
+        raise SmokeFailure("snapshot v3 top-level fields are not exact")
+    if snapshot.get("schemaVersion") != "3":
+        raise SmokeFailure("snapshot schemaVersion is not 3")
+    status = snapshot.get("status")
+    if status not in _V3_TOP_LEVEL_STATUSES:
+        raise SmokeFailure("snapshot v3 status is unsupported")
+    if snapshot.get("symbol") != expected_symbol.strip().upper():
+        raise SmokeFailure("snapshot symbol does not match request")
+    if snapshot.get("interval") != expected_interval:
+        raise SmokeFailure("snapshot interval does not match request")
+    count = snapshot.get("count")
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != expected_count
+        or not 1 <= count <= 1000
+    ):
+        raise SmokeFailure("snapshot count does not match request")
+    cutoff = _timestamp(snapshot.get("decisionCutoff"), "decisionCutoff")
+    if cutoff > (now or datetime.now(UTC)):
+        raise SmokeFailure("decision cutoff is in the future")
+    if snapshot.get("requestedSections") != list(_V3_REQUESTED_SECTIONS):
+        raise SmokeFailure("snapshot requestedSections are not the fixed ordered set")
+
+    sections = _record(snapshot.get("sections"), "sections")
+    if set(sections) != set(_V3_SECTION_NAMES):
+        raise SmokeFailure("snapshot v3 section names are not exact")
+    envelopes = {
+        name: _validate_v3_section(sections.get(name), name, cutoff)
+        for name in _V3_SECTION_NAMES
+    }
+    for name in _V3_UNREQUESTED_SECTIONS:
+        _validate_v3_unrequested_section(envelopes[name], name)
+
+    quote = envelopes["quote"]
+    quote_usable = _v3_quote_is_usable(quote)
+    if (
+        quote["availabilityStatus"] in {"live", "delayed"}
+        and quote["qualityStatus"] == "validated"
+        and not quote_usable
+    ):
+        raise SmokeFailure("snapshot validated quote is unusable")
+    candles_usable = _v3_candles_are_usable(envelopes["candles"], cutoff)
+    holdings = envelopes["holdings"]
+    if (
+        holdings["availabilityStatus"] in {"live", "delayed"}
+        and holdings["qualityStatus"] == "validated"
+        and (
+            not isinstance(holdings["data"], list)
+            or not holdings["data"]
+        )
+    ):
+        raise SmokeFailure("snapshot validated holdings are unusable")
+    if not quote_usable and not candles_usable:
+        raise SmokeFailure("snapshot has no usable quote or completed candles")
+    expected_status = (
+        "live"
+        if all(
+            envelopes[name]["availabilityStatus"] in {"live", "delayed"}
+            and envelopes[name]["qualityStatus"] == "validated"
+            for name in _V3_REQUESTED_SECTIONS
+        ) and candles_usable
+        else "partial"
+    )
+    if status != expected_status:
+        raise SmokeFailure("snapshot status is inconsistent with its requested sections")
+
+
+def _validate_v3_section(
+    value: object,
+    name: str,
+    cutoff: datetime,
+) -> dict[str, Any]:
+    label = f"sections.{name}"
+    envelope = _record(value, label)
+    if set(envelope) != _V3_ENVELOPE_FIELDS:
+        raise SmokeFailure(f"{label} envelope fields are not exact")
+    if envelope.get("availabilityStatus") not in _V3_AVAILABILITY_STATUSES:
+        raise SmokeFailure(f"{label}.availabilityStatus is unsupported")
+    if envelope.get("qualityStatus") not in _V3_QUALITY_STATUSES:
+        raise SmokeFailure(f"{label}.qualityStatus is unsupported")
+    source = envelope.get("source")
+    if source is not None:
+        _non_empty_string(source, f"{label}.source")
+    method = _non_empty_string(envelope.get("methodVersion"), f"{label}.methodVersion")
+    del method
+    for field in ("errorCode", "reason"):
+        field_value = envelope.get(field)
+        if field_value is not None:
+            _non_empty_string(field_value, f"{label}.{field}")
+    warnings = _array(envelope.get("warnings"), f"{label}.warnings")
+    if any(not isinstance(item, str) or not item.strip() for item in warnings):
+        raise SmokeFailure(f"{label}.warnings must contain non-empty strings")
+    anomalies = _array(envelope.get("anomalies"), f"{label}.anomalies")
+    for index, anomaly in enumerate(anomalies):
+        record = _record(anomaly, f"{label}.anomalies[{index}]")
+        _non_empty_string(record.get("code"), f"{label}.anomalies[{index}].code")
+        _non_empty_string(record.get("reason"), f"{label}.anomalies[{index}].reason")
+        row_index = record.get("rowIndex")
+        if "rowIndex" in record and (
+            isinstance(row_index, bool)
+            or not isinstance(row_index, (int, float))
+            or not math.isfinite(float(row_index))
+            or not float(row_index).is_integer()
+            or row_index < 0
+        ):
+            raise SmokeFailure(f"{label}.anomalies[{index}].rowIndex is invalid")
+
+    time_fields = ("asOf", "availableAt", "receivedAt")
+    raw_times = {field: envelope.get(field) for field in time_fields}
+    times = {
+        field: _timestamp(value, f"{label}.{field}")
+        for field, value in raw_times.items()
+        if value is not None
+    }
+    if any(value > cutoff for value in times.values()):
+        raise SmokeFailure(f"{label} timestamp is after cutoff")
+    availability = envelope["availabilityStatus"]
+    if availability == "stale" and times:
+        raise SmokeFailure(f"{label} stale timestamps must be null")
+    if availability in {"live", "delayed"} and len(times) != len(time_fields):
+        raise SmokeFailure(f"{label} available timestamps must be complete")
+    for earlier, later in zip(time_fields, time_fields[1:]):
+        if earlier in times and later in times and times[earlier] > times[later]:
+            raise SmokeFailure(f"{label} timestamps are out of order")
+
+    quality = envelope["qualityStatus"]
+    data = envelope.get("data")
+    error_code = envelope.get("errorCode")
+    reason = envelope.get("reason")
+    state_invalid = False
+    if availability in {"live", "delayed"}:
+        state_invalid = (
+            quality == "invalid"
+            or source is None
+            or len(times) != len(time_fields)
+            or data is None
+            or error_code is not None
+            or reason is not None
+        )
+    elif availability == "stale":
+        state_invalid = (
+            quality != "invalid"
+            or source is not None
+            or bool(times)
+            or data is not None
+            or error_code is None
+            or reason is None
+        )
+    else:
+        state_invalid = (
+            quality != "invalid"
+            or (data is not None and data != [])
+            or error_code is None
+            or reason is None
+        )
+    if state_invalid:
+        raise SmokeFailure(f"{label} availability state is invalid")
+    return envelope
+
+
+def _validate_v3_unrequested_section(
+    envelope: dict[str, Any],
+    name: str,
+) -> None:
+    expected = {
+        "availabilityStatus": "unavailable",
+        "qualityStatus": "invalid",
+        "source": None,
+        "asOf": None,
+        "availableAt": None,
+        "receivedAt": None,
+        "data": None,
+        "errorCode": "NOT_REQUESTED",
+        "reason": "此切片未请求该数据",
+        "warnings": [],
+        "anomalies": [],
+        "methodVersion": "unavailable-v1",
+    }
+    if envelope != expected:
+        raise SmokeFailure(f"sections.{name} is not the fixed unrequested envelope")
+
+
+def _v3_quote_is_usable(envelope: dict[str, Any]) -> bool:
+    if (
+        envelope["availabilityStatus"] not in {"live", "delayed"}
+        or envelope["qualityStatus"] != "validated"
+        or not isinstance(envelope["data"], dict)
+    ):
+        return False
+    price = envelope["data"].get("price")
+    return (
+        not isinstance(price, bool)
+        and isinstance(price, (int, float))
+        and math.isfinite(float(price))
+        and float(price) > 0
+    )
+
+
+def _v3_candles_are_usable(
+    envelope: dict[str, Any],
+    cutoff: datetime,
+) -> bool:
+    if (
+        envelope["availabilityStatus"] not in {"live", "delayed"}
+        or envelope["qualityStatus"] != "validated"
+        or not isinstance(envelope["data"], dict)
+    ):
+        return False
+    candles = envelope["data"].get("candles")
+    if not isinstance(candles, list) or not candles:
+        return False
+    previous: datetime | None = None
+    for index, raw in enumerate(candles):
+        candle = _record(raw, f"sections.candles.data.candles[{index}]")
+        if candle.get("complete") is not True:
+            return False
+        closed_at = _timestamp(
+            candle.get("timestamp"),
+            f"sections.candles.data.candles[{index}].timestamp",
+        )
+        if closed_at > cutoff or (previous is not None and closed_at <= previous):
+            return False
+        values = [
+            _number(candle.get(field), f"sections.candles.data.candles[{index}].{field}")
+            for field in ("open", "high", "low", "close", "volume")
+        ]
+        open_price, high, low, close, volume = values
+        if (
+            min(open_price, high, low, close) <= 0
+            or volume < 0
+            or high < max(open_price, close)
+            or low > min(open_price, close)
+            or high < low
+        ):
+            return False
+        previous = closed_at
+    return True
+
+
 def _get_json(
     url: str,
     *,
@@ -424,6 +720,24 @@ def _get_json(
         return json.loads(response.read())
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: Request,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        del request, file_pointer, code, message, headers, new_url
+        raise SmokeFailure("redirect refused")
+
+
+def _strict_urlopen(request: Request, *, timeout: float) -> Any:
+    return build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
+
+
 def load_live_snapshot(
     base_url: str,
     *,
@@ -431,16 +745,18 @@ def load_live_snapshot(
     interval: str,
     count: int,
     authorization_token: str | None = None,
-    opener: Callable[..., Any] = urlopen,
+    contract_version: str = "v2",
+    opener: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     if not 1 <= count <= 1000:
         raise SmokeFailure("count must be between 1 and 1000")
+    open_request = opener or _strict_urlopen
     root = base_url.rstrip("/")
     health = _record(
         _get_json(
             f"{root}/health",
             authorization_token=authorization_token,
-            opener=opener,
+            opener=open_request,
         ),
         "health",
     )
@@ -466,11 +782,17 @@ def load_live_snapshot(
             "count": count,
         }
     )
+    route = {
+        "v2": "/stock-snapshot",
+        "v3": "/v3/stock-snapshot",
+    }.get(contract_version)
+    if route is None:
+        raise SmokeFailure("contract version must be v2 or v3")
     return _record(
         _get_json(
-            f"{root}/stock-snapshot?{query}",
+            f"{root}{route}?{query}",
             authorization_token=authorization_token,
-            opener=opener,
+            opener=open_request,
         ),
         "snapshot",
     )
@@ -488,17 +810,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 interval=args.interval,
                 count=args.count,
                 authorization_token=os.environ.get("MOOMOO_GATEWAY_TOKEN"),
+                contract_version=args.contract_version,
             )
         )
-        validate_snapshot(
-            payload,
-            expected_symbol=args.symbol,
-            expected_interval=args.interval,
-        )
-        print(
-            f"PASS snapshot={args.symbol.strip().upper()} "
-            "candles>0 valid_participation>0 future_rows=0"
-        )
+        if args.contract_version == "v2":
+            validate_snapshot_v2(
+                payload,
+                expected_symbol=args.symbol,
+                expected_interval=args.interval,
+            )
+            print(
+                f"PASS snapshot={args.symbol.strip().upper()} "
+                "candles>0 valid_participation>0 future_rows=0"
+            )
+        else:
+            validate_snapshot_v3(
+                payload,
+                expected_symbol=args.symbol,
+                expected_interval=args.interval,
+                expected_count=args.count,
+            )
+            print(
+                f"PASS snapshot={args.symbol.strip().upper()} "
+                "contract=v3 usable_price>0"
+            )
         return 0
     except (
         OSError,
