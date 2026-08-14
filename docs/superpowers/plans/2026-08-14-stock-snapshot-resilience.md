@@ -422,7 +422,7 @@ executor_factory: Callable[[int], Executor] = ThreadPoolExecutor
 
 stock_snapshot_v3 validates identity first, checks health once, records requestedAt, and submits quote, candles, capital_flow, and institutional_holdings as four separate operations. Each operation gets at most five seconds from its own submission and the entire collector gets at most twelve seconds from requestedAt; the smaller remaining limit governs every wait. Each completed future is validated and normalized into its own SnapshotSection. A failed optional future never enters _snapshot_error and its exception text is never serialized. Use the injected monotonic clock for elapsed deadlines. In a finally block cancel unfinished futures and call executor.shutdown(wait=False, cancel_futures=True).
 
-Derive technical indicators only from a validated, non-empty candle section. If candles are unavailable or empty, technical is unavailable with `CANDLES_UNAVAILABLE`. Convert existing capital-flow output to the currentSessionFlow section without claiming institution identity; if it cannot be validated, use `CURRENT_SESSION_FLOW_UNAVAILABLE`. Pass holdings batch `received_at` into the row-aware Task-2 normalizer. Create the four unrequested section envelopes with `NOT_REQUESTED`, then pass the validated request count into the pure assembler from Task 2 for every response.
+Derive technical indicators only from a validated, non-empty candle section. If candles are unavailable or empty, technical is unavailable with `CANDLES_UNAVAILABLE`. Convert the validated normalized capital-flow rows directly to currentSessionFlow with `institutionalIdentity: false` and `methodVersion: "provider-capital-flow-normalized-v1"`; never pass them through candle-aligned v2 participation logic, and keep this section usable when candles fail. If flow cannot be validated, use `CURRENT_SESSION_FLOW_UNAVAILABLE`. Pass holdings batch `received_at` into the row-aware Task-2 normalizer. Create the four unrequested section envelopes with `NOT_REQUESTED`, then pass the validated request count into the pure assembler from Task 2 for every response.
 
 A structurally valid v3 snapshot with `status: "unavailable"` is still HTTP 200 and carries no top-level `error`; its section errorCodes explain the missing price inputs and let the mobile decoder produce `GatewaySnapshotUnavailableError`. Only invalid request/auth/path/method and other request-boundary failures are non-2xx. Add an HTTP integration RED test proving a no-price v3 payload is HTTP 200/status unavailable/no top-level error, while an invalid count remains HTTP 400.
 
@@ -520,12 +520,25 @@ export interface StockSnapshotSections {
     indicators: LiveTechnicalIndicators;
     magicNine: MagicNineSnapshot;
   }>;
-  currentSessionFlow: SnapshotSection<ParticipationBar[]>;
+  currentSessionFlow: SnapshotSection<NormalizedCapitalFlowPoint[]>;
   holdings: SnapshotSection<DelayedInstitutionalHolding[]>;
   fundamentals: SnapshotSection<unknown>;
   marketContext: SnapshotSection<unknown>;
   news: SnapshotSection<unknown>;
   forecastDecision: SnapshotSection<unknown>;
+}
+
+export interface NormalizedCapitalFlowPoint {
+  timestamp: string;
+  availableAt: string;
+  session: string;
+  totalNetFlow: number;
+  extraLargeOrderNetFlow: number;
+  largeOrderNetFlow: number;
+  mediumOrderNetFlow: number;
+  smallOrderNetFlow: number;
+  largeOrderProxyNetFlow: number;
+  institutionalIdentity: false;
 }
 ~~~
 
@@ -541,6 +554,7 @@ The fixture must include all section keys and complete envelopes. Add tests for:
 
 - valid v3 with holdings 345.937 and anomalous quality;
 - quote-only and candles-only partial snapshots;
+- direct normalized currentSessionFlow rows remain identical across day/5m fixtures and reject `institutionalIdentity: true`, future timestamps, or a wrong methodVersion;
 - one invalid optional section without losing price;
 - v2 body delivered on the v3 decoder;
 - v3 body delivered on the v2 decoder;
@@ -592,6 +606,8 @@ Decode top-level symbol/interval/count/decisionCutoff/status/requestedSections b
 
 Holdings above 100 are accepted only as non-negative finite values in a section whose quality is anomalous and whose warnings contain the specified provider warning. Negative/non-finite rows fail their section contract.
 
+Decode currentSessionFlow only as the gateway's direct normalized capital-flow rows with section `methodVersion: "provider-capital-flow-normalized-v1"`. Validate every finite number, ordered/future-safe timestamp, non-empty session, and literal `institutionalIdentity: false`. Do not convert these rows into candle-aligned ParticipationBars: chart interval and current-session flow are independent. Keep the flattened legacy `participationBars` field as honest unavailable placeholders for v3 until the dedicated session-flow UI slice consumes `sections.currentSessionFlow`.
+
 Add `GatewayClientUpdateRequiredError extends GatewayValidationError` and throw it before ordinary validation when an object carries a syntactically valid unknown major schema. Add `GatewaySnapshotUnavailableError extends GatewayValidationError` with a `kind: GatewayRequestErrorKind`; the v3 decoder derives that kind from the fixed quote/candle section errorCodes through the existing `kindByGatewayCode` table and uses `unspecified` when neither maps. In `toSnapshotRequestError`, check update-required first and return `GatewayRequestError("client-update-required", ...)`, then check snapshot-unavailable and return `GatewayRequestError(error.kind, ...)`, before the general GatewayValidationError branch. Do not fall back in either case.
 
 - [ ] **Step 6: Implement strict fallback**
@@ -601,7 +617,7 @@ Request /v3/stock-snapshot first. Catch only the typed HTTP status error with st
 - quote: live/validated with the decoded v2 quote;
 - candles: live/validated when non-empty, otherwise unavailable/invalid;
 - technical: live/validated when the decoded technical object is present; nested warm-up unavailability remains inside its existing values;
-- currentSessionFlow: live/validated when any participation row is live, otherwise unavailable/invalid;
+- currentSessionFlow: unavailable/invalid with `LEGACY_V2_CANDLE_ALIGNED_ONLY`; keep the already-decoded v2 values only in the flattened legacy participationBars field, because they are candle-aligned and are not the v3 direct-flow contract;
 - holdings: delayed/validated when rows exist, otherwise unavailable/invalid;
 - fundamentals, marketContext, news, forecastDecision: unavailable/invalid with `NOT_REQUESTED`;
 - requestedSections is the same fixed five-name list as v3.
