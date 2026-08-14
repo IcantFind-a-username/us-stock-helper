@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [feature/iphone-demo]
+  pull_request:
+
+jobs:
+  python-services:
+    name: services (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install services
+        run: |
+          python -m pip install -q pytest
+          for d in services/*/; do
+            python -m pip install -q -e "$d"
+          done
+      - name: Run service tests
+        # deploy/tests 与 scripts/tests 面向 macOS（launchd/fchmod），在 Linux 上有
+        # 环境性失败，故不在此处作为门禁；需在 macOS 上人工或另行验证。
+        run: |
+          fail=0
+          for d in services/*/; do
+            echo "=== ${d%/} ==="
+            python -m pytest "${d%/}/tests" -q || fail=1
+          done
+          exit $fail
+
+  mobile:
+    name: mobile (typecheck + jest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
