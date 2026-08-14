@@ -26,7 +26,8 @@ export function StockHeader({
   dataStatus,
   onBack,
 }: StockHeaderProps) {
-  const positive = stock.quote.changePercent >= 0;
+  const quote = stock.quote;
+  const positive = quote ? quote.changePercent >= 0 : null;
   const resolvedStatus =
     dataStatus ??
     (stock.demoData
@@ -71,21 +72,33 @@ export function StockHeader({
       </View>
       <View style={styles.quoteRow}>
         <View>
-          <Text style={styles.price}>${stock.quote.price.toFixed(2)}</Text>
+          <Text style={styles.price}>
+            {quote ? `$${quote.price.toFixed(2)}` : "报价不可用"}
+          </Text>
           <Text
             style={[
               styles.change,
-              { color: positive ? colors.green : colors.red },
+              {
+                color:
+                  positive === null
+                    ? colors.muted
+                    : positive
+                      ? colors.green
+                      : colors.red,
+              },
             ]}>
-            {positive ? "+" : ""}
-            {stock.quote.changePercent.toFixed(2)}%
+            {quote
+              ? `${positive ? "+" : ""}${quote.changePercent.toFixed(2)}%`
+              : "仅显示已完成 K 线"}
           </Text>
         </View>
         <View style={styles.meta}>
           <Text style={styles.interval}>
             {intervalLabel(stock.interval)}
           </Text>
-          <Text style={styles.asOf}>截止 {formatUtc(stock.quote.asOf)}</Text>
+          <Text style={styles.asOf}>
+            截止 {formatUtc(quote?.asOf ?? stock.source.asOf)}
+          </Text>
         </View>
       </View>
     </View>

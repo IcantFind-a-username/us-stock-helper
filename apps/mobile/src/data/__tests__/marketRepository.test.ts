@@ -7,6 +7,8 @@ import {
   MarketDataError,
   type MarketDataErrorCategory,
 } from "../marketRepository";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { stockSnapshotV3Fixture } from "./stockSnapshotV3.fixture";
 
 function jsonResponse(value: unknown, status = 200) {
   return {
@@ -78,6 +80,24 @@ async function requestWatchlist(
   }
 }
 
+async function requestStockSnapshot(
+  reply: () => Promise<Response>,
+): Promise<unknown> {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = jest.fn(reply) as unknown as typeof fetch;
+  try {
+    const repository = createGatewayMarketRepository({
+      apiUrl: "http://127.0.0.1:8765",
+    });
+    return await repository.getStockSnapshot(
+      { symbol: "NVDA", interval: "5m", count: 200 },
+      { forceRefresh: true },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 it.each([
   // A 401 with no code names the device token, not the brokerage session.
   ["HTTP 401", async () => jsonResponse({}, 401), "auth-required"],
@@ -142,6 +162,23 @@ it("returns only a strict live watchlist from the production repository", async 
   });
 });
 
+it("preserves an unknown snapshot major as client-update-required", async () => {
+  const payload = stockSnapshotV3Fixture();
+  payload.schemaVersion = "4";
+
+  await expect(
+    requestStockSnapshot(async () => jsonResponse(payload)),
+  ).rejects.toMatchObject({
+    name: "MarketDataError",
+    category: "client-update-required",
+  });
+  expect(describeMarketError("client-update-required")).toEqual({
+    label: "需更新",
+    title: "App 与行情网关版本不兼容",
+    body: "行情网关返回了本版 App 不认识的新主版本。App 不会猜测字段含义，也不会退回旧接口或演示数据。请同时更新 App 和行情网关后重试。",
+  });
+});
+
 /**
  * Retrying is a claim that waiting will help. Making it about a missing SDK or
  * a revoked pairing keeps the screen looking busy while it is actually waiting
@@ -160,6 +197,7 @@ it.each<[MarketDataErrorCategory, boolean]>([
   ["login-required", false],
   ["permission", false],
   ["contract", false],
+  ["client-update-required", false],
   ["validation", false],
   ["unspecified", false],
 ])("retries %s: %s", (category, retryable) => {

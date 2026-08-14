@@ -6,13 +6,17 @@ import {
   createMarketGatewayClient,
   decodeCandleEnvelope,
   decodeStockSnapshotEnvelope,
+  decodeStockSnapshotV3Envelope,
   decodeWatchlistEnvelope,
+  GatewayClientUpdateRequiredError,
   GatewayRequestError,
+  GatewaySnapshotUnavailableError,
 } from "../marketGateway";
 import {
   stockSnapshotFixture,
   stockSnapshotWithSeriesFixture,
 } from "./stockSnapshot.fixture";
+import { stockSnapshotV3Fixture } from "./stockSnapshotV3.fixture";
 
 const now = new Date("2026-07-25T16:00:00.000Z");
 const fallback: WatchlistQuote[] = [
@@ -404,9 +408,13 @@ describe("schema-v2 stock snapshot validation", () => {
   it("maps an outdated gateway contract to its own error kind", async () => {
     const value = stockSnapshotFixture();
     delete (value.completedCandles[0] as { receivedAt?: string }).receivedAt;
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({}, 404))
+      .mockResolvedValueOnce(jsonResponse(value));
     const client = createMarketGatewayClient({
       baseUrl: "http://127.0.0.1:8765",
-      fetchImpl: jest.fn(async () => jsonResponse(value)) as unknown as typeof fetch,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => now,
     });
 
@@ -551,6 +559,221 @@ describe("schema-v2 stock snapshot validation", () => {
       7,
     ]);
     expect(chart.institutionalHoldings).toHaveLength(1);
+  });
+});
+
+describe("schema-v3 stock snapshot validation", () => {
+  function makeSectionUnavailable(
+    payload: ReturnType<typeof stockSnapshotV3Fixture>,
+    name: "quote" | "candles" | "technical" | "currentSessionFlow" | "holdings",
+    errorCode: string,
+  ) {
+    Object.assign(payload.sections[name], {
+      availabilityStatus: "unavailable",
+      qualityStatus: "invalid",
+      source: null,
+      asOf: null,
+      availableAt: null,
+      receivedAt: null,
+      data: null,
+      errorCode,
+      reason: "此数据切片不可用",
+      warnings: [],
+      anomalies: [],
+      methodVersion: "unavailable-v1",
+    });
+  }
+
+  it("decodes anomalous aggregate holdings without pretending they are unique ownership", () => {
+    const snapshot = decodeStockSnapshotV3Envelope(stockSnapshotV3Fixture(), {
+      now,
+    });
+
+    expect(snapshot).toMatchObject({
+      snapshotStatus: "partial",
+      compatibility: "v3",
+      requestedCount: 200,
+      source: { status: "partial" },
+    });
+    expect(snapshot.institutionalHoldings[0]?.holdingPercent).toBe(345.937);
+    expect(snapshot.sections.holdings.qualityStatus).toBe("anomalous");
+    expect(snapshot.warnings).toContain(
+      "供应商返回的聚合持仓比例超过 100%，不能按唯一股份占比直接解释",
+    );
+  });
+
+  it("records a fully validated v3 response as live", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.status = "live";
+    payload.sections.holdings.qualityStatus = "validated";
+    payload.sections.holdings.data[0]!.holdingPercent = 34.5937;
+    payload.sections.holdings.warnings = [];
+    payload.sections.holdings.anomalies = [];
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(snapshot.snapshotStatus).toBe("live");
+    expect(snapshot.source.status).toBe("live");
+    expect(snapshot.compatibility).toBe("v3");
+  });
+
+  it("keeps a quote-only partial snapshot honest", () => {
+    const payload = stockSnapshotV3Fixture();
+    makeSectionUnavailable(payload, "candles", "OPEND_OFFLINE");
+    makeSectionUnavailable(payload, "technical", "CANDLES_UNAVAILABLE");
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(snapshot.snapshotStatus).toBe("partial");
+    expect(snapshot.quote?.price).toBe(142.25);
+    expect(snapshot.candles).toEqual([]);
+    expect(snapshot.priceAdjustment).toBeNull();
+  });
+
+  it("keeps a candles-only partial snapshot honest", () => {
+    const payload = stockSnapshotV3Fixture();
+    makeSectionUnavailable(payload, "quote", "PROVIDER_ERROR");
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(snapshot.snapshotStatus).toBe("partial");
+    expect(snapshot.quote).toBeNull();
+    expect(snapshot.candles).toHaveLength(2);
+    expect(snapshot.priceAdjustment).toBe("forward-adjusted");
+  });
+
+  it("keeps direct current-session flow independent of the requested chart interval", () => {
+    const fiveMinute = stockSnapshotV3Fixture();
+    const daily = stockSnapshotV3Fixture();
+    daily.interval = "day";
+
+    const fiveMinuteSnapshot = decodeStockSnapshotV3Envelope(fiveMinute, { now });
+    const dailySnapshot = decodeStockSnapshotV3Envelope(daily, { now });
+
+    expect(dailySnapshot.sections.currentSessionFlow.data).toEqual(
+      fiveMinuteSnapshot.sections.currentSessionFlow.data,
+    );
+    expect(fiveMinuteSnapshot.participationBars).toHaveLength(2);
+    expect(
+      fiveMinuteSnapshot.participationBars.every(
+        (bar) => bar.qualityStatus === "unavailable" && bar.netFlow === null,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["institutional identity", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      (payload.sections.currentSessionFlow.data[0] as { institutionalIdentity: boolean }).institutionalIdentity = true;
+    }],
+    ["a future timestamp", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.currentSessionFlow.data[0]!.timestamp = "2026-07-25T16:00:00.000Z";
+    }],
+    ["out-of-order timestamps", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.currentSessionFlow.data[1]!.timestamp = "2026-07-25T15:45:00.000Z";
+    }],
+    ["the wrong method version", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.currentSessionFlow.methodVersion = "candle-aligned-flow-v1";
+    }],
+    ["a non-finite amount", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.currentSessionFlow.data[0]!.totalNetFlow = Number.NaN;
+    }],
+  ])("rejects direct current-session flow carrying %s", (_label, mutate) => {
+    const payload = stockSnapshotV3Fixture();
+    mutate(payload);
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow();
+  });
+
+  it("keeps usable price when one optional requested section is unavailable", () => {
+    const payload = stockSnapshotV3Fixture();
+    makeSectionUnavailable(payload, "holdings", "MALFORMED_PROVIDER_DATA");
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(snapshot.quote?.price).toBe(142.25);
+    expect(snapshot.candles).toHaveLength(2);
+    expect(snapshot.institutionalHoldings).toEqual([]);
+    expect(snapshot.sections.holdings.errorCode).toBe("MALFORMED_PROVIDER_DATA");
+  });
+
+  it.each([
+    ["a negative aggregate", -1],
+    ["a non-finite aggregate", Number.POSITIVE_INFINITY],
+  ])("rejects holdings with %s", (_label, holdingPercent) => {
+    const payload = stockSnapshotV3Fixture();
+    payload.sections.holdings.data[0]!.holdingPercent = holdingPercent;
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow();
+  });
+
+  it("keeps v2 and v3 decoders version-specific", () => {
+    expect(() =>
+      decodeStockSnapshotV3Envelope(stockSnapshotFixture(), { now }),
+    ).toThrow(/schemaVersion/i);
+    expect(() =>
+      decodeStockSnapshotEnvelope(stockSnapshotV3Fixture(), { now }),
+    ).toThrow(/schemaVersion/i);
+  });
+
+  it("distinguishes an unknown major from malformed provider data", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.schemaVersion = "4";
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow(
+      GatewayClientUpdateRequiredError,
+    );
+  });
+
+  it("throws a typed unavailable error after validating all section envelopes", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.status = "unavailable";
+    makeSectionUnavailable(payload, "quote", "LOGIN_REQUIRED");
+    makeSectionUnavailable(payload, "candles", "LOGIN_REQUIRED");
+    makeSectionUnavailable(payload, "technical", "CANDLES_UNAVAILABLE");
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow(
+      GatewaySnapshotUnavailableError,
+    );
+    try {
+      decodeStockSnapshotV3Envelope(payload, { now });
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "GatewaySnapshotUnavailableError",
+        kind: "login-required",
+      });
+    }
+  });
+
+  it("rejects a validated empty candle section as an unusable price source", () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.status = "unavailable";
+    makeSectionUnavailable(payload, "quote", "PROVIDER_ERROR");
+    makeSectionUnavailable(payload, "technical", "CANDLES_UNAVAILABLE");
+    payload.sections.candles.data.candles = [];
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow(
+      GatewaySnapshotUnavailableError,
+    );
+  });
+
+  it.each([
+    ["a missing envelope field", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      delete (payload.sections.news as { warnings?: string[] }).warnings;
+    }],
+    ["a future envelope timestamp", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.holdings.receivedAt = "2026-07-25T16:00:00.000Z";
+    }],
+    ["quality that contradicts unavailable data", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.sections.news.qualityStatus = "validated";
+    }],
+    ["duplicate requested sections", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.requestedSections[4] = "quote";
+    }],
+  ])("rejects %s", (_label, mutate) => {
+    const payload = stockSnapshotV3Fixture();
+    mutate(payload);
+
+    expect(() => decodeStockSnapshotV3Envelope(payload, { now })).toThrow();
   });
 });
 
@@ -769,9 +992,11 @@ describe("market gateway fallback", () => {
     });
   });
 
-  it("fetches a live stock snapshot and never substitutes a fixture", async () => {
+  it("requests schema v3 first and never substitutes a fixture", async () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.interval = "day";
     const fetchImpl = jest.fn(async () =>
-      jsonResponse(stockSnapshotFixture()),
+      jsonResponse(payload),
     ) as unknown as typeof fetch;
     const client = createMarketGatewayClient({
       baseUrl: "http://127.0.0.1:8765",
@@ -779,13 +1004,156 @@ describe("market gateway fallback", () => {
       now: () => now,
     });
 
-    const result = await client.getStockSnapshot("nvda", "5m", 200);
+    const result = await client.getStockSnapshot("nvda", "day", 200);
+    const requestedPaths = (fetchImpl as unknown as jest.MockedFunction<typeof fetch>)
+      .mock.calls.map(([request]) => {
+        const url = new URL(String(request));
+        return `${url.pathname}${url.search}`;
+      });
 
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "http://127.0.0.1:8765/stock-snapshot?symbol=NVDA&interval=5m&count=200",
-      expect.objectContaining({ method: "GET" }),
-    );
-    expect(result).toMatchObject({ demoData: false, source: { source: "moomoo" } });
+    expect(requestedPaths).toEqual([
+      "/v3/stock-snapshot?symbol=NVDA&interval=day&count=200",
+    ]);
+    expect(result).toMatchObject({
+      demoData: false,
+      compatibility: "v3",
+      requestedCount: 200,
+      source: { source: "moomoo" },
+    });
+  });
+
+  it.each([404, 426])(
+    "falls back to schema v2 only when the v3 route returns HTTP %s",
+    async (status) => {
+      const legacyPayload = stockSnapshotFixture();
+      legacyPayload.interval = "day";
+      const fetchImpl = jest
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse({}, status))
+        .mockResolvedValueOnce(jsonResponse(legacyPayload));
+      const client = createMarketGatewayClient({
+        baseUrl: "http://127.0.0.1:8765",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => now,
+      });
+
+      const snapshot = await client.getStockSnapshot("NVDA", "day", 200);
+      const requestedPaths = fetchImpl.mock.calls.map(([request]) => {
+        const url = new URL(String(request));
+        return `${url.pathname}${url.search}`;
+      });
+
+      expect(requestedPaths).toEqual([
+        "/v3/stock-snapshot?symbol=NVDA&interval=day&count=200",
+        "/stock-snapshot?symbol=NVDA&interval=day&count=200",
+      ]);
+      expect(snapshot).toMatchObject({
+        snapshotStatus: "live",
+        compatibility: "v2-fallback",
+        requestedCount: 200,
+        source: { status: "live" },
+        sections: {
+          currentSessionFlow: {
+            availabilityStatus: "unavailable",
+            qualityStatus: "invalid",
+            data: null,
+            errorCode: "LEGACY_V2_CANDLE_ALIGNED_ONLY",
+          },
+        },
+      });
+      expect(snapshot.participationBars[0]?.mainShare).toBe(0.6);
+    },
+  );
+
+  it.each([
+    ["HTTP 401", () => jsonResponse({}, 401), "auth-required"],
+    ["HTTP 403", () => jsonResponse({}, 403), "permission"],
+    [
+      "HTTP 500 provider error",
+      () => jsonResponse({ error: { code: "PROVIDER_ERROR" } }, 500),
+      "provider-error",
+    ],
+  ])("does not fall back after %s", async (_label, reply, kind) => {
+    const fetchImpl = jest.fn(async () => reply()) as unknown as jest.MockedFunction<
+      typeof fetch
+    >;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(
+      client.getStockSnapshot("NVDA", "5m", 200),
+    ).rejects.toMatchObject({ kind });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back after malformed schema-v3 data", async () => {
+    const payload = stockSnapshotV3Fixture();
+    (payload.sections.quote.warnings as unknown[]) = [42];
+    const fetchImpl = jest.fn(async () => jsonResponse(payload)) as unknown as jest.MockedFunction<
+      typeof fetch
+    >;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(
+      client.getStockSnapshot("NVDA", "5m", 200),
+    ).rejects.toMatchObject({ kind: "validation" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps an unknown major to client-update-required without fallback", async () => {
+    const payload = stockSnapshotV3Fixture();
+    payload.schemaVersion = "4";
+    const fetchImpl = jest.fn(async () => jsonResponse(payload)) as unknown as jest.MockedFunction<
+      typeof fetch
+    >;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(
+      client.getStockSnapshot("NVDA", "5m", 200),
+    ).rejects.toMatchObject({
+      name: "GatewayRequestError",
+      kind: "client-update-required",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["symbol", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.symbol = "TSLA";
+    }],
+    ["interval", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.interval = "day";
+    }],
+    ["count", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
+      payload.count = 199;
+    }],
+  ])("rejects a %s echo mismatch without fallback", async (_label, mutate) => {
+    const payload = stockSnapshotV3Fixture();
+    mutate(payload);
+    const fetchImpl = jest.fn(async () => jsonResponse(payload)) as unknown as jest.MockedFunction<
+      typeof fetch
+    >;
+    const client = createMarketGatewayClient({
+      baseUrl: "http://127.0.0.1:8765",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(
+      client.getStockSnapshot("NVDA", "5m", 200),
+    ).rejects.toMatchObject({ kind: "validation" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("maps a mid-operation OPEND_OFFLINE snapshot response to retryable offline", async () => {
@@ -936,6 +1304,7 @@ describe("market gateway fallback", () => {
         name: "GatewayRequestError",
         kind: "timeout",
       });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     } finally {
       jest.useRealTimers();
     }

@@ -427,7 +427,13 @@ export interface StockSnapshot {
   citations: Citation[];
 }
 
-export type DataStatus = "live" | "delayed" | "stale" | "unavailable" | "demo";
+export type DataStatus =
+  | "live"
+  | "partial"
+  | "delayed"
+  | "stale"
+  | "unavailable"
+  | "demo";
 
 export type SnapshotSource = {
   source: "moomoo" | "fixture";
@@ -443,7 +449,7 @@ export interface ParticipationBar {
   mainActivity: number | null;
   retailActivity: number | null;
   netFlow: number | null;
-  coverage: number;
+  coverage: number | null;
   source: string;
   asOf: string;
   availableAt: string;
@@ -587,7 +593,9 @@ export interface DelayedInstitutionalHolding {
   holdingPercent: number;
   holdingPercentChange: number;
   asOf: string;
-  methodVersion: "reported-holdings-v1";
+  methodVersion:
+    | "reported-holdings-v1"
+    | "reported-holdings-v2-anomaly-aware";
   qualityStatus: "delayed";
 }
 
@@ -599,12 +607,90 @@ export interface SnapshotProvenance {
   qualityStatus: DataStatus;
 }
 
+export type SnapshotAvailability =
+  | "live"
+  | "delayed"
+  | "stale"
+  | "unavailable";
+
+export type SnapshotQuality =
+  | "validated"
+  | "partial"
+  | "anomalous"
+  | "invalid";
+
+export type SnapshotCompatibility = "v3" | "v2-fallback";
+
+export interface SnapshotSection<T> {
+  availabilityStatus: SnapshotAvailability;
+  qualityStatus: SnapshotQuality;
+  source: string | null;
+  asOf: string | null;
+  availableAt: string | null;
+  receivedAt: string | null;
+  data: T | null;
+  errorCode: string | null;
+  reason: string | null;
+  warnings: string[];
+  anomalies: { code: string; reason: string; rowIndex?: number }[];
+  methodVersion: string;
+}
+
+export type SnapshotSectionName =
+  | "quote"
+  | "candles"
+  | "technical"
+  | "currentSessionFlow"
+  | "holdings"
+  | "fundamentals"
+  | "marketContext"
+  | "news"
+  | "forecastDecision";
+
+export interface NormalizedCapitalFlowPoint {
+  timestamp: string;
+  availableAt: string;
+  session: string;
+  totalNetFlow: number;
+  extraLargeOrderNetFlow: number;
+  largeOrderNetFlow: number;
+  mediumOrderNetFlow: number;
+  smallOrderNetFlow: number;
+  largeOrderProxyNetFlow: number;
+  institutionalIdentity: false;
+}
+
+export interface LiveTechnicalIndicators {
+  ma5: LiveIndicatorValue;
+  rsi: LiveIndicatorValue;
+  macd: LiveMacdIndicator;
+  volatility: LiveVolatilityIndicator;
+}
+
+export interface StockSnapshotSections {
+  quote: SnapshotSection<LiveQuote>;
+  candles: SnapshotSection<{
+    candles: Candle[];
+    priceAdjustment: PriceAdjustment;
+  }>;
+  technical: SnapshotSection<{
+    indicators: LiveTechnicalIndicators;
+    magicNine: MagicNineSnapshot;
+  }>;
+  currentSessionFlow: SnapshotSection<NormalizedCapitalFlowPoint[]>;
+  holdings: SnapshotSection<DelayedInstitutionalHolding[]>;
+  fundamentals: SnapshotSection<unknown>;
+  marketContext: SnapshotSection<unknown>;
+  news: SnapshotSection<unknown>;
+  forecastDecision: SnapshotSection<unknown>;
+}
+
 export interface ChartSnapshot {
   demoData: boolean;
   source: SnapshotSource;
   symbol: string;
   interval: string;
-  quote: ChartQuote;
+  quote: ChartQuote | null;
   candles: Candle[];
   participationBars: ParticipationBar[];
   indicators: {
@@ -619,16 +705,19 @@ export interface ChartSnapshot {
 
 export interface LiveStockSnapshot extends ChartSnapshot {
   demoData: false;
-  source: SnapshotSource & { source: "moomoo"; status: "live" };
-  decisionCutoff: string;
-  priceAdjustment: PriceAdjustment;
-  quote: LiveQuote;
-  indicators: {
-    ma5: LiveIndicatorValue;
-    rsi: LiveIndicatorValue;
-    macd: LiveMacdIndicator;
-    volatility: LiveVolatilityIndicator;
+  source: SnapshotSource & {
+    source: "moomoo";
+    status: "live" | "partial";
   };
+  snapshotStatus: "live" | "partial";
+  compatibility: SnapshotCompatibility;
+  requestedCount: number;
+  requestedSections: SnapshotSectionName[];
+  sections: StockSnapshotSections;
+  decisionCutoff: string;
+  priceAdjustment: PriceAdjustment | null;
+  quote: LiveQuote | null;
+  indicators: LiveTechnicalIndicators;
   magicNine: MagicNineSnapshot;
   institutionalHoldings: DelayedInstitutionalHolding[];
   provenance: SnapshotProvenance[];
@@ -638,6 +727,7 @@ export interface LiveStockSnapshot extends ChartSnapshot {
 export interface DemoChartSnapshot extends ChartSnapshot {
   demoData: true;
   source: SnapshotSource & { source: "fixture"; status: "demo" };
+  quote: ChartQuote;
   institutionalHoldings: DelayedInstitutionalHolding[];
 }
 

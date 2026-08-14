@@ -21,6 +21,7 @@ import {
 } from "@/data/marketGateway";
 import { decisionFixture } from "@/data/__tests__/decision.fixture";
 import { stockSnapshotFixture } from "@/data/__tests__/stockSnapshot.fixture";
+import { stockSnapshotV3Fixture } from "@/data/__tests__/stockSnapshotV3.fixture";
 import type { LiveStockSnapshot, WatchlistQuote } from "@/domain/models";
 import {
   MarketDataProvider,
@@ -70,6 +71,11 @@ function SnapshotProbe({ symbol }: { symbol: string }) {
     <View>
       <Text testID={`${symbol}-status`}>{result.status}</Text>
       <Text testID={`${symbol}-data-symbol`}>{result.data?.symbol ?? "none"}</Text>
+      <Text testID={`${symbol}-snapshot-status`}>
+        {result.data && "snapshotStatus" in result.data
+          ? result.data.snapshotStatus
+          : "none"}
+      </Text>
       <Text testID={`${symbol}-verified`}>{result.lastVerifiedAt ?? "none"}</Text>
       <Text testID={`${symbol}-cutoff`}>
         {"decisionCutoff" in (result.data ?? {})
@@ -361,7 +367,7 @@ it("recovers automatically after a typed mid-operation OpenD offline response", 
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => stockSnapshotFixture(),
+        json: async () => stockSnapshotV3Fixture(),
       } as Response);
     const client = createMarketGatewayClient({
       baseUrl: "http://127.0.0.1:8765",
@@ -601,6 +607,88 @@ it("reports unavailable when the first request fails", async () => {
   );
   expect(view.getByTestId("NVDA-data-symbol").props.children).toBe("none");
   expect(view.getByTestId("NVDA-error").props.children).toBe("permission");
+});
+
+it("keeps a usable partial v3 snapshot visible as verified live data", async () => {
+  const fetchImpl = jest.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => stockSnapshotV3Fixture(),
+  }) as Response) as unknown as typeof fetch;
+  const client = createMarketGatewayClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl,
+    now: () => now,
+  });
+  const repository = repositoryWith((query, signal) =>
+    client.getStockSnapshot(query.symbol, query.interval, query.count, signal),
+  );
+  const view = await render(
+    <MarketDataProvider repository={repository} retryDelaysMs={[]}>
+      <SnapshotProbe symbol="NVDA" />
+    </MarketDataProvider>,
+  );
+
+  await waitFor(() =>
+    expect(view.getByTestId("NVDA-status").props.children).toBe("live"),
+  );
+  expect(view.getByTestId("NVDA-snapshot-status").props.children).toBe(
+    "partial",
+  );
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+});
+
+it("shows a validated top-level unavailable v3 response as a full-page error", async () => {
+  const payload = stockSnapshotV3Fixture();
+  payload.status = "unavailable";
+  for (const section of [
+    payload.sections.quote,
+    payload.sections.candles,
+    payload.sections.technical,
+  ]) {
+    Object.assign(section, {
+      availabilityStatus: "unavailable",
+      qualityStatus: "invalid",
+      source: null,
+      asOf: null,
+      availableAt: null,
+      receivedAt: null,
+      data: null,
+      errorCode:
+        section === payload.sections.technical
+          ? "CANDLES_UNAVAILABLE"
+          : "LOGIN_REQUIRED",
+      reason: "OpenD 未登录",
+      warnings: [],
+      anomalies: [],
+      methodVersion: "unavailable-v1",
+    });
+  }
+  const fetchImpl = jest.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => payload,
+  }) as Response) as unknown as typeof fetch;
+  const client = createMarketGatewayClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl,
+    now: () => now,
+  });
+  const repository = repositoryWith((query, signal) =>
+    client.getStockSnapshot(query.symbol, query.interval, query.count, signal),
+  );
+  const view = await render(
+    <MarketDataProvider repository={repository} retryDelaysMs={[]}>
+      <SnapshotProbe symbol="NVDA" />
+    </MarketDataProvider>,
+  );
+
+  await waitFor(() =>
+    expect(view.getByTestId("NVDA-status").props.children).toBe("unavailable"),
+  );
+  expect(view.getByTestId("NVDA-data-symbol").props.children).toBe("none");
+  expect(view.getByTestId("NVDA-error").props.children).toBe("login-required");
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
 });
 
 it("ignores an old response and aborts its subscription after the symbol changes", async () => {

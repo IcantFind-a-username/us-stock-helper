@@ -43,6 +43,11 @@ const COPY: Record<MarketDataErrorCategory, MarketErrorCopy> = {
     title: "服务端不接受来自这台设备的请求",
     body: "请求在进入接口之前就被服务端的来源白名单挡下了，和行情权限无关。请确认手机连的是正确的服务器地址，或者在服务器上把这部手机所在的网段加进允许列表。",
   },
+  "client-update-required": {
+    label: "需更新",
+    title: "App 与行情网关版本不兼容",
+    body: "行情网关返回了本版 App 不认识的新主版本。App 不会猜测字段含义，也不会退回旧接口或演示数据。请同时更新 App 和行情网关后重试。",
+  },
   configuration: {
     label: "未配置",
     title: "这台设备还没有配置服务地址",

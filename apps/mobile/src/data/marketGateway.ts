@@ -12,7 +12,15 @@ import type {
   LiveVolatilityIndicator,
   MagicNineSnapshot,
   MagicNineSeriesPoint,
+  NormalizedCapitalFlowPoint,
   ParticipationBar,
+  PriceAdjustment,
+  SnapshotAvailability,
+  SnapshotQuality,
+  SnapshotSection,
+  SnapshotSectionName,
+  StockSnapshotSections,
+  LiveTechnicalIndicators,
   SnapshotProvenance,
   WatchlistQuote,
 } from "@/domain/models";
@@ -23,6 +31,7 @@ const allowedSessions = new Set(["healthy"]);
 type DecodeOptions = {
   now?: Date;
   maxAgeMs?: number;
+  requestedCount?: number;
 };
 
 type GatewayEnvelope = {
@@ -75,6 +84,7 @@ export class GatewayValidationError extends Error {
 export type GatewayRequestErrorKind =
   | "auth-required"
   | "client-not-allowed"
+  | "client-update-required"
   | "contract"
   | "invalid-request"
   | "login-required"
@@ -111,6 +121,23 @@ export class GatewayContractError extends GatewayValidationError {
   constructor(field: string) {
     super(`snapshot is missing ${field}; the gateway may be out of date`);
     this.name = "GatewayContractError";
+  }
+}
+
+export class GatewayClientUpdateRequiredError extends GatewayValidationError {
+  constructor(schemaVersion: string) {
+    super(`snapshot schemaVersion ${schemaVersion} requires a newer client`);
+    this.name = "GatewayClientUpdateRequiredError";
+  }
+}
+
+export class GatewaySnapshotUnavailableError extends GatewayValidationError {
+  constructor(
+    public readonly kind: GatewayRequestErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GatewaySnapshotUnavailableError";
   }
 }
 
@@ -688,6 +715,407 @@ function decodeIndicatorValue(
   };
 }
 
+const snapshotV3SectionNames: SnapshotSectionName[] = [
+  "quote",
+  "candles",
+  "technical",
+  "currentSessionFlow",
+  "holdings",
+  "fundamentals",
+  "marketContext",
+  "news",
+  "forecastDecision",
+];
+
+const requestedSnapshotV3Sections: SnapshotSectionName[] = [
+  "quote",
+  "candles",
+  "technical",
+  "currentSessionFlow",
+  "holdings",
+];
+
+const snapshotAvailabilities = new Set<SnapshotAvailability>([
+  "live",
+  "delayed",
+  "stale",
+  "unavailable",
+]);
+const snapshotQualities = new Set<SnapshotQuality>([
+  "validated",
+  "partial",
+  "anomalous",
+  "invalid",
+]);
+
+function nullableStringField(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+) {
+  const value = requireContractField(record, key);
+  if (value === null) return null;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new GatewayValidationError(`${label}.${key} must be a string or null`);
+  }
+  return value;
+}
+
+function nullableSectionTimestamp(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  cutoff: Date,
+) {
+  const value = nullableStringField(record, key, label);
+  if (value === null) return null;
+  const timestamp = parseTimestamp(value, `${label}.${key}`);
+  if (timestamp.getTime() > cutoff.getTime()) {
+    throw new GatewayValidationError(`${label}.${key} is after decisionCutoff`);
+  }
+  return timestamp;
+}
+
+function decodeSnapshotV3SectionEnvelope(
+  value: unknown,
+  name: SnapshotSectionName,
+  cutoff: Date,
+): SnapshotSection<unknown> {
+  if (!isRecord(value)) {
+    throw new GatewayValidationError(`sections.${name} must be an object`);
+  }
+  const label = `sections.${name}`;
+  const availabilityStatus = requireString(value, "availabilityStatus");
+  if (!snapshotAvailabilities.has(availabilityStatus as SnapshotAvailability)) {
+    throw new GatewayValidationError(`${label}.availabilityStatus is unsupported`);
+  }
+  const qualityStatus = requireString(value, "qualityStatus");
+  if (!snapshotQualities.has(qualityStatus as SnapshotQuality)) {
+    throw new GatewayValidationError(`${label}.qualityStatus is unsupported`);
+  }
+  const source = nullableStringField(value, "source", label);
+  const asOfValue = nullableSectionTimestamp(value, "asOf", label, cutoff);
+  const availableAtValue = nullableSectionTimestamp(
+    value,
+    "availableAt",
+    label,
+    cutoff,
+  );
+  const receivedAtValue = nullableSectionTimestamp(
+    value,
+    "receivedAt",
+    label,
+    cutoff,
+  );
+  if (
+    asOfValue &&
+    availableAtValue &&
+    asOfValue.getTime() > availableAtValue.getTime()
+  ) {
+    throw new GatewayValidationError(`${label}.asOf follows availableAt`);
+  }
+  if (
+    availableAtValue &&
+    receivedAtValue &&
+    availableAtValue.getTime() > receivedAtValue.getTime()
+  ) {
+    throw new GatewayValidationError(`${label}.availableAt follows receivedAt`);
+  }
+
+  const data = requireContractField(value, "data");
+  const errorCode = nullableStringField(value, "errorCode", label);
+  const reason = nullableStringField(value, "reason", label);
+  const warningsValue = requireContractField(value, "warnings");
+  if (
+    !Array.isArray(warningsValue) ||
+    !warningsValue.every(
+      (warning) => typeof warning === "string" && warning.trim() !== "",
+    )
+  ) {
+    throw new GatewayValidationError(`${label}.warnings must be strings`);
+  }
+  const anomaliesValue = requireContractField(value, "anomalies");
+  if (!Array.isArray(anomaliesValue)) {
+    throw new GatewayValidationError(`${label}.anomalies must be an array`);
+  }
+  const anomalies = anomaliesValue.map((anomaly, index) => {
+    if (!isRecord(anomaly)) {
+      throw new GatewayValidationError(`${label}.anomalies[${index}] must be an object`);
+    }
+    const code = requireString(anomaly, "code");
+    const anomalyReason = requireString(anomaly, "reason");
+    const rowIndex = anomaly.rowIndex;
+    if (
+      rowIndex !== undefined &&
+      (typeof rowIndex !== "number" ||
+        !Number.isInteger(rowIndex) ||
+        rowIndex < 0)
+    ) {
+      throw new GatewayValidationError(
+        `${label}.anomalies[${index}].rowIndex is invalid`,
+      );
+    }
+    return {
+      code,
+      reason: anomalyReason,
+      ...(rowIndex === undefined ? {} : { rowIndex }),
+    };
+  });
+  const methodVersion = requireString(value, "methodVersion");
+  const availability = availabilityStatus as SnapshotAvailability;
+  const quality = qualityStatus as SnapshotQuality;
+  const emptyArray = Array.isArray(data) && data.length === 0;
+
+  if (availability === "unavailable") {
+    if (
+      quality !== "invalid" ||
+      (data !== null && !emptyArray) ||
+      errorCode === null ||
+      reason === null
+    ) {
+      throw new GatewayValidationError(
+        `${label} unavailable status contradicts its envelope`,
+      );
+    }
+  } else if (
+    quality === "invalid" ||
+    data === null ||
+    source === null ||
+    asOfValue === null ||
+    availableAtValue === null ||
+    receivedAtValue === null ||
+    errorCode !== null ||
+    reason !== null
+  ) {
+    throw new GatewayValidationError(
+      `${label} available status contradicts its envelope`,
+    );
+  }
+
+  return {
+    availabilityStatus: availability,
+    qualityStatus: quality,
+    source,
+    asOf: asOfValue?.toISOString() ?? null,
+    availableAt: availableAtValue?.toISOString() ?? null,
+    receivedAt: receivedAtValue?.toISOString() ?? null,
+    data,
+    errorCode,
+    reason,
+    warnings: [...warningsValue] as string[],
+    anomalies,
+    methodVersion,
+  };
+}
+
+function sectionCarriesData(section: SnapshotSection<unknown>) {
+  return section.availabilityStatus !== "unavailable";
+}
+
+function sectionIsValidated(section: SnapshotSection<unknown>) {
+  return (
+    (section.availabilityStatus === "live" ||
+      section.availabilityStatus === "delayed") &&
+    section.qualityStatus === "validated"
+  );
+}
+
+function withSectionData<T>(
+  section: SnapshotSection<unknown>,
+  data: T | null,
+): SnapshotSection<T> {
+  return { ...section, data };
+}
+
+function unavailableSection<T>(
+  errorCode: string,
+  reason: string,
+): SnapshotSection<T> {
+  return {
+    availabilityStatus: "unavailable",
+    qualityStatus: "invalid",
+    source: null,
+    asOf: null,
+    availableAt: null,
+    receivedAt: null,
+    data: null,
+    errorCode,
+    reason,
+    warnings: [],
+    anomalies: [],
+    methodVersion: "unavailable-v1",
+  };
+}
+
+function unavailableTechnical(
+  candles: Candle[],
+  cutoff: string,
+): { indicators: LiveTechnicalIndicators; magicNine: MagicNineSnapshot } {
+  const asOf = candles.at(-1)?.timestamp ?? cutoff;
+  const metadata = {
+    source: "analysis-core" as const,
+    asOf,
+    availableAt: cutoff,
+    qualityStatus: "unavailable" as const,
+  };
+  return {
+    indicators: {
+      ma5: {
+        ...metadata,
+        value: null,
+        series: null,
+        methodVersion: "sma-5-v1",
+      },
+      rsi: {
+        ...metadata,
+        value: null,
+        series: null,
+        methodVersion: "wilder-rsi-14-v1",
+      },
+      macd: {
+        ...metadata,
+        line: null,
+        signal: null,
+        histogram: null,
+        series: null,
+        methodVersion: "macd-12-26-9-v1",
+      },
+      volatility: {
+        ...metadata,
+        value: null,
+        series: null,
+        sampleSize: 0,
+        missingReason: "technical section unavailable",
+        methodVersion: "close-to-close-realized-v1",
+      },
+    },
+    magicNine: {
+      ...metadata,
+      direction: null,
+      count: 0,
+      series: null,
+      completed: false,
+      perfected: null,
+      confirmedAtIndex: null,
+      lastCompleted: null,
+      methodVersion: "td-setup-close-4-v2",
+    },
+  };
+}
+
+function v3ParticipationPlaceholders(candles: Candle[]): ParticipationBar[] {
+  return candles.map((candle) => ({
+    closedAt: candle.timestamp,
+    mainShare: null,
+    retailShare: null,
+    mainActivity: null,
+    retailActivity: null,
+    netFlow: null,
+    coverage: null,
+    source: "moomoo",
+    asOf: candle.timestamp,
+    availableAt: candle.availableAt,
+    methodVersion: "order-size-activity-share-v1",
+    qualityStatus: "unavailable",
+    missingReason: "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
+  }));
+}
+
+function legacyV2Sections({
+  quote,
+  candles,
+  priceAdjustment,
+  indicators,
+  magicNine,
+  institutionalHoldings,
+}: {
+  quote: LiveQuote;
+  candles: Candle[];
+  priceAdjustment: PriceAdjustment;
+  indicators: LiveTechnicalIndicators;
+  magicNine: MagicNineSnapshot;
+  institutionalHoldings: DelayedInstitutionalHolding[];
+}): StockSnapshotSections {
+  const lastCandle = candles[candles.length - 1];
+  const firstHolding = institutionalHoldings[0];
+  const notRequested = () =>
+    unavailableSection<unknown>("NOT_REQUESTED", "此切片未请求该数据");
+
+  return {
+    quote: {
+      availabilityStatus: "live",
+      qualityStatus: "validated",
+      source: quote.source,
+      asOf: quote.asOf,
+      availableAt: quote.availableAt,
+      receivedAt: null,
+      data: quote,
+      errorCode: null,
+      reason: null,
+      warnings: [],
+      anomalies: [],
+      methodVersion: quote.methodVersion,
+    },
+    candles: lastCandle
+      ? {
+          availabilityStatus: "live",
+          qualityStatus: "validated",
+          source: "moomoo",
+          asOf: lastCandle.timestamp,
+          availableAt: lastCandle.availableAt,
+          receivedAt: lastCandle.receivedAt ?? null,
+          data: { candles, priceAdjustment },
+          errorCode: null,
+          reason: null,
+          warnings: [],
+          anomalies: [],
+          methodVersion: "provider-completed-candle-v1",
+        }
+      : unavailableSection("LEGACY_V2_CANDLES_EMPTY", "旧版响应没有已完成 K 线"),
+    technical: {
+      availabilityStatus: "live",
+      qualityStatus: "validated",
+      source: "analysis-core",
+      asOf: magicNine.asOf,
+      availableAt: magicNine.availableAt,
+      receivedAt: null,
+      data: { indicators, magicNine },
+      errorCode: null,
+      reason: null,
+      warnings: [],
+      anomalies: [],
+      methodVersion: "analysis-core-indicators-v1",
+    },
+    currentSessionFlow: unavailableSection(
+      "LEGACY_V2_CANDLE_ALIGNED_ONLY",
+      "旧版响应只有与 K 线对齐的资金参与代理值",
+    ),
+    holdings: firstHolding
+      ? {
+          availabilityStatus: "delayed",
+          qualityStatus: "validated",
+          source: "moomoo-delayed-institutional-disclosure",
+          asOf: firstHolding.reportedAt,
+          availableAt: firstHolding.availableAt,
+          receivedAt: null,
+          data: institutionalHoldings,
+          errorCode: null,
+          reason: null,
+          warnings: [],
+          anomalies: [],
+          methodVersion: firstHolding.methodVersion,
+        }
+      : unavailableSection(
+          "LEGACY_V2_HOLDINGS_EMPTY",
+          "旧版响应没有机构持仓记录",
+        ),
+    fundamentals: notRequested(),
+    marketContext: notRequested(),
+    news: notRequested(),
+    forecastDecision: notRequested(),
+  };
+}
+
 /** Decodes only the gateway's versioned live contract; it never adapts fixture data. */
 export function decodeStockSnapshotEnvelope(
   value: unknown,
@@ -987,6 +1415,15 @@ export function decodeStockSnapshotEnvelope(
   if (!Array.isArray(value.warnings) || !value.warnings.every((warning) => typeof warning === "string")) {
     throw new GatewayValidationError("warnings must be an array of strings");
   }
+  const indicators: LiveTechnicalIndicators = { ma5, rsi, macd, volatility };
+  const sections = legacyV2Sections({
+    quote,
+    candles,
+    priceAdjustment,
+    indicators,
+    magicNine,
+    institutionalHoldings,
+  });
 
   return {
     demoData: false,
@@ -998,17 +1435,701 @@ export function decodeStockSnapshotEnvelope(
     },
     symbol,
     interval,
+    snapshotStatus: "live",
+    compatibility: "v2-fallback",
+    requestedCount: _options.requestedCount ?? candles.length,
+    requestedSections: [...requestedSnapshotV3Sections],
+    sections,
     decisionCutoff: cutoff.toISOString(),
     priceAdjustment,
     quote,
     candles,
     participationBars,
-    indicators: { ma5, rsi, macd, volatility },
+    indicators,
     magicNine,
     forecast: null,
     institutionalHoldings,
     provenance,
     warnings: value.warnings,
+  };
+}
+
+function decodeV3QuoteSection(
+  section: SnapshotSection<unknown>,
+  cutoff: Date,
+): SnapshotSection<LiveQuote> {
+  if (!sectionCarriesData(section)) {
+    return withSectionData<LiveQuote>(section, null);
+  }
+  if (
+    section.source !== "moomoo" ||
+    section.methodVersion !== "provider-quote-v1" ||
+    !isRecord(section.data)
+  ) {
+    throw new GatewayValidationError("quote section has an unsupported source contract");
+  }
+  const record = section.data;
+  rejectInstitutionalIdentity(record, "quote section data");
+  const metadata = requireSnapshotMetadata(record, "quote section data", cutoff);
+  if (
+    metadata.source !== "moomoo" ||
+    metadata.asOf !== section.asOf ||
+    metadata.availableAt !== section.availableAt
+  ) {
+    throw new GatewayValidationError("quote section metadata contradicts its data");
+  }
+  const price = requireFiniteNumber(record, "price");
+  if (price <= 0) {
+    throw new GatewayValidationError("quote section price must be positive");
+  }
+  if (requireStatus(record, "qualityStatus") !== "live") {
+    throw new GatewayValidationError("quote section data must be live");
+  }
+  const quote: LiveQuote = {
+    ...metadata,
+    source: "moomoo",
+    price,
+    changePercent: requireFiniteNumber(record, "changePercent"),
+    methodVersion: requireExpectedMethod(
+      record,
+      "provider-quote-v1",
+      "quote section data",
+    ),
+    qualityStatus: "live",
+  };
+  return withSectionData(section, quote);
+}
+
+function decodeV3CandlesSection(
+  section: SnapshotSection<unknown>,
+  cutoff: Date,
+): SnapshotSection<{ candles: Candle[]; priceAdjustment: PriceAdjustment }> {
+  if (!sectionCarriesData(section)) {
+    return withSectionData<{ candles: Candle[]; priceAdjustment: PriceAdjustment }>(
+      section,
+      null,
+    );
+  }
+  if (
+    section.source !== "moomoo" ||
+    section.methodVersion !== "provider-completed-candle-v1" ||
+    !isRecord(section.data)
+  ) {
+    throw new GatewayValidationError("candles section has an unsupported source contract");
+  }
+  const priceAdjustment = section.data.priceAdjustment;
+  if (
+    priceAdjustment !== "forward-adjusted" &&
+    priceAdjustment !== "unadjusted"
+  ) {
+    throw new GatewayValidationError("candles section price adjustment is unsupported");
+  }
+  if (!Array.isArray(section.data.candles)) {
+    throw new GatewayValidationError("candles section data must contain candles");
+  }
+  let previousTimestamp = Number.NEGATIVE_INFINITY;
+  const candles = section.data.candles.map((item) => {
+    if (!isRecord(item)) {
+      throw new GatewayValidationError("candles section row must be an object");
+    }
+    rejectInstitutionalIdentity(item, "candles section row");
+    if (item.complete !== true) {
+      throw new GatewayValidationError("candles section accepts completed rows only");
+    }
+    const timestamp = parseTimestamp(
+      requireString(item, "timestamp"),
+      "candles section row.timestamp",
+    );
+    const metadata = requireSnapshotMetadata(item, "candles section row", cutoff);
+    if (metadata.source !== "moomoo") {
+      throw new GatewayValidationError("candles section row source must be moomoo");
+    }
+    if (
+      timestamp.getTime() > new Date(metadata.availableAt).getTime() ||
+      timestamp.getTime() <= previousTimestamp
+    ) {
+      throw new GatewayValidationError("candles section rows violate ordering");
+    }
+    previousTimestamp = timestamp.getTime();
+    const receivedAt = parseTimestamp(
+      requireString(item, "receivedAt"),
+      "candles section row.receivedAt",
+    );
+    if (
+      receivedAt.getTime() < new Date(metadata.availableAt).getTime() ||
+      receivedAt.getTime() > cutoff.getTime()
+    ) {
+      throw new GatewayValidationError("candles section receipt time is invalid");
+    }
+    if (item.priceAdjustment !== priceAdjustment) {
+      throw new GatewayValidationError("candles section row adjustment is inconsistent");
+    }
+    if (requireStatus(item, "qualityStatus") !== "live") {
+      throw new GatewayValidationError("candles section row must be live");
+    }
+    requireExpectedMethod(
+      item,
+      "provider-completed-candle-v1",
+      "candles section row",
+    );
+    const open = requireFiniteNumber(item, "open");
+    const high = requireFiniteNumber(item, "high");
+    const low = requireFiniteNumber(item, "low");
+    const close = requireFiniteNumber(item, "close");
+    const volume = requireFiniteNumber(item, "volume");
+    if (
+      Math.min(open, high, low, close) <= 0 ||
+      volume < 0 ||
+      high < Math.max(open, close) ||
+      low > Math.min(open, close) ||
+      high < low
+    ) {
+      throw new GatewayValidationError("candles section row has invalid OHLCV");
+    }
+    return {
+      timestamp: timestamp.toISOString(),
+      availableAt: metadata.availableAt,
+      receivedAt: receivedAt.toISOString(),
+      priceAdjustment,
+      complete: true,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    } satisfies Candle;
+  });
+  return withSectionData(section, { candles, priceAdjustment });
+}
+
+function decodeV3TechnicalSection(
+  section: SnapshotSection<unknown>,
+  cutoff: Date,
+  candleCount: number,
+): SnapshotSection<{
+  indicators: LiveTechnicalIndicators;
+  magicNine: MagicNineSnapshot;
+}> {
+  if (!sectionCarriesData(section)) {
+    return withSectionData<{
+      indicators: LiveTechnicalIndicators;
+      magicNine: MagicNineSnapshot;
+    }>(section, null);
+  }
+  if (
+    section.source !== "analysis-core" ||
+    section.methodVersion !== "analysis-core-indicators-v1" ||
+    !isRecord(section.data) ||
+    !isRecord(section.data.indicators)
+  ) {
+    throw new GatewayValidationError("technical section has an unsupported source contract");
+  }
+  const indicatorsRecord = section.data.indicators;
+  const ma5 = decodeIndicatorValue(
+    indicatorsRecord.ma5,
+    "ma5",
+    "sma-5-v1",
+    cutoff,
+    candleCount,
+  );
+  const rsi = decodeIndicatorValue(
+    indicatorsRecord.rsi,
+    "rsi",
+    "wilder-rsi-14-v1",
+    cutoff,
+    candleCount,
+  );
+  const volatility = decodeVolatility(
+    indicatorsRecord.volatility,
+    cutoff,
+    candleCount,
+  );
+  const macdRecord = indicatorsRecord.macd;
+  if (!isRecord(macdRecord)) {
+    throw new GatewayValidationError("technical indicators.macd must be an object");
+  }
+  const macdMetadata = requireSnapshotMetadata(
+    macdRecord,
+    "indicators.macd",
+    cutoff,
+  );
+  if (macdMetadata.source !== "analysis-core") {
+    throw new GatewayValidationError("indicators.macd must identify analysis-core");
+  }
+  const macdStatus = requireStatus(macdRecord, "qualityStatus");
+  if (macdStatus !== "live" && macdStatus !== "unavailable") {
+    throw new GatewayValidationError("indicators.macd status is unsupported");
+  }
+  const macdValues = ["line", "signal", "histogram"].map((key) =>
+    requireNullableFiniteNumber(macdRecord, key),
+  );
+  if ((macdStatus === "live") !== macdValues.every((item) => item !== null)) {
+    throw new GatewayValidationError("indicators.macd status contradicts its values");
+  }
+  const macd: LiveMacdIndicator = {
+    ...macdMetadata,
+    source: "analysis-core",
+    line: macdValues[0]!,
+    signal: macdValues[1]!,
+    histogram: macdValues[2]!,
+    series: decodeMacdSeries(
+      macdRecord.series,
+      macdMetadata,
+      macdStatus,
+      candleCount,
+    ),
+    methodVersion: requireExpectedMethod(
+      macdRecord,
+      "macd-12-26-9-v1",
+      "indicators.macd",
+    ),
+    qualityStatus: macdStatus,
+  };
+  const magicRecord = section.data.magicNine;
+  if (!isRecord(magicRecord)) {
+    throw new GatewayValidationError("technical magicNine must be an object");
+  }
+  const magicMetadata = requireSnapshotMetadata(
+    magicRecord,
+    "indicators.magicNine",
+    cutoff,
+  );
+  if (magicMetadata.source !== "analysis-core") {
+    throw new GatewayValidationError("indicators.magicNine must identify analysis-core");
+  }
+  const magicStatus = requireStatus(magicRecord, "qualityStatus");
+  if (magicStatus !== "live" && magicStatus !== "unavailable") {
+    throw new GatewayValidationError("indicators.magicNine status is unsupported");
+  }
+  const direction = magicRecord.direction;
+  if (
+    direction !== null &&
+    direction !== "bullish" &&
+    direction !== "bearish"
+  ) {
+    throw new GatewayValidationError("magic nine direction is unsupported");
+  }
+  const count = requireFiniteNumber(magicRecord, "count");
+  if (!Number.isInteger(count) || count < 0 || count > 9) {
+    throw new GatewayValidationError("magic nine count is invalid");
+  }
+  const confirmedAtIndexValue = magicRecord.confirmedAtIndex;
+  if (
+    confirmedAtIndexValue !== null &&
+    (typeof confirmedAtIndexValue !== "number" ||
+      !Number.isInteger(confirmedAtIndexValue) ||
+      confirmedAtIndexValue < 0 ||
+      confirmedAtIndexValue >= candleCount)
+  ) {
+    throw new GatewayValidationError("magic nine confirmedAtIndex is invalid");
+  }
+  if (typeof magicRecord.completed !== "boolean") {
+    throw new GatewayValidationError("magic nine completed must be boolean");
+  }
+  if (magicRecord.perfected !== null && typeof magicRecord.perfected !== "boolean") {
+    throw new GatewayValidationError("magic nine perfected must be boolean or null");
+  }
+  const magicNine: MagicNineSnapshot = {
+    ...magicMetadata,
+    source: "analysis-core",
+    direction,
+    count,
+    series: decodeMagicNineSeries(magicRecord.series, candleCount),
+    completed: magicRecord.completed,
+    perfected: magicRecord.perfected,
+    confirmedAtIndex: confirmedAtIndexValue as number | null,
+    lastCompleted: decodeCompletedTdSetup(magicRecord.lastCompleted, candleCount),
+    methodVersion: requireExpectedMethod(
+      magicRecord,
+      "td-setup-close-4-v2",
+      "indicators.magicNine",
+    ),
+    qualityStatus: magicStatus,
+  };
+  return withSectionData(section, {
+    indicators: { ma5, rsi, macd, volatility },
+    magicNine,
+  });
+}
+
+function decodeV3CurrentSessionFlowSection(
+  section: SnapshotSection<unknown>,
+  cutoff: Date,
+): SnapshotSection<NormalizedCapitalFlowPoint[]> {
+  if (!sectionCarriesData(section)) {
+    return withSectionData<NormalizedCapitalFlowPoint[]>(section, null);
+  }
+  if (
+    section.source !== "moomoo" ||
+    section.methodVersion !== "provider-capital-flow-normalized-v1" ||
+    !Array.isArray(section.data) ||
+    section.data.length === 0
+  ) {
+    throw new GatewayValidationError(
+      "currentSessionFlow section has an unsupported source contract",
+    );
+  }
+  let previousTimestamp = Number.NEGATIVE_INFINITY;
+  const data = section.data.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new GatewayValidationError(
+        `currentSessionFlow row ${index} must be an object`,
+      );
+    }
+    const timestamp = parseTimestamp(
+      requireString(item, "timestamp"),
+      `currentSessionFlow row ${index}.timestamp`,
+    );
+    const availableAt = parseTimestamp(
+      requireString(item, "availableAt"),
+      `currentSessionFlow row ${index}.availableAt`,
+    );
+    if (
+      timestamp.getTime() <= previousTimestamp ||
+      timestamp.getTime() > availableAt.getTime() ||
+      availableAt.getTime() > cutoff.getTime() ||
+      (section.receivedAt !== null &&
+        availableAt.getTime() > Date.parse(section.receivedAt))
+    ) {
+      throw new GatewayValidationError(
+        "currentSessionFlow rows violate point-in-time ordering",
+      );
+    }
+    previousTimestamp = timestamp.getTime();
+    if (item.institutionalIdentity !== false) {
+      throw new GatewayValidationError(
+        "currentSessionFlow must declare institutionalIdentity false",
+      );
+    }
+    return {
+      timestamp: timestamp.toISOString(),
+      availableAt: availableAt.toISOString(),
+      session: requireString(item, "session"),
+      totalNetFlow: requireFiniteNumber(item, "totalNetFlow"),
+      extraLargeOrderNetFlow: requireFiniteNumber(
+        item,
+        "extraLargeOrderNetFlow",
+      ),
+      largeOrderNetFlow: requireFiniteNumber(item, "largeOrderNetFlow"),
+      mediumOrderNetFlow: requireFiniteNumber(item, "mediumOrderNetFlow"),
+      smallOrderNetFlow: requireFiniteNumber(item, "smallOrderNetFlow"),
+      largeOrderProxyNetFlow: requireFiniteNumber(
+        item,
+        "largeOrderProxyNetFlow",
+      ),
+      institutionalIdentity: false,
+    } satisfies NormalizedCapitalFlowPoint;
+  });
+  return withSectionData(section, data);
+}
+
+const aggregateHoldingsWarning =
+  "供应商返回的聚合持仓比例超过 100%，不能按唯一股份占比直接解释";
+
+function decodeV3HoldingsSection(
+  section: SnapshotSection<unknown>,
+  cutoff: Date,
+): SnapshotSection<DelayedInstitutionalHolding[]> {
+  if (!sectionCarriesData(section)) {
+    return withSectionData<DelayedInstitutionalHolding[]>(section, null);
+  }
+  if (
+    section.availabilityStatus !== "delayed" ||
+    section.source !== "moomoo-delayed-institutional-disclosure" ||
+    section.methodVersion !== "reported-holdings-v2-anomaly-aware" ||
+    !Array.isArray(section.data) ||
+    section.data.length === 0
+  ) {
+    throw new GatewayValidationError("holdings section has an unsupported source contract");
+  }
+  if (
+    section.qualityStatus === "anomalous" &&
+    section.anomalies.length === 0
+  ) {
+    throw new GatewayValidationError("an anomalous holdings section must name anomalies");
+  }
+  if (
+    section.qualityStatus === "validated" &&
+    section.anomalies.length !== 0
+  ) {
+    throw new GatewayValidationError("validated holdings cannot carry anomalies");
+  }
+  let previousAvailableAt = Number.POSITIVE_INFINITY;
+  const data = section.data.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new GatewayValidationError(`holdings row ${index} must be an object`);
+    }
+    if (item.source !== "moomoo-delayed-institutional-disclosure") {
+      throw new GatewayValidationError(`holdings row ${index} has the wrong source`);
+    }
+    const reportedAt = parseTimestamp(
+      requireString(item, "reportedAt"),
+      `holdings row ${index}.reportedAt`,
+    );
+    const availableAt = parseTimestamp(
+      requireString(item, "availableAt"),
+      `holdings row ${index}.availableAt`,
+    );
+    if (
+      reportedAt.getTime() > availableAt.getTime() ||
+      availableAt.getTime() > cutoff.getTime() ||
+      availableAt.getTime() > previousAvailableAt ||
+      (section.receivedAt !== null &&
+        availableAt.getTime() > Date.parse(section.receivedAt))
+    ) {
+      throw new GatewayValidationError(`holdings row ${index} violates ordering`);
+    }
+    previousAvailableAt = availableAt.getTime();
+    if (item.reportedAtBasis !== "reporting-period-end") {
+      throw new GatewayValidationError(`holdings row ${index} has the wrong date basis`);
+    }
+    const institutionCount = requireFiniteNumber(item, "institutionCount");
+    const institutionCountChange = requireFiniteNumber(
+      item,
+      "institutionCountChange",
+    );
+    const sharesHeld = requireFiniteNumber(item, "sharesHeld");
+    const sharesHeldChange = requireFiniteNumber(item, "sharesHeldChange");
+    const holdingPercent = requireFiniteNumber(item, "holdingPercent");
+    const holdingPercentChange = requireFiniteNumber(
+      item,
+      "holdingPercentChange",
+    );
+    if (
+      !Number.isInteger(institutionCount) ||
+      institutionCount < 0 ||
+      sharesHeld < 0 ||
+      holdingPercent < 0
+    ) {
+      throw new GatewayValidationError(`holdings row ${index} has invalid values`);
+    }
+    if (
+      holdingPercent > 100 &&
+      (section.qualityStatus !== "anomalous" ||
+        !section.warnings.includes(aggregateHoldingsWarning) ||
+        !section.anomalies.some(
+          (anomaly) =>
+            anomaly.rowIndex === index &&
+            anomaly.code === "AGGREGATE_PERCENT_ABOVE_100",
+        ))
+    ) {
+      throw new GatewayValidationError(
+        `holdings row ${index} aggregate percentage is not explained`,
+      );
+    }
+    return {
+      period: requireString(item, "period"),
+      reportedAt: reportedAt.toISOString(),
+      reportedAtBasis: "reporting-period-end",
+      availableAt: availableAt.toISOString(),
+      source: "moomoo-delayed-institutional-disclosure",
+      institutionCount,
+      institutionCountChange,
+      sharesHeld,
+      sharesHeldChange,
+      holdingPercent,
+      holdingPercentChange,
+      asOf: reportedAt.toISOString(),
+      methodVersion: "reported-holdings-v2-anomaly-aware",
+      qualityStatus: "delayed",
+    } satisfies DelayedInstitutionalHolding;
+  });
+  return withSectionData(section, data);
+}
+
+function snapshotUnavailableKind(sections: StockSnapshotSections) {
+  for (const code of [sections.quote.errorCode, sections.candles.errorCode]) {
+    if (code && kindByGatewayCode[code]) return kindByGatewayCode[code];
+  }
+  return "unspecified" satisfies GatewayRequestErrorKind;
+}
+
+/** Decodes only the sectioned schema-v3 contract; it never adapts v2. */
+export function decodeStockSnapshotV3Envelope(
+  value: unknown,
+  _options: DecodeOptions = {},
+): LiveStockSnapshot {
+  if (!isRecord(value)) {
+    throw new GatewayValidationError("response must be an object");
+  }
+  if (
+    typeof value.schemaVersion === "string" &&
+    /^\d+$/.test(value.schemaVersion) &&
+    !new Set(["1", "2", "3"]).has(value.schemaVersion)
+  ) {
+    throw new GatewayClientUpdateRequiredError(value.schemaVersion);
+  }
+  if (value.schemaVersion !== "3") {
+    throw new GatewayValidationError("unsupported snapshot schemaVersion");
+  }
+  const symbol = normalizeUsSymbol(requireString(value, "symbol"));
+  const interval = requireString(value, "interval");
+  const requestedCount = requireFiniteNumber(value, "count");
+  if (
+    !Number.isInteger(requestedCount) ||
+    requestedCount < 1 ||
+    requestedCount > 1_000
+  ) {
+    throw new GatewayValidationError("snapshot count must be an integer from 1 to 1000");
+  }
+  const cutoff = parseTimestamp(
+    requireString(value, "decisionCutoff"),
+    "decisionCutoff",
+  );
+  const status = requireString(value, "status");
+  if (status !== "live" && status !== "partial" && status !== "unavailable") {
+    throw new GatewayValidationError("snapshot status is unsupported");
+  }
+  if (
+    !Array.isArray(value.requestedSections) ||
+    value.requestedSections.length !== requestedSnapshotV3Sections.length ||
+    !value.requestedSections.every(
+      (name, index) => name === requestedSnapshotV3Sections[index],
+    )
+  ) {
+    throw new GatewayValidationError("snapshot requestedSections do not match the v3 slice");
+  }
+  if (!isRecord(value.sections)) {
+    throw new GatewayValidationError("snapshot sections must be an object");
+  }
+  const envelopes = Object.fromEntries(
+    snapshotV3SectionNames.map((name) => [
+      name,
+      decodeSnapshotV3SectionEnvelope(
+        requireContractField(value.sections as Record<string, unknown>, name),
+        name,
+        cutoff,
+      ),
+    ]),
+  ) as Record<SnapshotSectionName, SnapshotSection<unknown>>;
+
+  for (const name of [
+    "fundamentals",
+    "marketContext",
+    "news",
+    "forecastDecision",
+  ] as const) {
+    const section = envelopes[name];
+    if (
+      section.availabilityStatus !== "unavailable" ||
+      section.qualityStatus !== "invalid" ||
+      section.errorCode !== "NOT_REQUESTED" ||
+      section.data !== null
+    ) {
+      throw new GatewayValidationError(`sections.${name} must be explicitly unrequested`);
+    }
+  }
+
+  const quote = decodeV3QuoteSection(envelopes.quote, cutoff);
+  const candles = decodeV3CandlesSection(envelopes.candles, cutoff);
+  const decodedCandles = candles.data?.candles ?? [];
+  const technical = decodeV3TechnicalSection(
+    envelopes.technical,
+    cutoff,
+    decodedCandles.length,
+  );
+  const currentSessionFlow = decodeV3CurrentSessionFlowSection(
+    envelopes.currentSessionFlow,
+    cutoff,
+  );
+  const holdings = decodeV3HoldingsSection(envelopes.holdings, cutoff);
+  const sections: StockSnapshotSections = {
+    quote,
+    candles,
+    technical,
+    currentSessionFlow,
+    holdings,
+    fundamentals: withSectionData(envelopes.fundamentals, null),
+    marketContext: withSectionData(envelopes.marketContext, null),
+    news: withSectionData(envelopes.news, null),
+    forecastDecision: withSectionData(envelopes.forecastDecision, null),
+  };
+  const quoteUsable = sectionIsValidated(quote) && quote.data !== null;
+  const candlesUsable =
+    sectionIsValidated(candles) &&
+    candles.data !== null &&
+    candles.data.candles.length > 0;
+  const allRequestedValidated = requestedSnapshotV3Sections.every((name) =>
+    sectionIsValidated(sections[name]),
+  );
+  const derivedStatus =
+    !quoteUsable && !candlesUsable
+      ? "unavailable"
+      : allRequestedValidated
+        ? "live"
+        : "partial";
+  if (status !== derivedStatus) {
+    throw new GatewayValidationError("snapshot status contradicts its usable sections");
+  }
+  if (derivedStatus === "unavailable") {
+    throw new GatewaySnapshotUnavailableError(
+      snapshotUnavailableKind(sections),
+      "gateway snapshot has neither a usable quote nor completed candles",
+    );
+  }
+
+  const flattenedCandles = candlesUsable ? candles.data!.candles : [];
+  const fallbackTechnical = unavailableTechnical(
+    flattenedCandles,
+    cutoff.toISOString(),
+  );
+  const technicalUsable =
+    sectionIsValidated(technical) && technical.data !== null && candlesUsable;
+  const institutionalHoldings =
+    holdings.data &&
+    holdings.availabilityStatus === "delayed" &&
+    (holdings.qualityStatus === "validated" ||
+      holdings.qualityStatus === "anomalous")
+      ? holdings.data
+      : [];
+  const provenance = snapshotV3SectionNames.flatMap((name) => {
+    const section = sections[name];
+    return section.source && section.asOf && section.availableAt
+      ? [
+          {
+            source: section.source,
+            asOf: section.asOf,
+            availableAt: section.availableAt,
+            methodVersion: section.methodVersion,
+            qualityStatus: section.availabilityStatus,
+          } satisfies SnapshotProvenance,
+        ]
+      : [];
+  });
+  const warnings = [...new Set(snapshotV3SectionNames.flatMap(
+    (name) => sections[name].warnings,
+  ))];
+
+  return {
+    demoData: false,
+    source: {
+      source: "moomoo",
+      status: derivedStatus,
+      asOf: cutoff.toISOString(),
+      decisionCutoff: cutoff.toISOString(),
+    },
+    symbol,
+    interval,
+    snapshotStatus: derivedStatus,
+    compatibility: "v3",
+    requestedCount,
+    requestedSections: [...requestedSnapshotV3Sections],
+    sections,
+    decisionCutoff: cutoff.toISOString(),
+    priceAdjustment: candlesUsable ? candles.data!.priceAdjustment : null,
+    quote: quoteUsable ? quote.data : null,
+    candles: flattenedCandles,
+    participationBars: v3ParticipationPlaceholders(flattenedCandles),
+    indicators: technicalUsable
+      ? technical.data!.indicators
+      : fallbackTechnical.indicators,
+    magicNine: technicalUsable
+      ? technical.data!.magicNine
+      : fallbackTechnical.magicNine,
+    forecast: null,
+    institutionalHoldings,
+    provenance,
+    warnings,
   };
 }
 
@@ -1118,6 +2239,12 @@ export function createMarketGatewayClient({
 
   function toSnapshotRequestError(error: unknown): GatewayRequestError {
     if (error instanceof GatewayRequestError) return error;
+    if (error instanceof GatewayClientUpdateRequiredError) {
+      return new GatewayRequestError("client-update-required", error.message);
+    }
+    if (error instanceof GatewaySnapshotUnavailableError) {
+      return new GatewayRequestError(error.kind, error.message);
+    }
     if (error instanceof GatewayHttpError) {
       const named = isRecord(error.payload)
         ? decodeSnapshotError(error.payload)
@@ -1236,15 +2363,48 @@ export function createMarketGatewayClient({
         count: String(count),
       });
       try {
-        const payload = await fetchJson(
-          `/stock-snapshot?${query.toString()}`,
-          signal,
-        );
-        const snapshot = decodeStockSnapshotEnvelope(payload, {
+        let payload: unknown;
+        try {
+          payload = await fetchJson(
+            `/v3/stock-snapshot?${query.toString()}`,
+            signal,
+          );
+        } catch (error) {
+          if (
+            !(error instanceof GatewayHttpError) ||
+            (error.status !== 404 && error.status !== 426)
+          ) {
+            throw error;
+          }
+          const legacyPayload = await fetchJson(
+            `/stock-snapshot?${query.toString()}`,
+            signal,
+          );
+          const legacySnapshot = decodeStockSnapshotEnvelope(legacyPayload, {
+            maxAgeMs,
+            now: now(),
+            requestedCount: count,
+          });
+          if (
+            legacySnapshot.symbol !== normalizedSymbol ||
+            legacySnapshot.interval !== interval ||
+            legacySnapshot.requestedCount !== count
+          ) {
+            throw new GatewayValidationError(
+              "snapshot response does not match the requested series",
+            );
+          }
+          return legacySnapshot;
+        }
+        const snapshot = decodeStockSnapshotV3Envelope(payload, {
           maxAgeMs,
           now: now(),
         });
-        if (snapshot.symbol !== normalizedSymbol || snapshot.interval !== interval) {
+        if (
+          snapshot.symbol !== normalizedSymbol ||
+          snapshot.interval !== interval ||
+          snapshot.requestedCount !== count
+        ) {
           throw new GatewayValidationError("snapshot response does not match the requested series");
         }
         return snapshot;

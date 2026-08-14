@@ -422,7 +422,10 @@ export const PriceChart = memo(function PriceChart({
     geometry.window.total > geometry.candles.length
       ? `，共 ${geometry.window.total} 根，双指缩放或横向拖动查看其余`
       : "";
-  const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线${windowSummary}，当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%${participationSummary}；轻点或长按选择最近的 K 线`;
+  const quoteSummary = snapshot.quote
+    ? `当前 ${snapshot.quote.price.toFixed(2)}，涨跌 ${snapshot.quote.changePercent >= 0 ? "上涨" : "下跌"} ${Math.abs(snapshot.quote.changePercent).toFixed(2)}%`
+    : "实时报价不可用";
+  const summary = `${snapshot.symbol} 图表摘要，${geometry.candles.length} 根已完成 K 线${windowSummary}，${quoteSummary}${participationSummary}；轻点或长按选择最近的 K 线`;
   const detailLabel = selectedCandle
     ? `${snapshot.symbol} 收盘时间 ${selectedCandle.timestamp}；开 ${selectedCandle.open.toFixed(2)}，高 ${selectedCandle.high.toFixed(2)}，低 ${selectedCandle.low.toFixed(2)}，收 ${selectedCandle.close.toFixed(2)}，成交量 ${selectedCandle.volume}${
         showParticipation

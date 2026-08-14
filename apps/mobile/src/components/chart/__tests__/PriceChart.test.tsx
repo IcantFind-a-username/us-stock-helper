@@ -693,6 +693,17 @@ it("labels a stale chart without also claiming live data", async () => {
   expect(view.queryByText("5 分钟 · 实时只读")).toBeNull();
 });
 
+it("states that a candles-only snapshot has no real-time quote", async () => {
+  const candlesOnly: ChartSnapshot = { ...snapshot, quote: null };
+  const view = await render(<PriceChart stock={candlesOnly} />);
+
+  expect(
+    view.getByRole("button", {
+      name: /NVDA 图表摘要.*实时报价不可用/,
+    }),
+  ).toBeTruthy();
+});
+
 it("selects the nearest candle by tap with exact accessible detail", async () => {
   const view = await render(<PriceChart stock={snapshot} />);
   const selector = view.getByRole("button", {

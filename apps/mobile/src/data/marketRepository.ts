@@ -22,6 +22,7 @@ export const marketErrorCategories = [
   "auth-required",
   "auth-unavailable",
   "client-not-allowed",
+  "client-update-required",
   "configuration",
   "contract",
   "invalid-request",
