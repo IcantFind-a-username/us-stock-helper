@@ -40,25 +40,19 @@ def candle(**overrides: Any) -> dict[str, Any]:
     return item
 
 
-def snapshot(
-    candles: list[dict[str, Any]] | None = None,
+def candle_envelope(
+    items: list[dict[str, Any]] | None = None,
     **overrides: Any,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "schemaVersion": "2",
+        "schemaVersion": "1",
         "source": "moomoo",
-        "sourceStatus": "live",
+        "session": "healthy",
+        "asOf": "2026-07-25T16:00:00Z",
+        "availableAt": "2026-07-25T16:00:00Z",
         "symbol": "NVDA",
         "interval": "5m",
-        "decisionCutoff": "2026-07-25T16:00:00Z",
-        "priceAdjustment": "forward-adjusted",
-        "quote": {},
-        "completedCandles": [candle()] if candles is None else candles,
-        "participationBars": [],
-        "indicators": {},
-        "institutionalHoldings": [],
-        "provenance": [],
-        "warnings": [],
+        "items": [candle()] if items is None else items,
     }
     payload.update(overrides)
     return payload
@@ -96,7 +90,7 @@ class CandleConversionTests(unittest.TestCase):
     def test_a_gateway_candle_becomes_a_bar_carrying_its_publication_time(
         self,
     ) -> None:
-        bars = provider(Gateway(snapshot())).bars_for("NVDA", "5m")
+        bars = provider(Gateway(candle_envelope())).bars_for("NVDA", "5m")
 
         self.assertEqual(len(bars), 1)
         bar = bars[0]
@@ -126,9 +120,9 @@ class CandleConversionTests(unittest.TestCase):
         )
         bars = provider(
             Gateway(
-                snapshot(
+                candle_envelope(
                     [candle(), second],
-                    decisionCutoff="2026-07-25T16:00:05Z",
+                    asOf="2026-07-25T16:00:05Z",
                 )
             )
         ).bars_for("NVDA", "5m")
@@ -144,7 +138,7 @@ class CandleConversionTests(unittest.TestCase):
                     if key != field
                 }
                 with self.assertRaises(MarketGatewayUnavailable):
-                    provider(Gateway(snapshot([incomplete]))).bars_for("NVDA", "5m")
+                    provider(Gateway(candle_envelope([incomplete]))).bars_for("NVDA", "5m")
 
     def test_a_blank_point_in_time_field_is_refused_rather_than_defaulted(
         self,
@@ -153,19 +147,19 @@ class CandleConversionTests(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaises(MarketGatewayUnavailable):
                     provider(
-                        Gateway(snapshot([candle(**{field: None})]))
+                        Gateway(candle_envelope([candle(**{field: None})]))
                     ).bars_for("NVDA", "5m")
 
     def test_a_receipt_that_precedes_publication_is_a_temporal_defect(self) -> None:
         with self.assertRaises(MarketGatewayUnavailable):
             provider(
-                Gateway(snapshot([candle(receivedAt="2026-07-25T15:55:01Z")]))
+                Gateway(candle_envelope([candle(receivedAt="2026-07-25T15:55:01Z")]))
             ).bars_for("NVDA", "5m")
 
     def test_a_receipt_after_the_decision_cutoff_is_a_temporal_defect(self) -> None:
         with self.assertRaises(MarketGatewayUnavailable):
             provider(
-                Gateway(snapshot([candle(receivedAt="2026-07-25T16:00:01Z")]))
+                Gateway(candle_envelope([candle(receivedAt="2026-07-25T16:00:01Z")]))
             ).bars_for("NVDA", "5m")
 
     def test_a_publication_after_the_decision_cutoff_is_a_temporal_defect(
@@ -174,7 +168,7 @@ class CandleConversionTests(unittest.TestCase):
         with self.assertRaises(MarketGatewayUnavailable):
             provider(
                 Gateway(
-                    snapshot(
+                    candle_envelope(
                         [
                             candle(
                                 availableAt="2026-07-25T16:00:01Z",
@@ -191,35 +185,35 @@ class CandleConversionTests(unittest.TestCase):
         # ValueError from three layers down.
         with self.assertRaises(MarketGatewayUnavailable):
             provider(
-                Gateway(snapshot([candle(high=1.0)]))
+                Gateway(candle_envelope([candle(high=1.0)]))
             ).bars_for("NVDA", "5m")
 
     def test_an_incomplete_candle_is_refused(self) -> None:
         with self.assertRaises(MarketGatewayUnavailable):
-            provider(Gateway(snapshot([candle(complete=False)]))).bars_for(
+            provider(Gateway(candle_envelope([candle(complete=False)]))).bars_for(
                 "NVDA", "5m"
             )
 
-    def test_the_snapshot_must_answer_the_symbol_and_interval_that_were_asked(
+    def test_the_candle_envelope_must_answer_the_symbol_and_interval_that_were_asked(
         self,
     ) -> None:
         for override in ({"symbol": "TSLA"}, {"interval": "15m"}):
             with self.subTest(override=override):
                 with self.assertRaises(MarketGatewayUnavailable):
-                    provider(Gateway(snapshot(**override))).bars_for("NVDA", "5m")
+                    provider(Gateway(candle_envelope(**override))).bars_for("NVDA", "5m")
 
     def test_an_interval_the_gateway_does_not_serve_is_refused(self) -> None:
         with self.assertRaises(MarketGatewayUnavailable):
-            provider(Gateway(snapshot())).bars_for("NVDA", "tick")
+            provider(Gateway(candle_envelope())).bars_for("NVDA", "tick")
 
     def test_the_request_names_the_symbol_interval_and_count(self) -> None:
-        gateway = Gateway(snapshot())
+        gateway = Gateway(candle_envelope())
 
         provider(gateway).bars_for("NVDA", "5m")
 
         self.assertEqual(
             gateway.urls,
-            ["http://127.0.0.1:8765/stock-snapshot?symbol=NVDA&interval=5m&count=200"],
+            ["http://127.0.0.1:8765/candles?symbol=NVDA&interval=5m&count=200"],
         )
 
 
@@ -242,19 +236,15 @@ class GatewayFailureTests(unittest.TestCase):
                     provider(gateway).bars_for("NVDA", "5m")
 
     def test_a_gateway_error_envelope_is_not_read_as_an_empty_series(self) -> None:
-        envelope = {
-            "schemaVersion": "1",
-            "source": "moomoo",
-            "session": "offline",
-            "asOf": "2026-07-25T16:00:00Z",
-            "availableAt": "2026-07-25T16:00:00Z",
-            "items": [],
-            "error": {
+        envelope = candle_envelope(
+            items=[],
+            session="offline",
+            error={
                 "code": "OPEND_OFFLINE",
                 "message": "moomoo OpenD is offline",
                 "retriable": True,
             },
-        }
+        )
 
         with self.assertRaises(MarketGatewayUnavailable) as raised:
             provider(Gateway(envelope)).bars_for("NVDA", "5m")
@@ -265,13 +255,13 @@ class GatewayFailureTests(unittest.TestCase):
         self.assertNotIn("OpenD is offline", str(raised.exception))
 
     def test_a_missing_candle_series_is_not_read_as_an_empty_series(self) -> None:
-        payload = snapshot()
-        del payload["completedCandles"]
+        payload = candle_envelope()
+        del payload["items"]
 
         with self.assertRaises(MarketGatewayUnavailable):
             provider(Gateway(payload)).bars_for("NVDA", "5m")
 
-    def test_a_body_that_is_not_the_snapshot_contract_is_refused(self) -> None:
+    def test_a_body_that_is_not_the_candle_contract_is_refused(self) -> None:
         for body in (b"not json", b"[]", b'"NVDA"'):
             with self.subTest(body=body):
                 with self.assertRaises(MarketGatewayUnavailable):
@@ -280,7 +270,7 @@ class GatewayFailureTests(unittest.TestCase):
     def test_an_empty_candle_series_is_an_honest_zero(self) -> None:
         # Before the first bar of a session closes the gateway truly has no
         # completed candles, and that is data, not a failure.
-        bars = provider(Gateway(snapshot([]))).bars_for("NVDA", "5m")
+        bars = provider(Gateway(candle_envelope([]))).bars_for("NVDA", "5m")
 
         self.assertEqual(bars, ())
 
@@ -290,7 +280,7 @@ class EvidenceTests(unittest.TestCase):
         # It once returned an empty tuple, which read as "the market is quiet"
         # no matter what the evidence sources were doing. Evidence now has its
         # own provider, with its own failures.
-        self.assertFalse(hasattr(provider(Gateway(snapshot())), "evidence_for"))
+        self.assertFalse(hasattr(provider(Gateway(candle_envelope())), "evidence_for"))
 
 
 class ProviderConfigTests(unittest.TestCase):
@@ -388,17 +378,17 @@ class BarOrderingTests(unittest.TestCase):
         rows = list(reversed(two_candles()))
 
         with self.assertRaisesRegex(MarketGatewayUnavailable, "order"):
-            provider(Gateway(snapshot(rows))).bars_for("NVDA", "5m")
+            provider(Gateway(candle_envelope(rows))).bars_for("NVDA", "5m")
 
     def test_a_duplicated_close_time_is_refused(self) -> None:
         rows = two_candles()
         rows[1] = {**rows[1], "timestamp": rows[0]["timestamp"]}
 
         with self.assertRaisesRegex(MarketGatewayUnavailable, "order"):
-            provider(Gateway(snapshot(rows))).bars_for("NVDA", "5m")
+            provider(Gateway(candle_envelope(rows))).bars_for("NVDA", "5m")
 
     def test_an_ascending_series_is_accepted(self) -> None:
-        bars = provider(Gateway(snapshot(two_candles()))).bars_for("NVDA", "5m")
+        bars = provider(Gateway(candle_envelope(two_candles()))).bars_for("NVDA", "5m")
 
         self.assertGreater(len(bars), 1)
         for index in range(1, len(bars)):

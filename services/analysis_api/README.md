@@ -49,8 +49,9 @@ screen rather than being smoothed over in serialization:
 
 ## Run the server
 
-`market_gateway` must already be serving on the same host; its
-`/stock-snapshot` candles are this service's only price source.
+`market_gateway` must already be serving on the same host; its `/candles`
+endpoint is this service's only deterministic price source. Optional sections
+of a stock snapshot, including holdings, cannot affect a decision.
 
 ```bash
 PYTHONPATH=services/analysis_api/src:services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine \
@@ -108,13 +109,19 @@ the app stores that token in the Keychain rather than in the bundle.
 
 ## Point-in-time mapping of gateway candles
 
-The gateway states two instants per completed candle, and both are required:
+Completed daily candles arrive through `GET /candles`; the envelope's `asOf` is
+the decision cutoff. The gateway states two instants per completed candle, and
+both are required:
 `availableAt` is when the exchange published the bar and is the earliest moment
 the chain may claim to have known it, `receivedAt` is when the gateway itself
 held it. `availableAt` becomes the bar's `available_at`; `receivedAt` is checked
-against it and against the snapshot's own `decisionCutoff`. Neither is ever
-defaulted or substituted for the other — doing so would move the moment of
-knowledge earlier than it really was.
+against it and against the candles envelope's `asOf`. Neither is ever defaulted
+or substituted for the other — doing so would move the moment of knowledge
+earlier than it really was.
+
+Deterministic `currentPrice` intentionally remains the latest completed daily
+close. Live quotes are a separate Watchlist/current-session input and never
+change the daily analysis interval.
 
 An unreachable gateway, an error envelope, or a candle missing either instant
 raises `MarketGatewayUnavailable`. Only a gateway that answers with a genuinely

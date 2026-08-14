@@ -1,4 +1,4 @@
-"""Read completed candles from the market gateway's snapshot contract.
+"""Read completed candles from the market gateway's candles contract.
 
 This supplies candles only. Evidence comes from `evidence_provider`, because
 the two systems fail in different ways and a single object answering for both
@@ -26,7 +26,7 @@ from urllib.request import urlopen
 from us_stock_helper_core import OHLCVBar
 
 
-SNAPSHOT_PATH = "/stock-snapshot"
+CANDLES_PATH = "/candles"
 _INTERVALS = {
     "1m": timedelta(minutes=1),
     "5m": timedelta(minutes=5),
@@ -37,7 +37,7 @@ _INTERVALS = {
     "week": timedelta(days=7),
 }
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-# One snapshot of a thousand candles is well under a megabyte; the ceiling
+# One response of a thousand candles is well under a megabyte; the ceiling
 # exists so a peer that never stops writing cannot exhaust this process.
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
@@ -58,16 +58,16 @@ class MarketGatewayProvider:
             raise MarketGatewayUnavailable(
                 "the gateway does not serve this candle interval"
             )
-        payload = self._snapshot(symbol, interval)
+        payload = self._candles(symbol, interval)
         if payload.get("symbol") != symbol or payload.get("interval") != interval:
             raise MarketGatewayUnavailable(
                 "the gateway answered for a different symbol or interval"
             )
-        cutoff = _timestamp(payload, "decisionCutoff")
-        candles = payload.get("completedCandles")
+        cutoff = _timestamp(payload, "asOf")
+        candles = payload.get("items")
         if not isinstance(candles, list):
             raise MarketGatewayUnavailable(
-                "the gateway response carries no completed candle series"
+                "the gateway response carries no candle series"
             )
         bars = tuple(
             _bar(symbol, interval, duration, item, cutoff) for item in candles
@@ -82,12 +82,30 @@ class MarketGatewayProvider:
                 )
         return bars
 
-    def _snapshot(self, symbol: str, interval: str) -> dict[str, Any]:
+    def _candles(self, symbol: str, interval: str) -> dict[str, Any]:
         query = urlencode(
             {"symbol": symbol, "interval": interval, "count": self.count}
         )
+        payload = self._read_json(f"{self.base_url}{CANDLES_PATH}?{query}")
+        if payload.get("schemaVersion") != "1":
+            raise MarketGatewayUnavailable(
+                "the market gateway returned an unsupported candle contract"
+            )
+        if payload.get("source") != "moomoo":
+            raise MarketGatewayUnavailable(
+                "the market gateway returned an unknown candle source"
+            )
+        if payload.get("session") != "healthy":
+            failure = payload.get("error")
+            code = failure.get("code") if isinstance(failure, dict) else None
+            raise MarketGatewayUnavailable(
+                f"the market gateway reported {code or 'an error'}"
+            )
+        return payload
+
+    def _read_json(self, url: str) -> dict[str, Any]:
         try:
-            body = self.fetch(f"{self.base_url}{SNAPSHOT_PATH}?{query}")
+            body = self.fetch(url)
         except OSError as error:
             raise MarketGatewayUnavailable(
                 "the market gateway could not be reached"
@@ -100,16 +118,7 @@ class MarketGatewayProvider:
             ) from error
         if not isinstance(payload, dict):
             raise MarketGatewayUnavailable(
-                "the market gateway returned a body that is not a snapshot"
-            )
-        failure = payload.get("error")
-        if failure is not None:
-            # Carry the code and drop the text: an upstream message is free
-            # to describe its own provider, and that description can name
-            # accounts or hosts.
-            code = failure.get("code") if isinstance(failure, dict) else None
-            raise MarketGatewayUnavailable(
-                f"the market gateway reported {code or 'an error'}"
+                "the market gateway returned a body that is not an object"
             )
         return payload
 

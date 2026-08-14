@@ -102,6 +102,16 @@ class Provider:
         return evidence(stamped=self.stamped, stale=self.stale)
 
 
+class SnapshotWithAnomalousHoldings:
+    @property
+    def institutional_holdings(self) -> tuple[()]:
+        raise AssertionError("daily analysis must not read stock-snapshot holdings")
+
+
+class CandlesOnlyProvider(Provider):
+    stock_snapshot = SnapshotWithAnomalousHoldings()
+
+
 def measured_factor(name: str, value: float) -> FactorReading:
     published = AS_OF - timedelta(days=1)
     return FactorReading.measured(
@@ -321,6 +331,15 @@ class AnalysisContractTests(unittest.TestCase):
 
     def test_a_live_decision_is_marked_live(self) -> None:
         self.assertEqual(service().decision("NVDA", "short")["status"], "live")
+
+    def test_completed_daily_bars_stay_live_when_snapshot_holdings_are_anomalous(
+        self,
+    ) -> None:
+        result = service(CandlesOnlyProvider()).decision("NVDA", "short")
+
+        self.assertEqual(result["status"], "live")
+        self.assertEqual(result["interval"], "day")
+        self.assertIsInstance(result["score"]["value"], float)
 
 
 if __name__ == "__main__":

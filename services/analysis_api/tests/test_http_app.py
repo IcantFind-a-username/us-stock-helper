@@ -17,7 +17,7 @@ from us_stock_helper_analysis_api.http_app import (
     build_server,
 )
 
-from test_analysis_service import AS_OF, Provider, service
+from test_analysis_service import AS_OF, CandlesOnlyProvider, Provider, service
 
 
 def app() -> AnalysisApplication:
@@ -34,6 +34,22 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(body["symbol"], "NVDA")
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+
+    def test_completed_daily_bars_are_served_when_snapshot_holdings_are_anomalous(
+        self,
+    ) -> None:
+        application = AnalysisApplication(
+            service(CandlesOnlyProvider()), clock=lambda: AS_OF
+        )
+
+        status, _, result = application.handle(
+            "GET", "/decision", {"symbol": ["NVDA"], "horizon": ["short"]}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "live")
+        self.assertEqual(result["interval"], "day")
+        self.assertIsInstance(result["score"]["value"], float)
 
     def test_write_methods_fail_closed(self) -> None:
         for method in ("POST", "PUT", "PATCH", "DELETE"):
