@@ -191,7 +191,7 @@ export function AdvisersScreen({
               <View style={styles.notice} testID="adviser-council-loading">
                 <Text style={styles.noticeTitle}>顾问委员会正在生成…</Text>
                 <Text style={styles.noticeBody}>
-                  最长可能等待 5 分钟；请勿重复点击，离开本页会取消这次请求。
+                  最长可能等待 5 分钟；请勿重复点击，离开本页会放弃等待结果；已开始的会诊费用不会退回。
                 </Text>
               </View>
             ) : council.status === "unavailable" ? (
@@ -544,7 +544,12 @@ function CouncilResult({
 
       {usage ? (
         <Text style={styles.cost} testID="adviser-council-cost">
-          {`本次模型调用 ${usage.inputTokens + usage.outputTokens} tokens · 实测花费 US$${usage.costUsd.toFixed(4)}${
+          {`本次模型调用 ${
+            usage.inputTokens +
+            usage.outputTokens +
+            usage.cacheCreationInputTokens +
+            usage.cacheReadInputTokens
+          } tokens · 实测花费 US$${usage.costUsd.toFixed(4)}${
             usage.model === null ? "" : ` · ${usage.model}`
           }`}
         </Text>

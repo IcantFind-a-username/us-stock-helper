@@ -206,6 +206,23 @@ it("makes exactly one network call per tap, ignores a repeat tap while loading, 
   expect(calls[0]?.signal?.aborted).toBe(true);
 });
 
+it("tells the reader leaving won't cancel an already-started council run or refund its cost", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+
+  expect(calls).toHaveLength(1);
+  // The server-side council run keeps executing once started, and the
+  // ~US$0.10 is already committed -- leaving the page abandons waiting for
+  // the result, it does not cancel the run or get the money back.
+  expect(view.getByTestId("adviser-council-loading")).toHaveTextContent(
+    /离开本页会放弃等待结果；已开始的会诊费用不会退回/,
+  );
+  expect(view.queryByText(/离开本页会取消这次请求/)).toBeNull();
+});
+
 it("renders the available council with per-framework quotes, the score fold and usage cost", async () => {
   const { analysis, calls } = deferredAnalysis();
   const view = await renderRealMode(analysis);
@@ -230,6 +247,13 @@ it("renders the available council with per-framework quotes, the score fold and 
   expect(view.getByText(/实测花费 US\$0\.1630/)).toBeTruthy();
   expect(view.getByText(/claude-opus-4-8/)).toBeTruthy();
   expect(view.getByText(/风格模型，非本人意见/)).toBeTruthy();
+  // adviserUsageFixture: inputTokens 13000 + outputTokens 3900 +
+  // cacheCreationInputTokens 0 + cacheReadInputTokens 2000 = 18900. Summing
+  // only input+output (16900) silently drops the 2000 cache-read tokens the
+  // call actually spent.
+  expect(view.getByTestId("adviser-council-cost")).toHaveTextContent(
+    /本次模型调用 18900 tokens/,
+  );
 });
 
 it("shows the hard-gate banner instead of a fold when a hard gate voided the council", async () => {
