@@ -107,6 +107,22 @@ export const PriceChart = memo(function PriceChart({
   // guess made before that; hit-testing falls back to trusting it verbatim
   // until the real number is known.
   const [renderedWidth, setRenderedWidth] = useState<number | null>(null);
+
+  // ChartWindow names bars by bare offset/total, with no series identity of
+  // its own, so a window parked off the live edge survives a prop change
+  // that swaps in a whole different series — a symbol switch, or an interval
+  // toggle handed back a cached snapshot without ever unmounting this
+  // component. Re-applying that window to the new series would silently show
+  // an arbitrary mid-history slice of it as if it were live. Resetting here,
+  // during render rather than in an effect, means the very first geometry
+  // built for the new series is already the one the reader asked for.
+  const seriesIdentity = `${snapshot.symbol}|${snapshot.interval}`;
+  const [priorSeriesIdentity, setPriorSeriesIdentity] = useState(seriesIdentity);
+  if (seriesIdentity !== priorSeriesIdentity) {
+    setPriorSeriesIdentity(seriesIdentity);
+    setVisibleWindow(null);
+    setSelectedTimestamp(null);
+  }
   const hasForecast = showForecast && snapshot.forecast !== null;
 
   const panels = useMemo(() => {

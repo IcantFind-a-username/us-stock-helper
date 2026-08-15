@@ -391,6 +391,41 @@ it("keeps following the newest bar when a refresh brings two more", async () => 
   expect(visibleBodies(view)).toHaveLength(drawn);
 });
 
+it("resets a parked window instead of showing a slice of a different series when the interval changes", async () => {
+  const dayCandles: Candle[] = Array.from({ length: 250 }, (_, index) =>
+    candleAt(index),
+  );
+  const daySnapshot: ChartSnapshot = {
+    ...deepSnapshot(dayCandles, "2026-07-25T20:00:00.000Z"),
+    interval: "day",
+  };
+  const view = await render(<PriceChart stock={daySnapshot} />);
+
+  // Park the window off the live edge, the way a reader dragging back into
+  // history would before switching intervals and back.
+  await dragBy(90_000);
+  expect(await selectedTimestamp(view, 0)).toContain(dayCandles[0]!.timestamp);
+
+  const intradayCandles: Candle[] = Array.from({ length: 240 }, (_, index) =>
+    candleAt(index),
+  );
+  const intradaySnapshot: ChartSnapshot = {
+    ...deepSnapshot(intradayCandles, "2026-07-25T20:05:00.000Z"),
+    interval: "15m",
+  };
+  await act(async () => {
+    view.rerender(<PriceChart stock={intradaySnapshot} />);
+  });
+
+  // A window measured against the day series must not be re-applied to a
+  // completely different series just because the bar counts still fit; the
+  // chart opens on the new series' own live edge instead of a mid-history
+  // slice left over from the one the reader was looking at before.
+  expect(await selectedTimestamp(view, 10_000)).toContain(
+    intradayCandles.at(-1)!.timestamp,
+  );
+});
+
 it("moves the volume, MACD, RSI and participation panels with the same drag", async () => {
   const view = await render(<PriceChart stock={deep} />);
   const labelsAt = () =>
