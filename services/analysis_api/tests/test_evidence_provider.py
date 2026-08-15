@@ -184,6 +184,37 @@ class CompositeProviderTests(unittest.TestCase):
         self.assertIs(institutional_answer, institutional_flow.answer)
         self.assertEqual(institutional_flow.queries, [("NVDA", AS_OF)])
 
+    def test_watchlist_symbols_passes_straight_through_to_bars(self) -> None:
+        class WatchlistBars(FakeBars):
+            def watchlist_symbols(self) -> tuple[str, ...]:
+                return ("NVDA", "TSLA")
+
+        provider = CompositeAnalysisProvider(
+            bars=WatchlistBars(),
+            evidence=FeedEvidenceProvider(FakeCollector()),
+            factors=FakeFactors(),
+            institutional_flow=FakeInstitutionalFlow(),
+        )
+
+        self.assertEqual(provider.watchlist_symbols(), ("NVDA", "TSLA"))
+
+    def test_a_bars_source_without_a_watchlist_degrades_to_an_attribute_error(
+        self,
+    ) -> None:
+        # FakeBars never grew watchlist_symbols; the market-brief's own
+        # getattr-based detection treats this the same as "no default
+        # universe", so the passthrough must raise rather than pretend one
+        # exists.
+        provider = CompositeAnalysisProvider(
+            bars=FakeBars(),
+            evidence=FeedEvidenceProvider(FakeCollector()),
+            factors=FakeFactors(),
+            institutional_flow=FakeInstitutionalFlow(),
+        )
+
+        with self.assertRaises(AttributeError):
+            provider.watchlist_symbols()
+
 
 class RequestScopedGapTests(unittest.TestCase):
     """A request's gap disclosure must survive a concurrent clean sweep.

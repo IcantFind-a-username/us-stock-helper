@@ -315,6 +315,94 @@ class GatewayFailureTests(unittest.TestCase):
         self.assertEqual(bars, ())
 
 
+def watchlist_envelope(
+    items: list[dict[str, Any]] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "schemaVersion": "1",
+        "source": "moomoo",
+        "session": "healthy",
+        "asOf": "2026-07-25T16:00:00Z",
+        "availableAt": "2026-07-25T16:00:00Z",
+        "items": (
+            [{"code": "US.NVDA", "price": 173.4, "changePercent": 2.7, "availableAt": "2026-07-25T16:00:00Z"}]
+            if items is None
+            else items
+        ),
+    }
+    payload.update(overrides)
+    return payload
+
+
+class WatchlistSymbolsTests(unittest.TestCase):
+    def test_watchlist_items_become_plain_us_symbols(self) -> None:
+        symbols = provider(
+            Gateway(
+                watchlist_envelope(
+                    [
+                        {"code": "US.NVDA", "price": 173.4, "changePercent": 2.7, "availableAt": "2026-07-25T16:00:00Z"},
+                        {"code": "US.TSLA", "price": 250.0, "changePercent": -1.2, "availableAt": "2026-07-25T16:00:00Z"},
+                    ]
+                )
+            )
+        ).watchlist_symbols()
+
+        self.assertEqual(symbols, ("NVDA", "TSLA"))
+
+    def test_the_request_names_no_query_parameters(self) -> None:
+        gateway = Gateway(watchlist_envelope())
+
+        provider(gateway).watchlist_symbols()
+
+        self.assertEqual(gateway.urls, ["http://127.0.0.1:8765/watchlist"])
+
+    def test_duplicate_codes_are_collapsed_in_first_seen_order(self) -> None:
+        symbols = provider(
+            Gateway(
+                watchlist_envelope(
+                    [
+                        {"code": "US.NVDA", "price": 173.4, "changePercent": 2.7, "availableAt": "2026-07-25T16:00:00Z"},
+                        {"code": "US.NVDA", "price": 173.4, "changePercent": 2.7, "availableAt": "2026-07-25T16:00:00Z"},
+                    ]
+                )
+            )
+        ).watchlist_symbols()
+
+        self.assertEqual(symbols, ("NVDA",))
+
+    def test_an_empty_watchlist_is_an_honest_empty_tuple(self) -> None:
+        symbols = provider(Gateway(watchlist_envelope([]))).watchlist_symbols()
+
+        self.assertEqual(symbols, ())
+
+    def test_an_unhealthy_session_is_refused(self) -> None:
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(
+                Gateway(
+                    watchlist_envelope(
+                        [],
+                        session="offline",
+                        error={"code": "OPEND_OFFLINE", "message": "offline"},
+                    )
+                )
+            ).watchlist_symbols()
+
+    def test_an_unreachable_gateway_fails_loudly(self) -> None:
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(Gateway(raises=URLError("connection refused"))).watchlist_symbols()
+
+    def test_a_body_that_is_not_the_watchlist_contract_is_refused(self) -> None:
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(Gateway(body=b"not json")).watchlist_symbols()
+
+    def test_a_malformed_item_is_refused_not_silently_dropped(self) -> None:
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(
+                Gateway(watchlist_envelope([{"price": 173.4}]))
+            ).watchlist_symbols()
+
+
 class EvidenceTests(unittest.TestCase):
     def test_the_gateway_boundary_does_not_answer_for_evidence(self) -> None:
         # It once returned an empty tuple, which read as "the market is quiet"

@@ -32,6 +32,7 @@ from us_stock_helper_core import (
 
 
 CANDLES_PATH = "/candles"
+WATCHLIST_PATH = "/watchlist"
 SNAPSHOT_PATH = "/v3/stock-snapshot"
 _INTERVALS = {
     "1m": timedelta(minutes=1),
@@ -141,6 +142,55 @@ class MarketGatewayProvider:
                     "the gateway candle series is out of order"
                 )
         return bars
+
+    def watchlist_symbols(self) -> tuple[str, ...]:
+        """The operator's own watchlist, as plain US symbols, in gateway order.
+
+        This is the market-brief's default breadth universe when no explicit
+        `ANALYSIS_API_BREADTH_UNIVERSE` is configured — never a claim of
+        full-market coverage, only ever the caller's own selection. A gateway
+        that cannot answer this (offline, malformed, an empty watchlist) is
+        the caller's cue to leave breadth unavailable, not a reason for this
+        method to invent a universe.
+        """
+
+        payload = self._read_json(f"{self.base_url}{WATCHLIST_PATH}")
+        if payload.get("schemaVersion") != "1":
+            raise MarketGatewayUnavailable(
+                "the market gateway returned an unsupported watchlist contract"
+            )
+        if payload.get("source") != "moomoo":
+            raise MarketGatewayUnavailable(
+                "the market gateway returned an unknown watchlist source"
+            )
+        if payload.get("session") != "healthy":
+            failure = payload.get("error")
+            code = failure.get("code") if isinstance(failure, dict) else None
+            raise MarketGatewayUnavailable(
+                f"the market gateway reported {code or 'an error'}"
+            )
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise MarketGatewayUnavailable(
+                "the market gateway watchlist carries no items"
+            )
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise MarketGatewayUnavailable("a watchlist item is malformed")
+            code = item.get("code")
+            if not isinstance(code, str) or not code.strip():
+                raise MarketGatewayUnavailable(
+                    "a watchlist item is missing its code"
+                )
+            symbol = code.strip().upper()
+            if symbol.startswith("US."):
+                symbol = symbol[3:]
+            if symbol and symbol not in seen:
+                seen.add(symbol)
+                symbols.append(symbol)
+        return tuple(symbols)
 
     def institutional_flow_inputs_for(
         self, symbol: str, as_of: datetime

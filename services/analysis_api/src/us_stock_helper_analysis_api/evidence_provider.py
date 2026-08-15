@@ -126,6 +126,21 @@ class CompositeAnalysisProvider:
     ) -> InstitutionalFlowReading:
         return self.institutional_flow.reading(symbol=symbol, as_of=as_of)
 
+    def watchlist_symbols(self) -> tuple[str, ...]:
+        """Passed straight through to `bars` (the gateway) when it has one.
+
+        The market-brief's breadth universe is the only reader of this today;
+        it already treats a missing or failing `watchlist_symbols` as "no
+        default universe" via `getattr`, so an `AttributeError` here (a bars
+        source that never grew this method) degrades exactly like any other
+        watchlist failure rather than needing a second code path.
+        """
+
+        read = getattr(self.bars, "watchlist_symbols", None)
+        if not callable(read):
+            raise AttributeError("this bars source does not serve a watchlist")
+        return read()
+
 
 def evidence_provider_from_environment(
     environment: Mapping[str, str] | None = None,
