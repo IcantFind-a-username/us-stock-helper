@@ -15,13 +15,8 @@ from .models import (
     require_unit_range,
     require_utc,
 )
-from .patterns import (
-    detect_double_bottom,
-    detect_head_and_shoulders,
-    detect_ma5_pullback,
-    magic_nine,
-    three_bar_fractals,
-)
+from .patterns import magic_nine
+from .patterns_shapes import PatternShapeKind, PatternShapeStatus, detect_pattern_shapes
 from .temporal import select_bars_as_of, select_evidence_as_of
 
 
@@ -35,6 +30,20 @@ ADVISER_SCORE_CAP = 3.0
 # Below this no detector ran at all, and "the detectors found nothing" would
 # be a claim about a reading nobody took.
 _SMALLEST_PATTERN_WINDOW = 3
+
+# Score magnitude per confirmed shape kind (sign follows the signal's own
+# direction) -- mirrors patterns_shapes.py's own confirmed/invalidated
+# distinction: only a confirmed shape votes, matching the "只计入收盘确认的
+# 形态证据" explanation below.
+_PATTERN_SHAPE_MAGNITUDE: dict[PatternShapeKind, float] = {
+    PatternShapeKind.FRACTAL_TOP: 0.3,
+    PatternShapeKind.FRACTAL_BOTTOM: 0.3,
+    PatternShapeKind.DOUBLE_TOP: 0.9,
+    PatternShapeKind.DOUBLE_BOTTOM: 0.9,
+    PatternShapeKind.HEAD_SHOULDERS_TOP: 0.9,
+    PatternShapeKind.HEAD_SHOULDERS_BOTTOM: 0.9,
+    PatternShapeKind.MA5_PULLBACK: 0.6,
+}
 
 # How long a completed bar remains "the current picture" before a decision
 # must refuse to act on it. Budgeted against the interval the bars were
@@ -220,22 +229,16 @@ def extract_horizon_features(
             / 9.0
             * 0.5
         )
-    pullback = detect_ma5_pullback(selected_bars)
-    double_bottom = detect_double_bottom(selected_bars)
-    head_and_shoulders = detect_head_and_shoulders(selected_bars)
-    if pullback is not None:
-        pattern_values.append(
-            0.6 if pullback.direction == Direction.BULLISH else -0.6
-        )
-    if double_bottom is not None:
-        pattern_values.append(0.9)
-    if head_and_shoulders is not None:
-        pattern_values.append(-0.9)
-    fractals = three_bar_fractals(selected_bars)
-    if fractals:
-        pattern_values.append(
-            0.3 if fractals[-1].direction == Direction.BULLISH else -0.3
-        )
+    # detect_pattern_shapes runs 顶分型/底分型/W底/双头/头肩顶/头肩底/回踩五日线
+    # over the same completed bars the chart-hint card serves; only a
+    # confirmed shape votes here, so the score and the served hint can never
+    # disagree about what "confirmed" means.
+    for detection in detect_pattern_shapes(selected_bars):
+        for signal in detection.signals:
+            if signal.status is not PatternShapeStatus.CONFIRMED:
+                continue
+            sign = 1.0 if signal.direction == Direction.BULLISH else -1.0
+            pattern_values.append(sign * _PATTERN_SHAPE_MAGNITUDE[signal.kind])
     if len(selected_bars) < _SMALLEST_PATTERN_WINDOW:
         # Too few bars for any detector to have looked. Claiming a measured
         # zero here would report "looked and found nothing" for a window that
