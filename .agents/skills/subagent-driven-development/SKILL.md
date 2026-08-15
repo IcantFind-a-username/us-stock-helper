@@ -191,6 +191,21 @@ that implementer. Single-file mechanical fixes also take the cheapest tier.
 - Touches multiple files with integration concerns → standard model
 - Requires design judgment or broad codebase understanding → most capable model
 
+**Risk-tiered review dispatch (agreed 2026-08-15; apply by default, no
+per-session opt-in needed):**
+- Reviewer tier follows the diff's RISK, not its size alone: point-in-time /
+  financial-semantics / security / concurrency dimensions → most capable
+  model; mechanical dimensions (scripts, copy, config) → standard model.
+- Adversarial verification density: two independent verifiers per
+  critical/important finding; one (or sampled) for minor. Always tell
+  reviewers their findings will face adversarial verification — measured
+  effect: self-filtering improved to 1 refuted of 25 proposed.
+- Reuse existing session artifacts (gap maps, findings.json, contract notes)
+  instead of re-scanning the codebase for context another agent already
+  extracted.
+- Exhaustive-orchestration modes (e.g. ultracode) widen the orchestration,
+  never the per-agent tier: tier rules above still apply.
+
 ## The Task Loop
 
 Everything you paste into a dispatch prompt — and everything a subagent
