@@ -597,6 +597,72 @@ export interface LiveVolatilityIndicator extends LiveIndicatorValue {
   missingReason: string | null;
 }
 
+/**
+ * 顶分型/底分型/W底/双头/头肩顶/头肩底/回踩五日线企稳（回眸一笑）-- see
+ * services/analysis_core/us_stock_helper_core/patterns_shapes.py, whose
+ * module docstring is the versioned spec every rule here implements.
+ */
+export type PatternShapeKind =
+  | "fractal_top"
+  | "fractal_bottom"
+  | "double_bottom"
+  | "double_top"
+  | "head_shoulders_top"
+  | "head_shoulders_bottom"
+  | "ma5_pullback";
+
+export type PatternShapeStatus = "forming" | "confirmed" | "invalidated";
+
+export interface PatternShapeBarRef {
+  index: number;
+  closedAt: string;
+}
+
+/** Three-layer reading: 一句话含义 / 展开解释 / honesty line, fixed server-side copy. */
+export interface PatternShapeReading {
+  summary: string;
+  detail: string;
+  /** Fixed until the phase-2 backtest attaches real hit rates: "历史胜率待回测". */
+  honesty: string;
+}
+
+export interface PatternShapeSignal {
+  kind: PatternShapeKind;
+  name: string;
+  status: PatternShapeStatus;
+  direction: "bullish" | "bearish";
+  /** Structural bars (pivots/shoulders/touch bar…) in chronological order. */
+  bars: PatternShapeBarRef[];
+  /** Index (into completedCandles) a chart marker should anchor to. */
+  anchorIndex: number;
+  /** Bar index this status became true at (confirmed/invalidated), or "as of" for forming. */
+  eventIndex: number;
+  invalidation: string;
+  explanation: string;
+  reading: PatternShapeReading;
+  methodVersion: "patterns-shapes-v1";
+}
+
+export interface PatternShapeDetection {
+  detector: "fractal" | "double_extreme" | "head_and_shoulders" | "ma5_pullback";
+  minimumWindow: number;
+  sampleSize: number;
+  qualityStatus: "live" | "unavailable";
+  missingReason: string | null;
+  methodVersion: "patterns-shapes-v1";
+  signals: PatternShapeSignal[];
+}
+
+/** All four shape detectors' results for one snapshot's completed bars. */
+export interface LivePatternShapesIndicator {
+  source: "analysis-core";
+  asOf: string;
+  availableAt: string;
+  methodVersion: "patterns-shapes-v1";
+  qualityStatus: "live" | "unavailable";
+  detections: PatternShapeDetection[];
+}
+
 export interface ChartMacdIndicator {
   line: number | null;
   signal: number | null;
@@ -737,6 +803,7 @@ export interface LiveTechnicalIndicators {
   rsi: LiveIndicatorValue;
   macd: LiveMacdIndicator;
   volatility: LiveVolatilityIndicator;
+  patternShapes: LivePatternShapesIndicator;
 }
 
 export interface StockSnapshotSections {

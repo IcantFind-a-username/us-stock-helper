@@ -159,6 +159,53 @@ export function stockSnapshotV3Fixture() {
               methodVersion: "close-to-close-realized-v1",
               qualityStatus: "live",
             },
+            patternShapes: {
+              source: "analysis-core",
+              asOf: "2026-07-25T15:55:00.000Z",
+              availableAt: cutoff,
+              methodVersion: "patterns-shapes-v1",
+              qualityStatus: "live",
+              // Two candles is below every detector's own minimum window, so
+              // each one reports its own typed-unavailable reason.
+              detections: [
+                {
+                  detector: "fractal",
+                  minimumWindow: 3,
+                  sampleSize: 2,
+                  qualityStatus: "unavailable",
+                  missingReason: "完整K线不足 3 根，暂无法识别分型",
+                  methodVersion: "patterns-shapes-v1",
+                  signals: [] as unknown[],
+                },
+                {
+                  detector: "double_extreme",
+                  minimumWindow: 7,
+                  sampleSize: 2,
+                  qualityStatus: "unavailable",
+                  missingReason: "完整K线不足 7 根，暂无法识别双重顶/底",
+                  methodVersion: "patterns-shapes-v1",
+                  signals: [] as unknown[],
+                },
+                {
+                  detector: "head_and_shoulders",
+                  minimumWindow: 8,
+                  sampleSize: 2,
+                  qualityStatus: "unavailable",
+                  missingReason: "完整K线不足 8 根，暂无法识别头肩形态",
+                  methodVersion: "patterns-shapes-v1",
+                  signals: [] as unknown[],
+                },
+                {
+                  detector: "ma5_pullback",
+                  minimumWindow: 8,
+                  sampleSize: 2,
+                  qualityStatus: "unavailable",
+                  missingReason: "完整K线不足 8 根，暂无法识别回踩五日线形态",
+                  methodVersion: "patterns-shapes-v1",
+                  signals: [] as unknown[],
+                },
+              ],
+            },
           },
           magicNine: {
             direction: "bullish" as string | null,

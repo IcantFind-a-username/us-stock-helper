@@ -10,10 +10,14 @@ import type {
   LiveStockSnapshot,
   CompletedTdSetup,
   LiveVolatilityIndicator,
+  LivePatternShapesIndicator,
   MagicNineSnapshot,
   MagicNineSeriesPoint,
   NormalizedCapitalFlowPoint,
   ParticipationBar,
+  PatternShapeBarRef,
+  PatternShapeDetection,
+  PatternShapeSignal,
   PriceAdjustment,
   SnapshotAvailability,
   SnapshotQuality,
@@ -690,6 +694,205 @@ function decodeMacdSeries(
   };
 }
 
+const patternShapeKinds = new Set([
+  "fractal_top",
+  "fractal_bottom",
+  "double_bottom",
+  "double_top",
+  "head_shoulders_top",
+  "head_shoulders_bottom",
+  "ma5_pullback",
+]);
+
+const patternShapeStatuses = new Set(["forming", "confirmed", "invalidated"]);
+
+const patternShapeDetectors = new Set([
+  "fractal",
+  "double_extreme",
+  "head_and_shoulders",
+  "ma5_pullback",
+]);
+
+function decodePatternShapeBar(value: unknown, label: string): PatternShapeBarRef {
+  if (!isRecord(value)) throw new GatewayValidationError(`${label} must be an object`);
+  const index = requireFiniteNumber(value, "index");
+  if (!Number.isInteger(index) || index < 0) {
+    throw new GatewayValidationError(`${label}.index must be a non-negative integer`);
+  }
+  const closedAt = parseTimestamp(requireString(value, "closedAt"), `${label}.closedAt`);
+  return { index, closedAt: closedAt.toISOString() };
+}
+
+function decodePatternShapeSignal(
+  value: unknown,
+  label: string,
+  candleCount: number,
+): PatternShapeSignal {
+  if (!isRecord(value)) throw new GatewayValidationError(`${label} must be an object`);
+  const kind = requireString(value, "kind");
+  if (!patternShapeKinds.has(kind)) {
+    throw new GatewayValidationError(`${label}.kind is unsupported`);
+  }
+  const status = requireString(value, "status");
+  if (!patternShapeStatuses.has(status)) {
+    throw new GatewayValidationError(`${label}.status is unsupported`);
+  }
+  const direction = requireString(value, "direction");
+  if (direction !== "bullish" && direction !== "bearish") {
+    throw new GatewayValidationError(`${label}.direction must be bullish or bearish`);
+  }
+  if (!Array.isArray(value.bars) || value.bars.length === 0) {
+    throw new GatewayValidationError(`${label}.bars must be a non-empty array`);
+  }
+  const bars = value.bars.map((bar, index) =>
+    decodePatternShapeBar(bar, `${label}.bars[${index}]`),
+  );
+  for (let index = 1; index < bars.length; index += 1) {
+    if (bars[index]!.index <= bars[index - 1]!.index) {
+      throw new GatewayValidationError(`${label}.bars must be strictly increasing`);
+    }
+  }
+  const anchorIndex = requireFiniteNumber(value, "anchorIndex");
+  if (!bars.some((bar) => bar.index === anchorIndex)) {
+    throw new GatewayValidationError(`${label}.anchorIndex must match one of its bars`);
+  }
+  const eventIndex = requireFiniteNumber(value, "eventIndex");
+  if (!Number.isInteger(eventIndex) || eventIndex < 0 || eventIndex >= candleCount) {
+    throw new GatewayValidationError(`${label}.eventIndex is out of range`);
+  }
+  const name = requireString(value, "name");
+  const invalidation = requireString(value, "invalidation");
+  const explanation = requireString(value, "explanation");
+  if (!name.trim() || !invalidation.trim() || !explanation.trim()) {
+    throw new GatewayValidationError(`${label} carries an empty required field`);
+  }
+  const readingRecord = value.reading;
+  if (!isRecord(readingRecord)) {
+    throw new GatewayValidationError(`${label}.reading must be an object`);
+  }
+  const summary = requireString(readingRecord, "summary");
+  const detail = requireString(readingRecord, "detail");
+  const honesty = requireString(readingRecord, "honesty");
+  if (!summary.trim() || !detail.trim()) {
+    throw new GatewayValidationError(`${label}.reading carries an empty required field`);
+  }
+  if (honesty !== "历史胜率待回测") {
+    throw new GatewayValidationError(
+      `${label}.reading.honesty must carry the fixed disclosure`,
+    );
+  }
+  requireExpectedMethod(value, "patterns-shapes-v1", label);
+  return {
+    kind: kind as PatternShapeSignal["kind"],
+    name,
+    status: status as PatternShapeSignal["status"],
+    direction,
+    bars,
+    anchorIndex,
+    eventIndex,
+    invalidation,
+    explanation,
+    reading: { summary, detail, honesty },
+    methodVersion: "patterns-shapes-v1",
+  };
+}
+
+function decodePatternShapeDetection(
+  value: unknown,
+  index: number,
+  candleCount: number,
+): PatternShapeDetection {
+  const label = `indicators.patternShapes.detections[${index}]`;
+  if (!isRecord(value)) throw new GatewayValidationError(`${label} must be an object`);
+  const detector = requireString(value, "detector");
+  if (!patternShapeDetectors.has(detector)) {
+    throw new GatewayValidationError(`${label}.detector is unsupported`);
+  }
+  const minimumWindow = requireFiniteNumber(value, "minimumWindow");
+  if (!Number.isInteger(minimumWindow) || minimumWindow < 1) {
+    throw new GatewayValidationError(`${label}.minimumWindow must be a positive integer`);
+  }
+  const sampleSize = requireFiniteNumber(value, "sampleSize");
+  if (!Number.isInteger(sampleSize) || sampleSize < 0) {
+    throw new GatewayValidationError(`${label}.sampleSize must be a non-negative integer`);
+  }
+  const qualityStatus = requireStatus(value, "qualityStatus");
+  if (qualityStatus !== "live" && qualityStatus !== "unavailable") {
+    throw new GatewayValidationError(`${label} has an unsupported quality status`);
+  }
+  const missingReason = value.missingReason;
+  if (
+    missingReason !== null &&
+    (typeof missingReason !== "string" || missingReason.trim() === "")
+  ) {
+    throw new GatewayValidationError(
+      `${label}.missingReason must be a non-empty string or null`,
+    );
+  }
+  if (!Array.isArray(value.signals)) {
+    throw new GatewayValidationError(`${label}.signals must be an array`);
+  }
+  if (qualityStatus === "unavailable") {
+    if (value.signals.length !== 0 || missingReason === null) {
+      throw new GatewayValidationError(
+        `${label} unavailable detection carries no signals and requires a reason`,
+      );
+    }
+  } else if (missingReason !== null) {
+    throw new GatewayValidationError(`${label} a live detection cannot carry a missing reason`);
+  }
+  const signals = value.signals.map((signal, signalIndex) =>
+    decodePatternShapeSignal(signal, `${label}.signals[${signalIndex}]`, candleCount),
+  );
+  requireExpectedMethod(value, "patterns-shapes-v1", label);
+  return {
+    detector: detector as PatternShapeDetection["detector"],
+    minimumWindow,
+    sampleSize,
+    qualityStatus,
+    missingReason: missingReason as string | null,
+    methodVersion: "patterns-shapes-v1",
+    signals,
+  };
+}
+
+function decodePatternShapesIndicator(
+  value: unknown,
+  cutoff: Date,
+  candleCount: number,
+): LivePatternShapesIndicator {
+  if (!isRecord(value)) {
+    throw new GatewayValidationError("indicators.patternShapes must be an object");
+  }
+  const metadata = requireSnapshotMetadata(value, "indicators.patternShapes", cutoff);
+  if (metadata.source !== "analysis-core") {
+    throw new GatewayValidationError("indicators.patternShapes must identify analysis-core");
+  }
+  requireExpectedMethod(value, "patterns-shapes-v1", "indicators.patternShapes");
+  const qualityStatus = requireStatus(value, "qualityStatus");
+  if (qualityStatus !== "live" && qualityStatus !== "unavailable") {
+    throw new GatewayValidationError(
+      "indicators.patternShapes has an unsupported quality status",
+    );
+  }
+  if (!Array.isArray(value.detections)) {
+    throw new GatewayValidationError("indicators.patternShapes.detections must be an array");
+  }
+  if (qualityStatus === "unavailable" && value.detections.length !== 0) {
+    throw new GatewayValidationError("an unavailable patternShapes entry carries no detections");
+  }
+  const detections = value.detections.map((detection, index) =>
+    decodePatternShapeDetection(detection, index, candleCount),
+  );
+  return {
+    ...metadata,
+    source: "analysis-core",
+    methodVersion: "patterns-shapes-v1",
+    qualityStatus,
+    detections,
+  };
+}
+
 function decodeIndicatorValue(
   value: unknown,
   key: "ma5" | "rsi" | "volatility",
@@ -1016,6 +1219,11 @@ function unavailableTechnical(
         sampleSize: 0,
         missingReason: "technical section unavailable",
         methodVersion: "close-to-close-realized-v1",
+      },
+      patternShapes: {
+        ...metadata,
+        methodVersion: "patterns-shapes-v1",
+        detections: [],
       },
     },
     magicNine: {
@@ -1491,6 +1699,11 @@ export function decodeStockSnapshotEnvelope(
     cutoff,
     candles.length,
   );
+  const patternShapes = decodePatternShapesIndicator(
+    value.indicators.patternShapes,
+    cutoff,
+    candles.length,
+  );
   const macdRecord = value.indicators.macd;
   if (!isRecord(macdRecord)) throw new GatewayValidationError("indicators.macd must be an object");
   const macdMetadata = requireSnapshotMetadata(macdRecord, "indicators.macd", cutoff);
@@ -1608,7 +1821,13 @@ export function decodeStockSnapshotEnvelope(
   if (!Array.isArray(value.warnings) || !value.warnings.every((warning) => typeof warning === "string")) {
     throw new GatewayValidationError("warnings must be an array of strings");
   }
-  const indicators: LiveTechnicalIndicators = { ma5, rsi, macd, volatility };
+  const indicators: LiveTechnicalIndicators = {
+    ma5,
+    rsi,
+    macd,
+    volatility,
+    patternShapes,
+  };
   const sections = legacyV2Sections({
     quote,
     candles,
@@ -1860,6 +2079,11 @@ function decodeV3TechnicalSection(
     cutoff,
     candleCount,
   );
+  const patternShapes = decodePatternShapesIndicator(
+    indicatorsRecord.patternShapes,
+    cutoff,
+    candleCount,
+  );
   const macdRecord = indicatorsRecord.macd;
   if (!isRecord(macdRecord)) {
     throw new GatewayValidationError("technical indicators.macd must be an object");
@@ -1967,6 +2191,7 @@ function decodeV3TechnicalSection(
     ["rsi", rsi],
     ["macd", macd],
     ["volatility", volatility],
+    ["patternShapes", patternShapes],
     ["magicNine", magicNine],
   ] as const) {
     if (
@@ -1980,7 +2205,7 @@ function decodeV3TechnicalSection(
     }
   }
   return withSectionData(section, {
-    indicators: { ma5, rsi, macd, volatility },
+    indicators: { ma5, rsi, macd, volatility, patternShapes },
     magicNine,
   });
 }

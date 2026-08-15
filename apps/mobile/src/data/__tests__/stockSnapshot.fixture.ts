@@ -170,6 +170,54 @@ export function stockSnapshotFixture() {
         methodVersion: "td-setup-close-4-v2",
         qualityStatus: "live",
       },
+      patternShapes: {
+        source: "analysis-core",
+        asOf: "2026-07-25T15:55:00.000Z",
+        availableAt: cutoff,
+        methodVersion: "patterns-shapes-v1",
+        qualityStatus: "live",
+        // Two candles is below every detector's own minimum window, so each
+        // one reports its own typed-unavailable reason -- the same honesty
+        // the analysis_core detectors themselves apply.
+        detections: [
+          {
+            detector: "fractal",
+            minimumWindow: 3,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 3 根，暂无法识别分型" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+          {
+            detector: "double_extreme",
+            minimumWindow: 7,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 7 根，暂无法识别双重顶/底" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+          {
+            detector: "head_and_shoulders",
+            minimumWindow: 8,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 8 根，暂无法识别头肩形态" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+          {
+            detector: "ma5_pullback",
+            minimumWindow: 8,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 8 根，暂无法识别回踩五日线形态" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+        ],
+      },
     },
     institutionalHoldings: [
       {

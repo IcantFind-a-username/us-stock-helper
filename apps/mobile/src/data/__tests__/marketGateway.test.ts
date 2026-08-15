@@ -648,6 +648,8 @@ describe("schema-v3 stock snapshot validation", () => {
     payload.sections.technical.data.indicators.macd.histogramSeries = [];
     payload.sections.technical.data.indicators.volatility.asOf =
       payload.sections.technical.asOf;
+    payload.sections.technical.data.indicators.patternShapes.asOf =
+      payload.sections.technical.asOf;
     payload.sections.technical.data.magicNine.asOf =
       payload.sections.technical.asOf;
     payload.sections.technical.data.magicNine.series = [];
@@ -2041,6 +2043,97 @@ describe("indicator series", () => {
     mutate(payload);
 
     expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/series/);
+  });
+});
+
+describe("patternShapes indicator", () => {
+  function confirmedSignal() {
+    return {
+      kind: "double_bottom",
+      name: "W底",
+      status: "confirmed",
+      direction: "bullish",
+      bars: [
+        { index: 0, closedAt: "2026-07-25T15:50:00.000Z" },
+        { index: 1, closedAt: "2026-07-25T15:55:00.000Z" },
+      ],
+      anchorIndex: 1,
+      eventIndex: 1,
+      invalidation: "收盘跌破颈线 104.00",
+      explanation: "两个低点幅度接近；颈线 104.00。",
+      reading: {
+        summary: "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+        detail: "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。",
+        honesty: "历史胜率待回测",
+      },
+      methodVersion: "patterns-shapes-v1",
+    };
+  }
+
+  it("decodes the typed-unavailable envelope every detector carries below its window", () => {
+    const snapshot = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
+
+    const patternShapes = snapshot.indicators.patternShapes;
+    expect(patternShapes.qualityStatus).toBe("live");
+    expect(patternShapes.detections).toHaveLength(4);
+    for (const detection of patternShapes.detections) {
+      expect(detection.qualityStatus).toBe("unavailable");
+      expect(detection.signals).toEqual([]);
+      expect(detection.missingReason).toBeTruthy();
+    }
+  });
+
+  it("decodes a confirmed signal with its full three-layer reading", () => {
+    const payload = stockSnapshotFixture();
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [confirmedSignal()];
+
+    const snapshot = decodeStockSnapshotEnvelope(payload, { now });
+
+    const doubleExtreme = snapshot.indicators.patternShapes.detections.find(
+      (detection) => detection.detector === "double_extreme",
+    );
+    expect(doubleExtreme?.signals).toHaveLength(1);
+    const signal = doubleExtreme!.signals[0]!;
+    expect(signal.name).toBe("W底");
+    expect(signal.status).toBe("confirmed");
+    expect(signal.invalidation).toBe("收盘跌破颈线 104.00");
+    expect(signal.reading.honesty).toBe("历史胜率待回测");
+    expect(signal.bars.map((bar) => bar.index)).toEqual([0, 1]);
+  });
+
+  it("rejects a reading that drops the fixed backtest-honesty disclosure", () => {
+    const payload = stockSnapshotFixture();
+    const signal = confirmedSignal();
+    signal.reading.honesty = "胜率 80%";
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [signal];
+
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/honesty/);
+  });
+
+  it("rejects an eventIndex outside the completed candle range", () => {
+    const payload = stockSnapshotFixture();
+    const signal = confirmedSignal();
+    signal.eventIndex = 99;
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [signal];
+
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/eventIndex/);
+  });
+
+  it("rejects an unknown pattern kind rather than passing it through", () => {
+    const payload = stockSnapshotFixture();
+    const signal = confirmedSignal();
+    (signal as { kind: string }).kind = "flying_saucer";
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [signal];
+
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/kind/);
   });
 });
 
