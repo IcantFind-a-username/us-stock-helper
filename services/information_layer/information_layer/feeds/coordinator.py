@@ -102,29 +102,36 @@ class PollingCoordinator:
         return coordinator
 
     def snapshot(self) -> dict[str, Any]:
-        """A JSON-serializable record of what each feed has already published."""
+        """A JSON-serializable record of what each feed has already published.
 
-        return {
-            adapter_id: {
-                "etag": state.validators.etag,
-                "last_modified": state.validators.last_modified,
-                "consecutive_failures": state.consecutive_failures,
-                "last_polled_at": (
-                    state.last_polled_at.isoformat()
-                    if state.last_polled_at
-                    else None
-                ),
-                "published": {
-                    claim_key: {
-                        "content_hash": record.content_hash,
-                        "event_id": record.event_id,
-                        "revision_number": record.revision_number,
-                    }
-                    for claim_key, record in state.published.items()
-                },
+        Holds the same lock as poll()'s reserve/commit sections: a snapshot
+        taken for persistence while another request polls must not iterate a
+        dict that changes size mid-read, and must not mix pre- and
+        post-commit validators for one adapter.
+        """
+
+        with self._lock:
+            return {
+                adapter_id: {
+                    "etag": state.validators.etag,
+                    "last_modified": state.validators.last_modified,
+                    "consecutive_failures": state.consecutive_failures,
+                    "last_polled_at": (
+                        state.last_polled_at.isoformat()
+                        if state.last_polled_at
+                        else None
+                    ),
+                    "published": {
+                        claim_key: {
+                            "content_hash": record.content_hash,
+                            "event_id": record.event_id,
+                            "revision_number": record.revision_number,
+                        }
+                        for claim_key, record in state.published.items()
+                    },
+                }
+                for adapter_id, state in self._states.items()
             }
-            for adapter_id, state in self._states.items()
-        }
 
     def poll(
         self,

@@ -234,6 +234,101 @@ class ReservationReleaseTests(unittest.TestCase):
         self.assertEqual(transport.calls, 2)
 
 
+class _PausingStates(dict):
+    """A `_states` stand-in whose iteration pauses after the first entry so a
+    concurrent poll can try to insert a new adapter state mid-snapshot. An
+    unlocked snapshot then resumes iterating a dict that changed size."""
+
+    def __init__(self, *args, on_first_item, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_first_item = on_first_item
+        self._fired = False
+
+    def items(self):  # type: ignore[override]
+        view = super().items()
+
+        def paused():
+            for index, entry in enumerate(iter(view)):
+                yield entry
+                if index == 0 and not self._fired:
+                    self._fired = True
+                    self._on_first_item()
+
+        return paused()
+
+
+class SnapshotConsistencyTests(unittest.TestCase):
+    """snapshot() is the persistence read; it must hold the same lock that
+    protects poll()'s inserts, or a restore-time snapshot taken while another
+    request polls raises `dictionary changed size during iteration`."""
+
+    def test_snapshot_survives_a_concurrent_first_poll(self) -> None:
+        transport = FakeTransport(response(), response())
+        coordinator = PollingCoordinator(clock=lambda: NOW)
+        feed = adapter(transport)
+
+        snapshot_paused = threading.Event()
+        poll_finished = threading.Event()
+
+        def on_first_item() -> None:
+            snapshot_paused.set()
+            # Give the concurrent poll a full second to insert its state; a
+            # locked snapshot keeps it queued and this wait simply times out.
+            poll_finished.wait(timeout=1.0)
+
+        seeded = coordinator.poll(
+            feed, since=NOW - timedelta(hours=1), until=NOW
+        )
+        self.assertEqual(len(seeded.events), 1)
+        coordinator._states = _PausingStates(
+            coordinator._states, on_first_item=on_first_item
+        )
+
+        other = GenericFeedAdapter(
+            FeedConfig(
+                adapter_id="wire-2",
+                feed_url="https://wire.example/feed2.atom",
+                allowed_hosts=("wire.example",),
+                publisher_id="wire",
+                publisher_name="Wire",
+                source_type="wire",
+                reliability=0.9,
+                user_agent="USStockHelper/0.1 research@example.test",
+                claim_status=ClaimStatus.REPORTED,
+                robots_allowed=True,
+                minimum_poll_interval_seconds=60.0,
+            ),
+            transport,
+        )
+
+        captured: dict[str, object] = {}
+
+        def take_snapshot() -> None:
+            try:
+                captured["snapshot"] = coordinator.snapshot()
+            except RuntimeError as error:
+                captured["error"] = error
+
+        def insert_via_poll() -> None:
+            snapshot_paused.wait(timeout=5)
+            coordinator.poll(other, since=NOW - timedelta(hours=1), until=NOW)
+            poll_finished.set()
+
+        snapshot_thread = threading.Thread(target=take_snapshot)
+        poll_thread = threading.Thread(target=insert_via_poll)
+        snapshot_thread.start()
+        poll_thread.start()
+        snapshot_thread.join(timeout=10)
+        poll_thread.join(timeout=10)
+
+        self.assertNotIn(
+            "error",
+            captured,
+            f"snapshot raised under a concurrent poll: {captured.get('error')}",
+        )
+        self.assertIn("wire", captured["snapshot"])  # type: ignore[operator]
+
+
 class CoordinatorStateTests(unittest.TestCase):
     def test_a_restored_coordinator_does_not_republish_old_news(self) -> None:
         # Losing this state on restart re-announces every item in the feed as
