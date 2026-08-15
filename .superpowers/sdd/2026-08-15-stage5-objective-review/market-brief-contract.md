@@ -64,7 +64,8 @@ no second collector is stood up per request.
     },
     ...
   ],
-  "sourceGaps": string[]                   // e.g. "sec-current-8-k（unreachable）"; empty when the sweep was complete
+  "sourceGaps": string[],                  // e.g. "sec-current-8-k（unreachable）"; empty when the sweep was complete
+  "notes": string[]                        // e.g. point-in-time exclusion disclosure; empty when there is nothing to disclose
 }
 ```
 
@@ -86,8 +87,9 @@ anywhere in it either, checked recursively.
   `"本次未能读取任何情报源：{source_id}（{reason}）、{source_id}（{reason}）..."`.
   This is the fail-closed path: an outage is never served looking like a
   quiet market. When `status: "unavailable"`, `dataHealth` and `sentiment`
-  are both `null`, `citations` is `[]`, and every `driverCoverage` entry has
-  `available: false` with the shared reason
+  are both `null`, `citations` is `[]`, `notes` is `[]` (no packet was ever
+  built, so there is nothing to disclose), and every `driverCoverage` entry
+  has `available: false` with the shared reason
   `"本次没有可读取的情报源，无法给出该驱动的结论。"`. `decisionCutoff` and
   `marketSession` are still populated (the clock read needs no evidence).
   HTTP status is still `200` in this case — business-level unavailability
@@ -199,6 +201,22 @@ Independent of `dataHealth`'s "insufficient" state — gaps only ever push
 `dataHealth` to (at worst) `"stale"`; only an unmeasured sentiment reading
 pushes it to `"insufficient"`.
 
+## `notes`
+
+Mirrors `/decision`'s point-in-time exclusion disclosure. The point-in-time
+invariant may exclude an event stamped after even this honestly-taken
+`decisionCutoff` (an embargo, a skewed publisher clock); the exclusion is
+legitimate, but hiding it is not. When
+`packet.excluded_future_event_ids` is non-empty, `notes` carries exactly one
+entry in the same format `/decision` uses:
+
+```
+"有 {len(excluded)} 条证据在决策截点之后才可用，未纳入本次结论：{event_id}、{event_id}..."
+```
+
+Empty (`[]`) when nothing was excluded, and always `[]` on the `unavailable`
+path (no packet is ever built there).
+
 ## Example payload — available, clean
 
 ```json
@@ -290,7 +308,8 @@ pushes it to `"insufficient"`.
       "stale": false
     }
   ],
-  "sourceGaps": []
+  "sourceGaps": [],
+  "notes": []
 }
 ```
 
@@ -319,7 +338,8 @@ pushes it to `"insufficient"`.
   "sourceGaps": [
     "sec-current-8-k（HTTP 503）",
     "fred-releases（unreachable）"
-  ]
+  ],
+  "notes": []
 }
 ```
 
@@ -349,6 +369,21 @@ above (evidence layer never answered at all):
       "missingReason": "情绪未测量（该时段无可读事件）"
     }
     // ... same shape for the remaining 8 categories
+  ]
+}
+```
+
+## Example fragment — an excluded future event, disclosed in `notes`
+
+The rest of the envelope is unaffected — `driverCoverage[0]` still reads
+`available: true` off the measured `sentiment` block, exactly like the
+clean example above:
+
+```json
+{
+  "status": "available",
+  "notes": [
+    "有 1 条证据在决策截点之后才可用，未纳入本次结论：future-1"
   ]
 }
 ```

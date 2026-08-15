@@ -100,6 +100,17 @@ class MarketBriefService:
             # than trusted, since a citation is a URL this app will open.
             if item.canonical_url.startswith("https://")
         ]
+        # The point-in-time invariant may exclude an event stamped after even
+        # this honestly-taken cutoff (an embargo, a skewed publisher clock).
+        # The exclusion is legitimate; hiding it is not — mirrors /decision's
+        # own disclosure of output.evidence_packet.excluded_future_event_ids.
+        notes: list[str] = []
+        excluded = packet.excluded_future_event_ids
+        if excluded:
+            notes.append(
+                f"有 {len(excluded)} 条证据在决策截点之后才可用，"
+                "未纳入本次结论：" + "、".join(excluded)
+            )
         return {
             "schemaVersion": SCHEMA_VERSION,
             "status": "available",
@@ -115,6 +126,7 @@ class MarketBriefService:
             "driverCoverage": _driver_coverage(sentiment),
             "citations": citations,
             "sourceGaps": list(gaps),
+            "notes": notes,
         }
 
     def _unavailable(self, error: EvidenceUnavailable) -> dict[str, Any]:
@@ -147,6 +159,7 @@ class MarketBriefService:
             ],
             "citations": [],
             "sourceGaps": gaps,
+            "notes": [],
         }
 
 

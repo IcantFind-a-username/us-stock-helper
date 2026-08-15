@@ -217,6 +217,60 @@ class EnvelopeShapeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Point-in-time exclusions: an event stamped after the cutoff is legitimately
+# excluded from the packet, but the exclusion itself must stay visible to the
+# reader, exactly like /decision's notes already disclose it.
+# ---------------------------------------------------------------------------
+
+
+class ExcludedFutureEventTests(unittest.TestCase):
+    def test_excluded_future_events_are_disclosed_in_notes(self) -> None:
+        class FutureEventProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                future = EvidenceEvent.create(
+                    event_id="future-1",
+                    claim_key="claim-future-1",
+                    headline="NVIDIA files late 8-K",
+                    summary="Filed after this brief's decision cutoff.",
+                    provenance=SourceProvenance(
+                        source_id="feed:sec",
+                        publisher_id="sec",
+                        publisher_name="sec",
+                        canonical_url="https://sec.example/future-1",
+                        source_type="filing",
+                        reliability=0.9,
+                    ),
+                    event_time=AS_OF - timedelta(minutes=5),
+                    published_at=AS_OF - timedelta(minutes=4),
+                    first_seen_at=AS_OF - timedelta(minutes=3),
+                    available_at=AS_OF + timedelta(minutes=1),
+                    retrieved_at=AS_OF + timedelta(minutes=1),
+                    claim_status=ClaimStatus.VERIFIED,
+                    sentiment=0.5,
+                    confidence=0.9,
+                    symbol_relevance=(("NVDA", 0.95),),
+                )
+                return evidence(stamped=True) + (future,)
+
+        result = brief(FutureEventProvider()).market_brief()
+
+        self.assertIn("notes", result)
+        self.assertTrue(
+            any("future-1" in note for note in result["notes"]),
+            result["notes"],
+        )
+        self.assertTrue(
+            any("未纳入本次结论" in note for note in result["notes"]),
+            result["notes"],
+        )
+
+    def test_no_exclusions_leaves_notes_empty(self) -> None:
+        result = brief(Provider(stamped=True)).market_brief()
+
+        self.assertEqual(result["notes"], [])
+
+
+# ---------------------------------------------------------------------------
 # Sentiment: built from EvidencePacketBuilder over an empty focus, the
 # 情绪未测量 marker travels exactly like a decision's.
 # ---------------------------------------------------------------------------
