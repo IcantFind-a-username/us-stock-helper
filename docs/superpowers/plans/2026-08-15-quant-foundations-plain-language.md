@@ -52,7 +52,13 @@ Wire: serve through the snapshot/decision technical section (the demo `PatternSi
 PIT tests: a pattern may only use completed bars; adding a future bar must never change an already-emitted detection for earlier timestamps; forming→confirmed/invalidated transitions must be reproducible from the bar sequence alone.
 Presentation red line unchanged: hints describe structure and invalidation, never instruct an action; no efficacy claims before backtest.
 
-### Task 9: Methodology documentation
+### Task 9: Versioned MACD and RSI series from the gateway (Franz review finding, 2026-08-15)
+The chart honestly reports "MACD 曲线缺失 · 服务端未提供版本化序列" because the gateway's versioned indicator series computes only MA5. Compute and serve MACD(12,26,9) — DIF/DEA/histogram per completed bar, version `macd-12-26-9-v1` — and RSI(14) series (`rsi-14-v1`) in the same snapshot indicator-series section, PIT-safe with EMA warm-up honesty (bars inside the warm-up window are typed absent, not zero). The mobile chart's existing series renderer draws them; the MACD/RSI sub-panes lose their missing-reason state only when the series genuinely arrives. Plain-language readings for MACD states (金叉/死叉/多头扩张…) and RSI zones join the Task-6 vocabulary.
+
+### Task 10: Institutional-capital factor wiring (Franz review finding, 2026-08-15)
+The decision score lists 机构资金 as never-connected while the gateway already serves both ingredients: intraday order-size participation (估算代理, with confidence) and dated institutional holdings disclosures (with reporting lag). Wire an institutional-capital factor into the decision engine from these served sections: intraday proxy contributes with its stated confidence and 估算代理 labeling; disclosure trend contributes at its reporting date (PIT: the factor may not see a filing before its availableAt). Unavailable sections keep the factor honestly absent — no neutral-fill. Factor coverage rises only when data genuinely flows; scoring tests pin both directions and the proxy-vs-disclosure separation red line.
+
+### Task 11: Methodology documentation
 Extend docs/indicator-methodology.md with each new algorithm: formula, source references, validation rules, known limitations, and the plain-language vocabulary table — including every pattern definition from Task 8 and the Magic Nine reading table from Task 7 (so the copy is reviewable as part of the methodology, not scattered in code).
 
 ## Phase 2 (separate plan, larger)
