@@ -11,9 +11,15 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { DataHealthBanner } from "@/components/ui/DataHealthBanner";
+import { PlainReadingCard } from "@/components/ui/PlainReadingCard";
 import type { MarketDataError } from "@/data/marketRepository";
-import type { MarketBrief, MarketDriverCategory } from "@/domain/models";
+import type {
+  MarketBrief,
+  MarketBriefDriverCoverage,
+  MarketDriverCategory,
+} from "@/domain/models";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { readBreadthDriver, readSectorDriver } from "@/i18n/plainLanguage";
 import { serviceTextLabel } from "@/i18n/serverVocabulary";
 import { colors, radius, spacing } from "@/theme/tokens";
 
@@ -49,6 +55,18 @@ export const MARKET_SESSION_LABELS: Record<MarketBrief["marketSession"], string>
 
 function formatActionScore(value: number) {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+/**
+ * Only breadth and sector have an actual computed state to classify (自选
+ * 广度's 多数走强/走弱/涨跌互现, sector RS's leading/lagging leader) -- the
+ * other seven driver categories are still unsourced, so there is nothing a
+ * plain-language reading could say beyond the missingReason already shown.
+ */
+function driverPlainReading(entry: MarketBriefDriverCoverage) {
+  if (entry.category === "breadth") return readBreadthDriver(entry);
+  if (entry.category === "sector") return readSectorDriver(entry);
+  return null;
 }
 
 function formatCitationTime(value: string) {
@@ -156,18 +174,29 @@ export function MarketBriefCard({ status, brief, error, onRetry }: MarketBriefCa
 
       <View style={styles.coverageList} testID="market-brief-driver-coverage">
         <Text style={styles.coverageHeading}>驱动覆盖</Text>
-        {driverCoverage.map((entry) => (
-          <View key={entry.category} style={styles.coverageRow}>
-            <Text style={styles.coverageLabel}>{CATEGORY_LABELS[entry.category]}</Text>
-            {entry.available ? (
-              <Text style={styles.coverageValue}>
-                {entry.conclusion} · {formatActionScore(entry.actionScore!)}
-              </Text>
-            ) : (
-              <Text style={styles.coverageMissing}>{entry.missingReason}</Text>
-            )}
-          </View>
-        ))}
+        {driverCoverage.map((entry) => {
+          const plainReading = driverPlainReading(entry);
+          return (
+            <View key={entry.category} style={styles.coverageRow}>
+              <Text style={styles.coverageLabel}>{CATEGORY_LABELS[entry.category]}</Text>
+              {entry.available ? (
+                <Text style={styles.coverageValue}>
+                  {entry.conclusion} · {formatActionScore(entry.actionScore!)}
+                </Text>
+              ) : (
+                <Text style={styles.coverageMissing}>{entry.missingReason}</Text>
+              )}
+              {plainReading ? (
+                <PlainReadingCard
+                  explanation={plainReading.explanation}
+                  headline={plainReading.headline}
+                  numbers={plainReading.numbers}
+                  testID={`plain-reading-card-${entry.category}`}
+                />
+              ) : null}
+            </View>
+          );
+        })}
       </View>
 
       {sourceGaps.length > 0 ? (

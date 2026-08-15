@@ -1,5 +1,5 @@
-import { expect, it } from "@jest/globals";
-import { render } from "@testing-library/react-native";
+import { describe, expect, it } from "@jest/globals";
+import { render, userEvent, within } from "@testing-library/react-native";
 
 import { marketBriefFixture } from "@/data/__tests__/marketBrief.fixture";
 import type { MarketBriefDriverCoverage } from "@/domain/models";
@@ -176,4 +176,91 @@ it("runs the unavailable brief's own reason through the vocabulary layer", async
   expect(view.getByTestId("market-brief-unavailable-reason")).toHaveTextContent(
     /不会提交、路由或执行任何委托/,
   );
+});
+
+/**
+ * 2026-08-15 Task 6: breadth and sector are the two market-brief drivers
+ * with an actual computed state (自选广度 label, sector leader's excess
+ * return), so their rows gain a tap-to-expand plain-language reading. The
+ * other seven categories stay a plain missingReason line -- there is no
+ * state to classify for a source that was never wired.
+ */
+describe("plain-language readings on the breadth and sector driver rows", () => {
+  it("shows a collapsed plain-language headline for the sourced breadth driver", async () => {
+    const base = marketBriefFixture();
+    const brief = {
+      ...base,
+      driverCoverage: withSourcedBreadthAndSector(base.driverCoverage),
+    };
+
+    const view = await render(
+      <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+    );
+
+    expect(
+      view.getByText("自选列表里大多数股票都站上了自己的50日均线，参与上涨的股票较多。"),
+    ).toBeTruthy();
+    // Layer 2/3 stay collapsed until tapped.
+    expect(view.queryByTestId("plain-reading-explanation")).toBeNull();
+  });
+
+  it("reveals the breadth reading's explanation and numbers layers on tap", async () => {
+    const base = marketBriefFixture();
+    const brief = {
+      ...base,
+      driverCoverage: withSourcedBreadthAndSector(base.driverCoverage),
+    };
+
+    const view = await render(
+      <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+    );
+
+    const breadthCard = view.getByTestId("plain-reading-card-breadth");
+    await userEvent.setup().press(within(breadthCard).getByRole("button"));
+
+    expect(view.getByTestId("plain-reading-explanation")).toHaveTextContent(
+      /50日均线/,
+    );
+    expect(view.getByTestId("plain-reading-numbers")).toHaveTextContent(/\+0\.20/);
+  });
+
+  it("shows a collapsed plain-language headline for the sourced sector driver", async () => {
+    const base = marketBriefFixture();
+    const brief = {
+      ...base,
+      driverCoverage: withSourcedBreadthAndSector(base.driverCoverage),
+    };
+
+    const view = await render(
+      <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+    );
+
+    expect(view.getByText("当前领先的板块跑赢了基准，相对走势偏强。")).toBeTruthy();
+  });
+
+  it("reads an unavailable breadth driver's plain-language state too", async () => {
+    const brief = marketBriefFixture(); // default fixture: breadth/sector unsourced
+
+    const view = await render(
+      <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+    );
+
+    expect(
+      view.getByText("自选广度暂不可用：历史K线不够计算50日均线。"),
+    ).toBeTruthy();
+    expect(
+      view.getByText("板块强弱暂不可用：样本不足或历史数据不够计算相对强弱。"),
+    ).toBeTruthy();
+  });
+
+  it("never renders a plain-language reading card for the seven unsourced drivers", async () => {
+    const brief = marketBriefFixture();
+
+    const view = await render(
+      <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+    );
+
+    // Only breadth + sector get a reading card, even though all nine rows render.
+    expect(view.getAllByTestId(/^plain-reading-card-/)).toHaveLength(2);
+  });
 });
