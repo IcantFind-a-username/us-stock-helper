@@ -643,8 +643,19 @@ def _breadth_driver_entry(
         )
 
     assert result.percent_above is not None
+    # The percentage is computed over `result.eligible_symbols`, not over
+    # every configured symbol -- the conclusion must carry that same sample
+    # itself so it reads honestly standalone, without depending on a reader
+    # also finding the separate partial-fetch note (F8). A fully-answered
+    # universe stays the plain "N 只" form; "有效 X/Y" only earns its keep
+    # once X and Y actually differ.
+    sample = (
+        f"{len(symbols)} 只"
+        if result.eligible_symbols == len(symbols)
+        else f"有效 {result.eligible_symbols}/{len(symbols)} 只"
+    )
     conclusion = (
-        f"自选广度（{len(symbols)} 只）· {_breadth_label(result.percent_above)} · "
+        f"自选广度（{sample}）· {_breadth_label(result.percent_above)} · "
         f"{result.percent_above:.0f}% 收于{_BREADTH_MA_PERIOD}日均线上方"
     )
     entry = {

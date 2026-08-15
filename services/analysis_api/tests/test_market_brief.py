@@ -852,11 +852,50 @@ class BreadthDriverTests(unittest.TestCase):
 
         entry = _driver(result, "breadth")
         self.assertTrue(entry["available"])
-        self.assertIn("自选广度（6 只）", entry["conclusion"])
+        # The percentage was computed over the 5 symbols actually fetched,
+        # not the 6 configured -- the conclusion must say so itself (F8),
+        # rather than only the separate note disclosing the drop.
+        self.assertIn("自选广度（有效 5/6 只）", entry["conclusion"])
+        self.assertNotIn("自选广度（6 只）", entry["conclusion"])
         self.assertTrue(
             any("FFF" in note and "自选广度" in note for note in result["notes"]),
             result["notes"],
         )
+
+    def test_the_conclusion_states_the_full_sample_plainly_when_nothing_failed(
+        self,
+    ) -> None:
+        # The honest-sample wording only earns its keep when it says
+        # something the configured count alone did not: a fully-answered
+        # universe stays the plain "N 只" form, never a redundant "有效 N/N".
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        result = _brief_with_universe(UniverseProvider(universe, stamped=True), config)
+
+        entry = _driver(result, "breadth")
+        self.assertIn("自选广度（5 只）", entry["conclusion"])
+        self.assertNotIn("有效", entry["conclusion"])
+
+    def test_a_large_partial_sample_carries_its_effective_count_honestly(
+        self,
+    ) -> None:
+        # The reviewer's own example: a 60-symbol watchlist with 3 gateway
+        # failures must read 自选广度（有效 57/60 只）, not 自选广度（60 只）.
+        configured = tuple(f"SYM{i}" for i in range(60))
+        universe = {
+            symbol: _breadth_bars(symbol, last_close=110.0) for symbol in configured[:57]
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=configured)
+        provider = UniverseProvider(universe, raises=configured[57:], stamped=True)
+
+        result = _brief_with_universe(provider, config)
+
+        entry = _driver(result, "breadth")
+        self.assertTrue(entry["available"])
+        self.assertIn("自选广度（有效 57/60 只）", entry["conclusion"])
 
     def test_computed_at_is_the_decision_cutoff_on_a_fresh_compute(self) -> None:
         universe = {
