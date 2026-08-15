@@ -13,6 +13,7 @@ import {
   toDemoChartSnapshot,
   type ChartMacdIndicator,
   type ChartSnapshot,
+  type PatternShapeSignal,
   type StockSnapshot,
 } from "@/domain/models";
 import {
@@ -52,6 +53,20 @@ type PriceChartProps = {
   showParticipation?: boolean;
   showMacd?: boolean;
   showRsi?: boolean;
+  /** Anchor-bar markers for served 形态 detections (patterns_shapes.py); demo has none. */
+  patternShapes?: PatternShapeSignal[];
+  showPatternShapes?: boolean;
+};
+
+/** One glyph per pattern kind -- short enough to sit off the price text, same idea as Magic Nine's own count label. */
+const PATTERN_MARKER_GLYPH: Record<PatternShapeSignal["kind"], string> = {
+  fractal_top: "分",
+  fractal_bottom: "分",
+  double_bottom: "W",
+  double_top: "双",
+  head_shoulders_top: "头",
+  head_shoulders_bottom: "头",
+  ma5_pullback: "回",
 };
 
 /**
@@ -84,6 +99,8 @@ export const PriceChart = memo(function PriceChart({
   showParticipation = true,
   showMacd = true,
   showRsi = true,
+  patternShapes = [],
+  showPatternShapes = true,
 }: PriceChartProps) {
   const { width: viewportWidth } = useWindowDimensions();
   const chartWidth = resolveChartWidth(viewportWidth);
@@ -421,6 +438,46 @@ export const PriceChart = memo(function PriceChart({
     snapshot.magicNine.series,
   ]);
 
+  // 形态 anchor-bar markers: same small off-candle placement Magic Nine uses,
+  // pushed a little further out so the two systems never overlap the same
+  // spot on a shared bar, and never sit on top of the price text they mark.
+  const patternMarkers = useMemo<MagicNineMarker[]>(() => {
+    if (!showPatternShapes) return [];
+    return patternShapes.flatMap((signal, index) => {
+      const candle = geometry.candles.find(
+        (entry) => entry.sourceIndex === signal.anchorIndex,
+      );
+      if (!candle) return [];
+      const y =
+        signal.direction === "bullish"
+          ? Math.min(candle.wickBottom + 20, geometry.panels.price.bottom - 7)
+          : Math.max(candle.wickTop - 20, geometry.panels.price.top + 7);
+      return [
+        {
+          key: `pattern-${signal.kind}-${signal.eventIndex}-${index}`,
+          testID: "pattern-shape-marker",
+          x: candle.x,
+          y,
+          label: PATTERN_MARKER_GLYPH[signal.kind],
+          direction: signal.direction,
+          mode: "series" as const,
+          labelTestID: "pattern-shape-marker-label",
+        },
+      ];
+    });
+  }, [
+    geometry.candles,
+    geometry.panels.price.bottom,
+    geometry.panels.price.top,
+    patternShapes,
+    showPatternShapes,
+  ]);
+
+  const allMarkers = useMemo(
+    () => [...markers, ...patternMarkers],
+    [markers, patternMarkers],
+  );
+
   const missingNotes = useMemo(() => {
     const unpublished: string[] = [];
     const uncovered: string[] = [];
@@ -600,7 +657,7 @@ export const PriceChart = memo(function PriceChart({
                 geometry={geometry}
                 height={height}
                 macdLabel={macdPanelLabel(snapshot.indicators.macd)}
-                markers={markers}
+                markers={allMarkers}
                 rsiLabel={
                   snapshot.indicators.rsi.value === null
                     ? `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} 暂不可用`

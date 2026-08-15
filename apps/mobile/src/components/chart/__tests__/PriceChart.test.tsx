@@ -690,6 +690,68 @@ it("marks the exact bar the server confirmed a nine on", async () => {
   expect(firstX).toBeLessThan(lastX);
 });
 
+it("marks each pattern signal's anchor bar with its own small glyph", async () => {
+  const view = await render(
+    <PriceChart
+      patternShapes={[
+        {
+          kind: "double_bottom",
+          name: "W底",
+          status: "confirmed",
+          direction: "bullish",
+          bars: [{ index: 0, closedAt: "2026-07-25T15:50:00.000Z" }],
+          anchorIndex: 1,
+          eventIndex: 1,
+          invalidation: "收盘跌破颈线 104.00",
+          explanation: "两个低点幅度接近；颈线 104.00。",
+          reading: {
+            summary: "W底已确认。",
+            detail: "两个相近的低点之间夹着一个反弹高点。",
+            honesty: "历史胜率待回测",
+          },
+          methodVersion: "patterns-shapes-v1",
+        },
+      ]}
+      stock={snapshot}
+    />,
+  );
+
+  const markers = view.getAllByTestId("pattern-shape-marker", hidden);
+  expect(markers).toHaveLength(1);
+  const label = view.getByTestId("pattern-shape-marker-label", hidden);
+  expect(label.props.children.props.children).toBe("W");
+});
+
+it("hides pattern markers with the showPatternShapes toggle", async () => {
+  const view = await render(
+    <PriceChart
+      patternShapes={[
+        {
+          kind: "fractal_bottom",
+          name: "底分型",
+          status: "confirmed",
+          direction: "bullish",
+          bars: [{ index: 0, closedAt: "2026-07-25T15:50:00.000Z" }],
+          anchorIndex: 0,
+          eventIndex: 1,
+          invalidation: "收盘价跌破分型低点 90.00",
+          explanation: "中间K线的最低价同时低于左右两根K线。",
+          reading: {
+            summary: "底分型。",
+            detail: "第三根K线收盘后才能确认。",
+            honesty: "历史胜率待回测",
+          },
+          methodVersion: "patterns-shapes-v1",
+        },
+      ]}
+      showPatternShapes={false}
+      stock={snapshot}
+    />,
+  );
+
+  expect(view.queryByTestId("pattern-shape-marker", hidden)).toBeNull();
+});
+
 it("draws every published TD count across a complete run", async () => {
   const candles = Array.from({ length: 9 }, (_, index) => ({
     ...snapshot.candles[0]!,
