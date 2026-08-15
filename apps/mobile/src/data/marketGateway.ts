@@ -1022,7 +1022,71 @@ function unavailableTechnical(
   };
 }
 
-function v3ParticipationPlaceholders(candles: Candle[]): ParticipationBar[] {
+/**
+ * Turns one served current-session flow sample into a participation bar.
+ *
+ * The section publishes five order-size net-flow buckets per sample rather
+ * than a pre-computed share, so the main/retail split is derived here:
+ * extra-large and large orders proxy institutional-scale activity ("main"),
+ * medium and small orders proxy retail-scale activity ("retail") — the same
+ * bucket grouping analysis_core's own candle-aligned builder uses
+ * (services/analysis_core/us_stock_helper_core/participation.py). Net flow
+ * can point either direction, so the split is measured on unsigned
+ * magnitude; a sample with no measurable activity in either bucket is
+ * reported unavailable rather than a fabricated even split.
+ */
+function participationBarFromFlowPoint(
+  point: NormalizedCapitalFlowPoint,
+): ParticipationBar {
+  const mainActivity =
+    Math.abs(point.extraLargeOrderNetFlow) + Math.abs(point.largeOrderNetFlow);
+  const retailActivity =
+    Math.abs(point.mediumOrderNetFlow) + Math.abs(point.smallOrderNetFlow);
+  const activityTotal = mainActivity + retailActivity;
+  if (!(activityTotal > 0)) {
+    return {
+      closedAt: point.timestamp,
+      mainShare: null,
+      retailShare: null,
+      mainActivity: null,
+      retailActivity: null,
+      netFlow: null,
+      coverage: 0,
+      source: "moomoo",
+      asOf: point.timestamp,
+      availableAt: point.availableAt,
+      methodVersion: "order-size-activity-share-v1",
+      qualityStatus: "unavailable",
+      missingReason: "zero activity denominator",
+    };
+  }
+  const mainShare = mainActivity / activityTotal;
+  return {
+    closedAt: point.timestamp,
+    mainShare,
+    retailShare: 1 - mainShare,
+    mainActivity,
+    retailActivity,
+    netFlow: point.totalNetFlow,
+    coverage: 1,
+    source: "moomoo",
+    asOf: point.timestamp,
+    availableAt: point.availableAt,
+    methodVersion: "order-size-activity-share-v1",
+    qualityStatus: "live",
+    missingReason: null,
+  };
+}
+
+/**
+ * Mirrors the currentSessionFlow section's own unavailability instead of
+ * asserting one the server never made. One bar per completed candle keeps
+ * the chart's per-candle overlay slots filled, same as a live section would.
+ */
+function v3ParticipationUnavailable(
+  candles: Candle[],
+  reason: string | null,
+): ParticipationBar[] {
   return candles.map((candle) => ({
     closedAt: candle.timestamp,
     mainShare: null,
@@ -1036,7 +1100,7 @@ function v3ParticipationPlaceholders(candles: Candle[]): ParticipationBar[] {
     availableAt: candle.availableAt,
     methodVersion: "order-size-activity-share-v1",
     qualityStatus: "unavailable",
-    missingReason: "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
+    missingReason: reason,
   }));
 }
 
@@ -2174,6 +2238,10 @@ export function decodeStockSnapshotV3Envelope(
     flattenedCandles,
     cutoff.toISOString(),
   );
+  const participationBars =
+    sectionIsValidated(currentSessionFlow) && currentSessionFlow.data
+      ? currentSessionFlow.data.map(participationBarFromFlowPoint)
+      : v3ParticipationUnavailable(flattenedCandles, currentSessionFlow.reason);
   const technicalUsable =
     sectionIsValidated(technical) && technical.data !== null && candlesUsable;
   const institutionalHoldings =
@@ -2220,7 +2288,7 @@ export function decodeStockSnapshotV3Envelope(
     priceAdjustment: candlesUsable ? candles.data!.priceAdjustment : null,
     quote: quoteUsable ? quote.data : null,
     candles: flattenedCandles,
-    participationBars: v3ParticipationPlaceholders(flattenedCandles),
+    participationBars,
     indicators: technicalUsable
       ? technical.data!.indicators
       : fallbackTechnical.indicators,

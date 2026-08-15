@@ -82,7 +82,12 @@ function liveV3Snapshot(
   {
     holdingsAvailable = true,
     priceMode = "both",
-  }: { holdingsAvailable?: boolean; priceMode?: V3PriceMode } = {},
+    currentSessionFlowAvailable = true,
+  }: {
+    holdingsAvailable?: boolean;
+    priceMode?: V3PriceMode;
+    currentSessionFlowAvailable?: boolean;
+  } = {},
 ) {
   const payload = stockSnapshotV3Fixture();
   payload.symbol = symbol;
@@ -104,6 +109,12 @@ function liveV3Snapshot(
     sections.technical = unavailableV3Section(
       "CANDLES_UNAVAILABLE",
       "技术指标需要已验证的蜡烛图数据",
+    );
+  }
+  if (!currentSessionFlowAvailable) {
+    sections.currentSessionFlow = unavailableV3Section(
+      "CURRENT_SESSION_FLOW_PROVIDER_ERROR",
+      "当前交易时段资金流数据不可用",
     );
   }
   if (!holdingsAvailable) {
@@ -377,6 +388,37 @@ it("keeps the typed full-page unavailable state when neither price source exists
   expect(view.getByTestId("stock-state-body")).toBeTruthy();
   expect(view.queryByTestId("stock-chart-card")).toBeNull();
   expect(view.queryByText(/演示数据/)).toBeNull();
+});
+
+it("renders the served v3 current-session flow instead of a false unavailability", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => liveV3Snapshot("NVDA")),
+  });
+
+  await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+  // The section is live/validated, so the headline must show the served
+  // split, never the placeholder "no data" copy the old hardcoded bars
+  // always produced for every v3 snapshot.
+  expect(view.queryByText("暂无可用活动占比")).toBeNull();
+  expect(view.getByText("主力代理 65.6% · 散户代理 34.4%")).toBeTruthy();
+  expect(view.toJSON()).not.toHaveTextContent(
+    /CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED/,
+  );
+});
+
+it("shows the server's own reason when v3 current-session flow is genuinely unavailable", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      liveV3Snapshot("NVDA", { currentSessionFlowAvailable: false }),
+    ),
+  });
+
+  await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+  expect(view.getByText("暂无可用活动占比")).toBeTruthy();
+  expect(view.getByText(/当前交易时段资金流数据不可用/)).toBeTruthy();
+  expect(view.toJSON()).not.toHaveTextContent(
+    /CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED/,
+  );
 });
 
 it("calls Claude only after a single-stock button press", async () => {

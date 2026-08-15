@@ -721,13 +721,112 @@ describe("schema-v3 stock snapshot validation", () => {
     expect(dailySnapshot.sections.currentSessionFlow.data).toEqual(
       fiveMinuteSnapshot.sections.currentSessionFlow.data,
     );
-    expect(fiveMinuteSnapshot.participationBars).toHaveLength(2);
+    expect(dailySnapshot.participationBars).toEqual(
+      fiveMinuteSnapshot.participationBars,
+    );
+  });
+
+  it("renders the served order-size flow buckets as live participation bars instead of a false unavailability", () => {
+    const payload = stockSnapshotV3Fixture();
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    // A live/validated currentSessionFlow section must never fall back to the
+    // placeholder reason the server itself never asserted.
     expect(
-      fiveMinuteSnapshot.participationBars.every(
-        (bar) => bar.qualityStatus === "unavailable" && bar.netFlow === null,
+      snapshot.participationBars.some(
+        (bar) => bar.missingReason === "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
+      ),
+    ).toBe(false);
+    expect(snapshot.participationBars).toEqual([
+      {
+        closedAt: "2026-07-25T15:50:00.000Z",
+        asOf: "2026-07-25T15:50:00.000Z",
+        availableAt: "2026-07-25T15:50:01.000Z",
+        mainShare: 0.72,
+        retailShare: 0.28,
+        mainActivity: 1800,
+        retailActivity: 700,
+        netFlow: 2500,
+        coverage: 1,
+        source: "moomoo",
+        methodVersion: "order-size-activity-share-v1",
+        qualityStatus: "live",
+        missingReason: null,
+      },
+      {
+        closedAt: "2026-07-25T15:55:00.000Z",
+        asOf: "2026-07-25T15:55:00.000Z",
+        availableAt: "2026-07-25T15:55:01.000Z",
+        mainShare: 2100 / 3200,
+        retailShare: 1100 / 3200,
+        mainActivity: 2100,
+        retailActivity: 1100,
+        netFlow: 3200,
+        coverage: 1,
+        source: "moomoo",
+        methodVersion: "order-size-activity-share-v1",
+        qualityStatus: "live",
+        missingReason: null,
+      },
+    ]);
+  });
+
+  it("reports a zero-activity flow sample as unavailable rather than a fabricated split", () => {
+    const payload = stockSnapshotV3Fixture();
+    for (const row of payload.sections.currentSessionFlow.data) {
+      row.extraLargeOrderNetFlow = 0;
+      row.largeOrderNetFlow = 0;
+      row.mediumOrderNetFlow = 0;
+      row.smallOrderNetFlow = 0;
+      row.totalNetFlow = 0;
+      row.largeOrderProxyNetFlow = 0;
+    }
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(
+      snapshot.participationBars.every(
+        (bar) =>
+          bar.qualityStatus === "unavailable" &&
+          bar.mainShare === null &&
+          bar.netFlow === null &&
+          bar.missingReason === "zero activity denominator",
       ),
     ).toBe(true);
   });
+
+  it.each(["unavailable", "stale"] as const)(
+    "shows the server's own reason when currentSessionFlow is genuinely %s, never the candle-alignment placeholder",
+    (kind) => {
+      const payload = stockSnapshotV3Fixture();
+      if (kind === "unavailable") {
+        makeSectionUnavailable(payload, "currentSessionFlow", "CURRENT_SESSION_FLOW_PROVIDER_ERROR");
+      } else {
+        makeSectionStale(payload, "currentSessionFlow");
+      }
+
+      const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+      expect(snapshot.candles).toHaveLength(2);
+      expect(snapshot.participationBars).toHaveLength(2);
+      expect(
+        snapshot.participationBars.every((bar) => bar.qualityStatus === "unavailable"),
+      ).toBe(true);
+      const expectedReason = payload.sections.currentSessionFlow.reason;
+      expect(expectedReason).toEqual(expect.any(String));
+      expect(
+        snapshot.participationBars.every(
+          (bar) => bar.missingReason === expectedReason,
+        ),
+      ).toBe(true);
+      expect(
+        snapshot.participationBars.some(
+          (bar) => bar.missingReason === "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it.each([
     ["institutional identity", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
