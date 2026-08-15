@@ -155,9 +155,25 @@ news-sentiment, breadth, volatility-options, sector, rates-dollar,
 macro-credit-energy, liquidity-correlation, broad-market-trend, geopolitics
 ```
 
-Today only **`news-sentiment`** is sourced (`available: true`, `conclusion`
-and `actionScore` mirroring the top-level `sentiment` fields exactly,
-`missingReason: null`). The other 8 are `available: false` with a named,
+Today only **`news-sentiment`** is sourced, and even it is conditional on
+`sentiment.action_score_measured`:
+
+- When `action_score_measured` is `True`: `available: true`, `conclusion`
+  and `actionScore` mirroring the top-level `sentiment` fields exactly,
+  `missingReason: null`.
+- When `action_score_measured` is `False` (no actionable cluster was
+  measured this round — e.g. the zero-evidence case): `available: false`,
+  `conclusion` and `actionScore` both `null`, `missingReason:
+  "情绪未测量（该时段无可读事件）"`. This mirrors the top-level
+  `sentiment.uncertainty`'s `"情绪未测量"` disambiguator at the entry level,
+  so a consumer reading `driverCoverage` alone (never the top-level
+  `sentiment` block) is never told a driver was sourced when nothing was
+  actually measured — an entry claiming `available: true` next to a
+  中性/0.0 that was never measured would reproduce the same
+  measured-looking-neutral failure `sentiment.action_score_measured` exists
+  to prevent, just one level down.
+
+The other 8 categories are always `available: false` with a named,
 category-specific `missingReason` (Chinese) and `conclusion`/`actionScore`
 both `null` — no invented driver values. A later plan
 (`docs/superpowers/plans/2026-08-15-quant-foundations-plain-language.md`) is
@@ -303,6 +319,36 @@ pushes it to `"insufficient"`.
   "sourceGaps": [
     "sec-current-8-k（HTTP 503）",
     "fred-releases（unreachable）"
+  ]
+}
+```
+
+## Example fragment — available but unmeasured news-sentiment
+
+`status: "available"` still applies whenever the evidence layer answered at
+all, even if nothing it returned yielded an actionable cluster this round;
+that keeps `driverCoverage[0]` (`news-sentiment`) `available: false` and
+`dataHealth: "insufficient"` distinct from the `status: "unavailable"` case
+above (evidence layer never answered at all):
+
+```json
+{
+  "status": "available",
+  "dataHealth": "insufficient",
+  "sentiment": {
+    "conclusion": "中性",
+    "actionScore": 0.0,
+    "uncertainty": ["情绪未测量"]
+  },
+  "driverCoverage": [
+    {
+      "category": "news-sentiment",
+      "available": false,
+      "conclusion": null,
+      "actionScore": null,
+      "missingReason": "情绪未测量（该时段无可读事件）"
+    }
+    // ... same shape for the remaining 8 categories
   ]
 }
 ```

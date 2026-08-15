@@ -192,6 +192,29 @@ class EnvelopeShapeTests(unittest.TestCase):
 
         self.assertEqual(len(result["driverCoverage"]), 9)
 
+    def test_news_sentiment_entry_is_not_available_when_unmeasured(self) -> None:
+        # A packet with nothing readable this round leaves
+        # action_score_measured False on the packet's own sentiment. The
+        # entry-level driverCoverage disclosure must say so itself — a
+        # reader who only looks at driverCoverage (not the top-level
+        # sentiment.uncertainty list) must not be told this driver was
+        # sourced when nothing was actually measured.
+        class NoEvidenceProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                return ()
+
+        result = brief(NoEvidenceProvider()).market_brief()
+
+        entry = next(
+            item
+            for item in result["driverCoverage"]
+            if item["category"] == "news-sentiment"
+        )
+        self.assertFalse(entry["available"])
+        self.assertIsNone(entry["conclusion"])
+        self.assertIsNone(entry["actionScore"])
+        self.assertTrue(entry["missingReason"])
+
 
 # ---------------------------------------------------------------------------
 # Sentiment: built from EvidencePacketBuilder over an empty focus, the

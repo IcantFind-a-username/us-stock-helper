@@ -58,6 +58,12 @@ _UNSOURCED_REASON: dict[str, str] = {
 
 _NOTHING_READABLE_REASON = "本次没有可读取的情报源，无法给出该驱动的结论。"
 
+# The entry-level twin of sentiment.uncertainty's "情绪未测量": a reader who
+# only looks at driverCoverage (never the top-level sentiment block) must
+# still be told this driver was not actually sourced this round, rather than
+# reading available:true next to a 中性/0.0 that was never measured.
+_SENTIMENT_UNMEASURED_REASON = "情绪未测量（该时段无可读事件）"
+
 
 @dataclass(frozen=True, slots=True)
 class MarketBriefService:
@@ -192,15 +198,30 @@ def _driver_coverage(sentiment: MarketSentiment) -> list[dict[str, Any]]:
     coverage: list[dict[str, Any]] = []
     for category in _DRIVER_CATEGORIES:
         if category == "news-sentiment":
-            coverage.append(
-                {
-                    "category": category,
-                    "available": True,
-                    "conclusion": sentiment.conclusion,
-                    "actionScore": sentiment.action_score,
-                    "missingReason": None,
-                }
-            )
+            if sentiment.action_score_measured:
+                coverage.append(
+                    {
+                        "category": category,
+                        "available": True,
+                        "conclusion": sentiment.conclusion,
+                        "actionScore": sentiment.action_score,
+                        "missingReason": None,
+                    }
+                )
+            else:
+                # Mirrors the top-level sentiment.action_score_measured
+                # discipline at the entry level: unmeasured never presents
+                # as a measured 中性/0.0, even to a consumer reading only
+                # this entry and not sentiment.uncertainty.
+                coverage.append(
+                    {
+                        "category": category,
+                        "available": False,
+                        "conclusion": None,
+                        "actionScore": None,
+                        "missingReason": _SENTIMENT_UNMEASURED_REASON,
+                    }
+                )
         else:
             coverage.append(
                 {
