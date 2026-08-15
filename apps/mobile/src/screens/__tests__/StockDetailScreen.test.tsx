@@ -390,17 +390,22 @@ it("keeps the typed full-page unavailable state when neither price source exists
   expect(view.queryByText(/演示数据/)).toBeNull();
 });
 
-it("renders the served v3 current-session flow instead of a false unavailability", async () => {
+it("keeps the day-interval participation gap honest instead of reusing an intraday-shaped split", async () => {
+  // liveV3Snapshot always requests the day interval (the screen's default),
+  // and design doc §2.1/§7.4 has no validated same-source historical
+  // capital-flow feed backing day/week bars in v1 -- so even though
+  // currentSessionFlow itself is live/validated, every participation bar
+  // must read as unsupported for this interval, never silently reuse
+  // whatever intraday-shaped split the same served flow data would
+  // otherwise produce, and never fall back to the placeholder reason the
+  // server itself never asserted.
   const view = await renderDetail({
     repository: repositoryWithSnapshot(async () => liveV3Snapshot("NVDA")),
   });
 
   await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
-  // The section is live/validated, so the headline must show the served
-  // split, never the placeholder "no data" copy the old hardcoded bars
-  // always produced for every v3 snapshot.
-  expect(view.queryByText("暂无可用活动占比")).toBeNull();
-  expect(view.getByText("主力代理 65.6% · 散户代理 34.4%")).toBeTruthy();
+  expect(view.getByText("暂无可用活动占比")).toBeTruthy();
+  expect(view.getByText(/v1 尚不支持该周期/)).toBeTruthy();
   expect(view.toJSON()).not.toHaveTextContent(
     /CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED/,
   );

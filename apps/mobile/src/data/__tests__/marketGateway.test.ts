@@ -16,7 +16,10 @@ import {
   stockSnapshotFixture,
   stockSnapshotWithSeriesFixture,
 } from "./stockSnapshot.fixture";
-import { stockSnapshotV3Fixture } from "./stockSnapshotV3.fixture";
+import {
+  stockSnapshotV3Fixture,
+  stockSnapshotV3ParticipationDeltaFixture,
+} from "./stockSnapshotV3.fixture";
 
 const now = new Date("2026-07-25T16:00:00.000Z");
 const aggregateHoldingsReason =
@@ -710,29 +713,46 @@ describe("schema-v3 stock snapshot validation", () => {
     expect(snapshot.priceAdjustment).toBe("forward-adjusted");
   });
 
-  it("keeps direct current-session flow independent of the requested chart interval", () => {
-    const fiveMinute = stockSnapshotV3Fixture();
-    const daily = stockSnapshotV3Fixture();
-    daily.interval = "day";
+  it.each(["day", "week"] as const)(
+    "reports %s-interval participation as explicitly unsupported instead of reusing an intraday-shaped split",
+    (interval) => {
+      const payload = stockSnapshotV3Fixture();
+      payload.interval = interval;
 
-    const fiveMinuteSnapshot = decodeStockSnapshotV3Envelope(fiveMinute, { now });
-    const dailySnapshot = decodeStockSnapshotV3Envelope(daily, { now });
+      const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
 
-    expect(dailySnapshot.sections.currentSessionFlow.data).toEqual(
-      fiveMinuteSnapshot.sections.currentSessionFlow.data,
-    );
-    expect(dailySnapshot.participationBars).toEqual(
-      fiveMinuteSnapshot.participationBars,
-    );
-  });
+      // Design doc §2.1/§7.4: no validated same-source historical capital-flow
+      // feed backs day/week bars in v1, so they must read "unsupported", never
+      // silently reuse whatever intraday-shaped bars the same flow data would
+      // otherwise produce.
+      expect(snapshot.participationBars).toHaveLength(2);
+      expect(
+        snapshot.participationBars.every(
+          (bar) =>
+            bar.qualityStatus === "unavailable" &&
+            bar.mainShare === null &&
+            bar.retailShare === null &&
+            bar.netFlow === null &&
+            bar.coverage === 0 &&
+            bar.missingReason === "unsupported interval in v1",
+        ),
+      ).toBe(true);
+    },
+  );
 
-  it("renders the served order-size flow buckets as live participation bars instead of a false unavailability", () => {
-    const payload = stockSnapshotV3Fixture();
+  it("diffs adjacent minute flow samples per candle window instead of reading one sample's session-cumulative magnitude", () => {
+    // Regression fixture for a real defect: the previous implementation read
+    // each candle's participation split off a single flow sample's raw
+    // cumulative-since-open magnitude, which silently reports the whole
+    // session-to-date split on every candle after the first. These four
+    // points are monotonically increasing cumulative magnitudes across three
+    // one-minute candles, chosen so the per-candle *delta* gives an opposite
+    // lean from the *cumulative* magnitude on two of the three candles: see
+    // the fixture's own doc comment for the hand-verified numbers.
+    const payload = stockSnapshotV3ParticipationDeltaFixture();
 
     const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
 
-    // A live/validated currentSessionFlow section must never fall back to the
-    // placeholder reason the server itself never asserted.
     expect(
       snapshot.participationBars.some(
         (bar) => bar.missingReason === "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
@@ -740,14 +760,14 @@ describe("schema-v3 stock snapshot validation", () => {
     ).toBe(false);
     expect(snapshot.participationBars).toEqual([
       {
-        closedAt: "2026-07-25T15:50:00.000Z",
-        asOf: "2026-07-25T15:50:00.000Z",
-        availableAt: "2026-07-25T15:50:01.000Z",
-        mainShare: 0.72,
-        retailShare: 0.28,
-        mainActivity: 1800,
-        retailActivity: 700,
-        netFlow: 2500,
+        closedAt: "2026-07-25T15:51:00.000Z",
+        asOf: "2026-07-25T15:51:00.000Z",
+        availableAt: "2026-07-25T15:51:01.000Z",
+        mainShare: 1,
+        retailShare: 0,
+        mainActivity: 100,
+        retailActivity: 0,
+        netFlow: 100,
         coverage: 1,
         source: "moomoo",
         methodVersion: "order-size-activity-share-v1",
@@ -755,14 +775,35 @@ describe("schema-v3 stock snapshot validation", () => {
         missingReason: null,
       },
       {
-        closedAt: "2026-07-25T15:55:00.000Z",
-        asOf: "2026-07-25T15:55:00.000Z",
-        availableAt: "2026-07-25T15:55:01.000Z",
-        mainShare: 2100 / 3200,
-        retailShare: 1100 / 3200,
-        mainActivity: 2100,
-        retailActivity: 1100,
-        netFlow: 3200,
+        closedAt: "2026-07-25T15:52:00.000Z",
+        asOf: "2026-07-25T15:52:00.000Z",
+        availableAt: "2026-07-25T15:52:01.000Z",
+        // The cumulative point at :52 alone (extraLarge=100, medium=200) would
+        // wrongly read as 33.3% main. The correct per-minute delta (Δmedium
+        // only) is 0% main -- the opposite lean.
+        mainShare: 0,
+        retailShare: 1,
+        mainActivity: 0,
+        retailActivity: 200,
+        netFlow: 200,
+        coverage: 1,
+        source: "moomoo",
+        methodVersion: "order-size-activity-share-v1",
+        qualityStatus: "live",
+        missingReason: null,
+      },
+      {
+        closedAt: "2026-07-25T15:53:00.000Z",
+        asOf: "2026-07-25T15:53:00.000Z",
+        availableAt: "2026-07-25T15:53:01.000Z",
+        // The cumulative point at :53 alone (extraLarge=300, medium=200) would
+        // wrongly read as 60% main. The correct per-minute delta (Δextra-large
+        // only) is 100% main -- again the opposite lean.
+        mainShare: 1,
+        retailShare: 0,
+        mainActivity: 200,
+        retailActivity: 0,
+        netFlow: 200,
         coverage: 1,
         source: "moomoo",
         methodVersion: "order-size-activity-share-v1",
@@ -773,7 +814,7 @@ describe("schema-v3 stock snapshot validation", () => {
   });
 
   it("reports a zero-activity flow sample as unavailable rather than a fabricated split", () => {
-    const payload = stockSnapshotV3Fixture();
+    const payload = stockSnapshotV3ParticipationDeltaFixture();
     for (const row of payload.sections.currentSessionFlow.data) {
       row.extraLargeOrderNetFlow = 0;
       row.largeOrderNetFlow = 0;
@@ -785,12 +826,14 @@ describe("schema-v3 stock snapshot validation", () => {
 
     const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
 
+    expect(snapshot.participationBars).toHaveLength(3);
     expect(
       snapshot.participationBars.every(
         (bar) =>
           bar.qualityStatus === "unavailable" &&
           bar.mainShare === null &&
           bar.netFlow === null &&
+          bar.coverage === 1 &&
           bar.missingReason === "zero activity denominator",
       ),
     ).toBe(true);

@@ -1022,60 +1022,160 @@ function unavailableTechnical(
   };
 }
 
+/** Window size, in minutes, backing each intraday candle interval. */
+const INTRADAY_INTERVAL_MINUTES: Record<string, number> = {
+  "1m": 1,
+  "5m": 5,
+  "15m": 15,
+  "30m": 30,
+  "60m": 60,
+};
+
 /**
- * Turns one served current-session flow sample into a participation bar.
- *
- * The section publishes five order-size net-flow buckets per sample rather
- * than a pre-computed share, so the main/retail split is derived here:
- * extra-large and large orders proxy institutional-scale activity ("main"),
- * medium and small orders proxy retail-scale activity ("retail") — the same
- * bucket grouping analysis_core's own candle-aligned builder uses
- * (services/analysis_core/us_stock_helper_core/participation.py). Net flow
- * can point either direction, so the split is measured on unsigned
- * magnitude; a sample with no measurable activity in either bucket is
- * reported unavailable rather than a fabricated even split.
+ * One candle's participation bar reported unavailable, mirroring
+ * analysis_core's own `_unavailable`
+ * (services/analysis_core/us_stock_helper_core/participation.py) so a
+ * client-side gap and a server-side gap read the same way.
  */
-function participationBarFromFlowPoint(
-  point: NormalizedCapitalFlowPoint,
+function unavailableParticipationBarForCandle(
+  candle: Candle,
+  reason: string,
+  coverage: number,
 ): ParticipationBar {
-  const mainActivity =
-    Math.abs(point.extraLargeOrderNetFlow) + Math.abs(point.largeOrderNetFlow);
-  const retailActivity =
-    Math.abs(point.mediumOrderNetFlow) + Math.abs(point.smallOrderNetFlow);
-  const activityTotal = mainActivity + retailActivity;
-  if (!(activityTotal > 0)) {
-    return {
-      closedAt: point.timestamp,
-      mainShare: null,
-      retailShare: null,
-      mainActivity: null,
-      retailActivity: null,
-      netFlow: null,
-      coverage: 0,
-      source: "moomoo",
-      asOf: point.timestamp,
-      availableAt: point.availableAt,
-      methodVersion: "order-size-activity-share-v1",
-      qualityStatus: "unavailable",
-      missingReason: "zero activity denominator",
-    };
-  }
-  const mainShare = mainActivity / activityTotal;
   return {
-    closedAt: point.timestamp,
-    mainShare,
-    retailShare: 1 - mainShare,
-    mainActivity,
-    retailActivity,
-    netFlow: point.totalNetFlow,
-    coverage: 1,
+    closedAt: candle.timestamp,
+    mainShare: null,
+    retailShare: null,
+    mainActivity: null,
+    retailActivity: null,
+    netFlow: null,
+    coverage,
     source: "moomoo",
-    asOf: point.timestamp,
-    availableAt: point.availableAt,
+    asOf: candle.timestamp,
+    availableAt: candle.availableAt,
     methodVersion: "order-size-activity-share-v1",
-    qualityStatus: "live",
-    missingReason: null,
+    qualityStatus: "unavailable",
+    missingReason: reason,
   };
+}
+
+/**
+ * Builds one order-size participation bar per completed candle by diffing
+ * adjacent minute-cadence flow samples and aggregating the deltas that land
+ * inside each candle's window — the same minute-differencing analysis_core's
+ * reference implementation performs
+ * (services/analysis_core/us_stock_helper_core/participation.py, `_build_bar`;
+ * design doc §7.3/§7.4), not a single sample's session-cumulative magnitude.
+ * moomoo's buckets reset only at session open, so reading one sample's own
+ * magnitude as "this candle's activity" silently reports the whole
+ * session-to-date split on every candle after the first — the exact defect
+ * this function replaces.
+ *
+ * A minute whose predecessor is missing from the served series (including
+ * the session's very first sample, which has no baseline of its own)
+ * contributes no delta and is not interpolated; that shortfall shows up as
+ * reduced coverage and, once coverage is incomplete, as an honest
+ * "incomplete minute coverage" bar — never a fabricated split.
+ *
+ * Day and week candles are explicitly unsupported in v1 (design doc
+ * §2.1/§7.4): no validated same-source historical capital-flow feed backs
+ * them yet, so every bar for those intervals is reported unavailable rather
+ * than silently reusing an intraday-shaped split.
+ */
+function participationBarsFromCandlesAndFlow(
+  candles: Candle[],
+  flowPoints: NormalizedCapitalFlowPoint[],
+  interval: string,
+): ParticipationBar[] {
+  if (interval === "day" || interval === "week") {
+    return candles.map((candle) =>
+      unavailableParticipationBarForCandle(candle, "unsupported interval in v1", 0),
+    );
+  }
+  const windowMinutes = INTRADAY_INTERVAL_MINUTES[interval];
+  if (!windowMinutes) {
+    return candles.map((candle) =>
+      unavailableParticipationBarForCandle(candle, "unsupported intraday cadence", 0),
+    );
+  }
+
+  const byTimestamp = new Map(flowPoints.map((point) => [point.timestamp, point]));
+  const windowMs = windowMinutes * 60_000;
+  const ONE_MINUTE_MS = 60_000;
+
+  return candles.map((candle) => {
+    const closedAtMs = Date.parse(candle.timestamp);
+    const openedAtMs = closedAtMs - windowMs;
+
+    // Mirrors participation.py's own upfront session check: any distinct
+    // session tag among the points the window even touches disqualifies the
+    // bar, not only a mismatch between an adjacent delta pair.
+    const sessionsInWindow = new Set<string>();
+    let latestAvailableAt = candle.availableAt;
+    for (const point of flowPoints) {
+      const pointMs = Date.parse(point.timestamp);
+      if (pointMs < openedAtMs || pointMs > closedAtMs) continue;
+      sessionsInWindow.add(point.session);
+      if (Date.parse(point.availableAt) > Date.parse(latestAvailableAt)) {
+        latestAvailableAt = point.availableAt;
+      }
+    }
+    let mixedSession = sessionsInWindow.size > 1;
+
+    let mainActivity = 0;
+    let retailActivity = 0;
+    let netFlow = 0;
+    let observedMinutes = 0;
+    for (
+      let stepMs = openedAtMs + ONE_MINUTE_MS;
+      stepMs <= closedAtMs;
+      stepMs += ONE_MINUTE_MS
+    ) {
+      const current = byTimestamp.get(new Date(stepMs).toISOString());
+      const previous = byTimestamp.get(new Date(stepMs - ONE_MINUTE_MS).toISOString());
+      if (!current || !previous) continue;
+      if (current.session !== previous.session) {
+        mixedSession = true;
+        continue;
+      }
+      observedMinutes += 1;
+      mainActivity +=
+        Math.abs(current.extraLargeOrderNetFlow - previous.extraLargeOrderNetFlow) +
+        Math.abs(current.largeOrderNetFlow - previous.largeOrderNetFlow);
+      retailActivity +=
+        Math.abs(current.mediumOrderNetFlow - previous.mediumOrderNetFlow) +
+        Math.abs(current.smallOrderNetFlow - previous.smallOrderNetFlow);
+      netFlow += current.totalNetFlow - previous.totalNetFlow;
+    }
+
+    const coverage = observedMinutes / windowMinutes;
+    if (mixedSession) {
+      return unavailableParticipationBarForCandle(candle, "mixed session flow points", coverage);
+    }
+    if (observedMinutes !== windowMinutes) {
+      return unavailableParticipationBarForCandle(candle, "incomplete minute coverage", coverage);
+    }
+    const activityTotal = mainActivity + retailActivity;
+    if (!(activityTotal > 0)) {
+      return unavailableParticipationBarForCandle(candle, "zero activity denominator", coverage);
+    }
+    const mainShare = mainActivity / activityTotal;
+    return {
+      closedAt: candle.timestamp,
+      mainShare,
+      retailShare: 1 - mainShare,
+      mainActivity,
+      retailActivity,
+      netFlow,
+      coverage,
+      source: "moomoo",
+      asOf: candle.timestamp,
+      availableAt: latestAvailableAt,
+      methodVersion: "order-size-activity-share-v1",
+      qualityStatus: "live",
+      missingReason: null,
+    };
+  });
 }
 
 /**
@@ -2240,7 +2340,11 @@ export function decodeStockSnapshotV3Envelope(
   );
   const participationBars =
     sectionIsValidated(currentSessionFlow) && currentSessionFlow.data
-      ? currentSessionFlow.data.map(participationBarFromFlowPoint)
+      ? participationBarsFromCandlesAndFlow(
+          flattenedCandles,
+          currentSessionFlow.data,
+          interval,
+        )
       : v3ParticipationUnavailable(flattenedCandles, currentSessionFlow.reason);
   const technicalUsable =
     sectionIsValidated(technical) && technical.data !== null && candlesUsable;
