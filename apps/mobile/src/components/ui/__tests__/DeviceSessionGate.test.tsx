@@ -1,5 +1,5 @@
 import { expect, it } from "@jest/globals";
-import { render, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Text } from "react-native";
 
 import type { PairingClient } from "@/data/pairingClient";
@@ -78,6 +78,25 @@ it("leaves a development build that needs no pairing alone", async () => {
   const view = await renderGate({ pairingRequired: false });
 
   await waitFor(() => expect(view.getByText("市场观察")).toBeTruthy());
+});
+
+it("keeps a way back to the pairing screen reachable while paired, so a server-side revocation is not a dead end", async () => {
+  // Nothing behind this gate ever calls reportRevoked() or forgetDevice(): a
+  // device the operator revokes stays "paired" here forever, and every
+  // screen downstream would answer auth-required with no way to act on it.
+  // This is the escape hatch that makes the recovery those two functions
+  // were built for actually reachable, instead of code only tests call.
+  const view = await renderGate({
+    pairingRequired: true,
+    seed: JSON.stringify(credential()),
+  });
+
+  await waitFor(() => expect(view.getByText("市场观察")).toBeTruthy());
+
+  await fireEvent.press(view.getByLabelText("重新配对设备"));
+
+  await waitFor(() => expect(view.getByText("未配对")).toBeTruthy());
+  expect(view.queryByText("市场观察")).toBeNull();
 });
 
 it("says it is still checking rather than flashing an unpaired screen", async () => {
