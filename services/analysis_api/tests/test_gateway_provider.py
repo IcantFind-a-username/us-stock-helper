@@ -9,6 +9,7 @@ from urllib.error import URLError
 from us_stock_helper_analysis_api.gateway_provider import (
     MarketGatewayProvider,
     MarketGatewayUnavailable,
+    SectionFailure,
     provider_from_environment,
 )
 
@@ -797,3 +798,169 @@ class InstitutionalFlowInputsTests(unittest.TestCase):
             provider(
                 Gateway(raises=URLError("connection refused"))
             ).institutional_flow_inputs_for("NVDA", AS_OF)
+
+
+class InstitutionalFlowSectionFailureTests(unittest.TestCase):
+    """A gateway-declared section failure must not read the same as silence.
+
+    `_flow_points`/`_holdings` both return an honest empty tuple for two
+    different situations: the section validated but had nothing to report,
+    and the gateway declared the section itself unavailable. Collapsing both
+    into the same empty tuple lost the distinction before `flow_section_failure`
+    / `holdings_section_failure` existed -- institutional_flow_provider.blend
+    reported every such case as NO_DATA_AT_CUTOFF, even when the gateway had
+    said outright that a source failed.
+    """
+
+    def test_a_gateway_declared_unavailable_flow_section_is_reported(self) -> None:
+        payload = v3_snapshot(
+            flow={
+                "availabilityStatus": "unavailable",
+                "qualityStatus": "invalid",
+                "source": None,
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": None,
+                "data": None,
+                "errorCode": "CURRENT_SESSION_FLOW_UNAVAILABLE",
+                "reason": "当前交易时段资金流数据不可用",
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "unavailable-v1",
+            }
+        )
+
+        inputs = provider(Gateway(payload)).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertEqual(
+            inputs.flow_section_failure,
+            SectionFailure(status="unavailable", reason="当前交易时段资金流数据不可用"),
+        )
+        self.assertEqual(inputs.participation_bars, ())
+
+    def test_a_gateway_declared_unavailable_holdings_section_is_reported(
+        self,
+    ) -> None:
+        payload = v3_snapshot(
+            holdings={
+                "availabilityStatus": "unavailable",
+                "qualityStatus": "invalid",
+                "source": "moomoo-delayed-institutional-disclosure",
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": None,
+                "data": [],
+                "errorCode": "HOLDINGS_UNAVAILABLE",
+                "reason": "机构持仓数据不可用",
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "unavailable-v1",
+            }
+        )
+
+        inputs = provider(Gateway(payload)).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertEqual(
+            inputs.holdings_section_failure,
+            SectionFailure(status="unavailable", reason="机构持仓数据不可用"),
+        )
+        self.assertEqual(inputs.holdings, ())
+
+    def test_a_stale_flow_section_is_a_failure_too_not_only_unavailable(
+        self,
+    ) -> None:
+        # "stale" is a real availabilityStatus the gateway emits for a
+        # section whose fetch succeeded too slowly. It is just as much a
+        # declared failure as "unavailable" -- only "live"/"delayed" mean
+        # the section itself is trustworthy.
+        payload = v3_snapshot(
+            flow={
+                "availabilityStatus": "stale",
+                "qualityStatus": "invalid",
+                "source": None,
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": None,
+                "data": None,
+                "errorCode": "STALE_DATA",
+                "reason": "当前交易时段资金流数据不可用",
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "unavailable-v1",
+            }
+        )
+
+        inputs = provider(Gateway(payload)).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertEqual(inputs.flow_section_failure.status, "stale")
+
+    def test_a_genuinely_empty_validated_flow_section_carries_no_failure(
+        self,
+    ) -> None:
+        # Contract-level distinction from the "unavailable" cases above: a
+        # section the gateway itself calls live/validated, that simply has
+        # zero rows, is quiet -- not broken.
+        payload = v3_snapshot(
+            flow={
+                "availabilityStatus": "live",
+                "qualityStatus": "validated",
+                "source": "moomoo",
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": AS_OF.isoformat().replace("+00:00", "Z"),
+                "data": [],
+                "errorCode": None,
+                "reason": None,
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "provider-capital-flow-normalized-v1",
+            }
+        )
+
+        inputs = provider(Gateway(payload)).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertIsNone(inputs.flow_section_failure)
+        self.assertEqual(inputs.participation_bars, ())
+
+    def test_a_genuinely_empty_validated_holdings_section_carries_no_failure(
+        self,
+    ) -> None:
+        payload = v3_snapshot(
+            holdings={
+                "availabilityStatus": "delayed",
+                "qualityStatus": "validated",
+                "source": "moomoo-delayed-institutional-disclosure",
+                "asOf": None,
+                "availableAt": None,
+                "receivedAt": AS_OF.isoformat().replace("+00:00", "Z"),
+                "data": [],
+                "errorCode": None,
+                "reason": None,
+                "warnings": [],
+                "anomalies": [],
+                "methodVersion": "reported-holdings-v2-anomaly-aware",
+            }
+        )
+
+        inputs = provider(Gateway(payload)).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertIsNone(inputs.holdings_section_failure)
+        self.assertEqual(inputs.holdings, ())
+
+    def test_a_successful_snapshot_carries_no_section_failures(self) -> None:
+        inputs = provider(Gateway(v3_snapshot())).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertIsNone(inputs.flow_section_failure)
+        self.assertIsNone(inputs.holdings_section_failure)

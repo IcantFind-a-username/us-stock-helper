@@ -8,6 +8,7 @@ from us_stock_helper_analysis_api.gateway_provider import (
     HoldingsDisclosure,
     InstitutionalFlowInputs,
     MarketGatewayUnavailable,
+    SectionFailure,
 )
 from us_stock_helper_analysis_api.institutional_flow_provider import (
     DISCLOSURE_CONFIDENCE,
@@ -168,6 +169,77 @@ class HonestAbsenceTests(unittest.TestCase):
         # search must scan for the newest *live* bar, not just take index -1.
         self.assertIsNotNone(reading.value)
         self.assertAlmostEqual(reading.value, 0.0, places=6)
+
+
+class SectionFailureTaxonomyTests(unittest.TestCase):
+    """A gateway-declared section failure must not read as a quiet market.
+
+    Before `flow_section_failure`/`holdings_section_failure` existed, both a
+    genuinely quiet symbol and a symbol whose gateway sections failed outright
+    produced the identical NO_DATA_AT_CUTOFF reading -- the gateway_provider
+    empty tuples carried no memory of which case it was.
+    """
+
+    def test_both_sections_failing_is_source_unreachable_not_no_data(self) -> None:
+        inputs = InstitutionalFlowInputs(
+            participation_bars=(),
+            holdings=(),
+            flow_section_failure=SectionFailure(
+                status="unavailable", reason="当前交易时段资金流数据不可用"
+            ),
+            holdings_section_failure=SectionFailure(
+                status="unavailable", reason="机构持仓数据不可用"
+            ),
+        )
+
+        reading = blend("NVDA", inputs)
+
+        self.assertIsNone(reading.value)
+        self.assertEqual(
+            reading.unavailable_reason, FactorUnavailable.SOURCE_UNREACHABLE
+        )
+        self.assertIn("当前交易时段资金流数据不可用", reading.detail)
+        self.assertIn("机构持仓数据不可用", reading.detail)
+
+    def test_one_failed_section_is_enough_to_call_it_source_unreachable(
+        self,
+    ) -> None:
+        # The flow section failed outright; holdings simply had nothing on
+        # file (no failure recorded). The reading still owes the reader the
+        # honest "a source failed" reason rather than the softer "no data".
+        inputs = InstitutionalFlowInputs(
+            participation_bars=(),
+            holdings=(),
+            flow_section_failure=SectionFailure(status="stale", reason=None),
+            holdings_section_failure=None,
+        )
+
+        reading = blend("NVDA", inputs)
+
+        self.assertIsNone(reading.value)
+        self.assertEqual(
+            reading.unavailable_reason, FactorUnavailable.SOURCE_UNREACHABLE
+        )
+
+    def test_no_declared_failure_at_all_stays_no_data_at_cutoff(self) -> None:
+        # Regression guard: a genuinely quiet symbol -- the gateway answered,
+        # both sections validated, neither had a row -- must keep reading as
+        # NO_DATA_AT_CUTOFF now that failures are tracked, not get swept into
+        # SOURCE_UNREACHABLE by accident.
+        reading = blend(
+            "NVDA",
+            InstitutionalFlowInputs(
+                participation_bars=(),
+                holdings=(),
+                flow_section_failure=None,
+                holdings_section_failure=None,
+            ),
+        )
+
+        self.assertIsNone(reading.value)
+        self.assertEqual(
+            reading.unavailable_reason, FactorUnavailable.NO_DATA_AT_CUTOFF
+        )
 
 
 class ReadingInvariantTests(unittest.TestCase):

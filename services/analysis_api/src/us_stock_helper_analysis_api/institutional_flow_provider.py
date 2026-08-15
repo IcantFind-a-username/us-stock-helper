@@ -125,6 +125,34 @@ def blend(symbol: str, inputs: InstitutionalFlowInputs) -> InstitutionalFlowRead
     )
 
     if proxy_component is None and disclosure_component is None:
+        failures = [
+            (label, failure)
+            for label, failure in (
+                ("current-session order-size flow", inputs.flow_section_failure),
+                ("institutional holdings disclosure", inputs.holdings_section_failure),
+            )
+            if failure is not None
+        ]
+        if failures:
+            # The gateway itself said a source failed here — a stronger,
+            # more actionable claim than "the market was quiet" — so it gets
+            # the same reason code every other source outage in this system
+            # reports, not the softer no-data-this-day taxonomy.
+            described = "; ".join(
+                f"{label} ({failure.status}"
+                + (f": {failure.reason}" if failure.reason else "")
+                + ")"
+                for label, failure in failures
+            )
+            return InstitutionalFlowReading(
+                value=None,
+                unavailable_reason=FactorUnavailable.SOURCE_UNREACHABLE,
+                detail=(
+                    "The market gateway declared "
+                    f"{'a source' if len(failures) == 1 else 'sources'} "
+                    f"unavailable for {symbol}: {described}."
+                ),
+            )
         return InstitutionalFlowReading(
             value=None,
             unavailable_reason=FactorUnavailable.NO_DATA_AT_CUTOFF,

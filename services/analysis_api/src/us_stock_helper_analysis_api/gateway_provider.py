@@ -81,6 +81,26 @@ class HoldingsDisclosure:
 
 
 @dataclass(frozen=True, slots=True)
+class SectionFailure:
+    """A v3 snapshot section the gateway itself declared unavailable.
+
+    Distinct from a genuinely empty section: a section the gateway reports as
+    ``live``/``delayed`` and ``validated`` with zero rows is quiet, not
+    broken, and carries no ``SectionFailure`` at all. This is only ever
+    populated when the section's own ``availabilityStatus`` says otherwise
+    (``unavailable``, ``stale``, ...) — the gateway's own admission that the
+    section could not be read, which the caller must not silently read the
+    same way as "nothing to report".
+
+    ``status`` is that raw ``availabilityStatus`` string; ``reason`` is the
+    gateway's own stated reason when it gave one.
+    """
+
+    status: str
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class InstitutionalFlowInputs:
     """The two honest ingredients of the institutional-capital factor.
 
@@ -88,10 +108,18 @@ class InstitutionalFlowInputs:
     trading, a session with no completed candle yet) or no holdings
     disclosure on file, and it is the caller's job to decide what an empty
     ingredient means — this boundary never invents a placeholder for it.
+
+    ``flow_section_failure``/``holdings_section_failure`` carry *why* the
+    corresponding tuple came back empty when the gateway itself declared the
+    section unavailable, as opposed to a genuinely empty but healthy section
+    — see ``SectionFailure``. Both default to ``None`` (no declared failure),
+    which is also what a healthy-but-empty section leaves them as.
     """
 
     participation_bars: tuple[ParticipationBar, ...]
     holdings: tuple[HoldingsDisclosure, ...]
+    flow_section_failure: SectionFailure | None = None
+    holdings_section_failure: SectionFailure | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,9 +244,11 @@ class MarketGatewayProvider:
             raise MarketGatewayUnavailable(
                 "the gateway snapshot carries no sections"
             )
-        flow_points = self._flow_points(symbol, sections.get("currentSessionFlow"), as_of)
+        flow_section = sections.get("currentSessionFlow")
+        holdings_section = sections.get("holdings")
+        flow_points = self._flow_points(symbol, flow_section, as_of)
         bars = self._participation_candles(symbol, sections.get("candles"), as_of)
-        holdings = self._holdings(sections.get("holdings"), as_of)
+        holdings = self._holdings(holdings_section, as_of)
         participation_bars: tuple[ParticipationBar, ...] = ()
         if flow_points and bars:
             try:
@@ -230,7 +260,10 @@ class MarketGatewayProvider:
                     f"order-size participation failed validation: {error}"
                 ) from error
         return InstitutionalFlowInputs(
-            participation_bars=participation_bars, holdings=holdings
+            participation_bars=participation_bars,
+            holdings=holdings,
+            flow_section_failure=_section_failure(flow_section),
+            holdings_section_failure=_section_failure(holdings_section),
         )
 
     def _snapshot(self, symbol: str, interval: str, count: int) -> dict[str, Any]:
@@ -537,6 +570,30 @@ def _bar(
         raise MarketGatewayUnavailable(
             "a completed candle failed the bar model's own checks"
         ) from error
+
+
+def _section_failure(section: Any) -> SectionFailure | None:
+    """None for a healthy (possibly empty) section; the gateway's own
+    declared failure otherwise.
+
+    Deliberately keyed only on ``availabilityStatus``: ``live``/``delayed``
+    is the gateway's own claim that the section can be trusted, whatever its
+    row count; anything else (``unavailable``, ``stale``, a missing or
+    malformed section) is the gateway saying it could not answer, which is a
+    source problem rather than a quiet market and must not be reported the
+    same way.
+    """
+
+    if not isinstance(section, dict):
+        return None
+    status = section.get("availabilityStatus")
+    if status in {"live", "delayed"}:
+        return None
+    reason = section.get("reason")
+    return SectionFailure(
+        status=status if isinstance(status, str) and status.strip() else "unknown",
+        reason=reason if isinstance(reason, str) and reason.strip() else None,
+    )
 
 
 def _timestamp(item: Mapping[str, Any], key: str) -> datetime:
