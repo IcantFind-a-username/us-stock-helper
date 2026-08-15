@@ -972,9 +972,13 @@ def _build_ma5_signal(
     break_tolerance: float,
 ) -> PatternShapeSignal:
     if status is PatternShapeStatus.FORMING:
+        # The break check runs against each later bar's OWN MA5 (close <
+        # 当日MA5 * (1 - break_tolerance)), so the served condition names
+        # that moving rule -- quoting a level frozen at the touch bar would
+        # promise a comparison the detector never makes.
         invalidation = (
-            f"收盘跌破五日线 {ma5[touch_index] * (1 - break_tolerance):.2f}"  # type: ignore[operator]
-            f"（跌破容忍度 {break_tolerance:.0%}）视为企稳失败"
+            f"收盘跌破当日五日线的 {1 - break_tolerance:.0%}"
+            "（门槛逐日随五日线变化）视为企稳失败"
         )
     elif status is PatternShapeStatus.CONFIRMED:
         confirm_ma5 = ma5[event_index]

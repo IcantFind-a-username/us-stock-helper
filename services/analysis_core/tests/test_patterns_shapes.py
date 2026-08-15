@@ -351,6 +351,21 @@ class Ma5PullbackTests(unittest.TestCase):
         self.assertEqual(signal.direction, Direction.BULLISH)
         self.assertEqual(signal.anchor.index, 7)
 
+    def test_forming_invalidation_copy_describes_the_daily_rule(self) -> None:
+        # The machine checks each later bar's close against that bar's OWN
+        # MA5 * 98% -- the threshold moves with the average every day. The
+        # served copy must state that rule, not quote a number frozen at the
+        # touch bar that the detector will never actually compare against.
+        detection = detect_ma5_pullback_pattern(bars_from_closes(_MA5_PREFIX))
+
+        self.assertEqual(len(detection.signals), 1)
+        signal = detection.signals[0]
+        self.assertEqual(signal.status, PatternShapeStatus.FORMING)
+        self.assertEqual(
+            signal.invalidation,
+            "收盘跌破当日五日线的 98%（门槛逐日随五日线变化）视为企稳失败",
+        )
+
     def test_confirms_on_a_close_back_above_a_rising_ma5(self) -> None:
         detection = detect_ma5_pullback_pattern(bars_from_closes(_MA5_PREFIX + [113.0]))
 
