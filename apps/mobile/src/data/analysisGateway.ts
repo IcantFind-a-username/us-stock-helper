@@ -898,9 +898,26 @@ export type AnalysisSource = {
 };
 
 export type AnalysisRequestOptions = {
-  /** One explicit, single-stock model call. Never set this on list requests. */
-  adviser?: "news";
+  /**
+   * One explicit, single-stock model call. Never set this on list requests.
+   *
+   * `"news"` asks for the single-report interpretation and rides the
+   * client's normal deadline. `"full"` asks for the thirteen-seat council: on
+   * the wire it becomes `&adviser=true`, not the literal word "full" -- the
+   * server's `_flag` parser only knows `1/true/yes/0/false/no/news`, and
+   * `_adviser_mode` already resolves the boolean `True` to the full council --
+   * and it gets the longer `COUNCIL_TIMEOUT_MS` deadline instead.
+   */
+  adviser?: "news" | "full";
 };
+
+/**
+ * The server's own ceiling for a full council run (up to 300s, ~$0.10/run —
+ * services/analysis_api/README.md). A plain decision or a single-report news
+ * call answers in a few seconds and keeps the client's normal `timeoutMs`;
+ * only the thirteen-seat council needs a deadline this long.
+ */
+const COUNCIL_TIMEOUT_MS = 300_000;
 
 type AnalysisClientOptions = {
   baseUrl: string;
@@ -951,7 +968,11 @@ export function createAnalysisClient({
     );
   }
 
-  async function fetchJson(path: string, callerSignal?: AbortSignal) {
+  async function fetchJson(
+    path: string,
+    callerSignal?: AbortSignal,
+    timeoutOverrideMs?: number,
+  ) {
     if (callerSignal?.aborted) {
       const error = new Error("analysis request was aborted by caller");
       error.name = "AbortError";
@@ -967,7 +988,10 @@ export function createAnalysisClient({
     };
     const abortFromCaller = () => abortOnce("caller");
     callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
-    const timeout = setTimeout(() => abortOnce("timeout"), timeoutMs);
+    const timeout = setTimeout(
+      () => abortOnce("timeout"),
+      timeoutOverrideMs ?? timeoutMs,
+    );
     try {
       const response = await fetchImpl(`${normalizedBaseUrl}${path}`, {
         method: "GET",
@@ -1056,9 +1080,20 @@ export function createAnalysisClient({
         symbol: normalizedSymbol,
         horizon,
       });
-      if (options?.adviser) query.set("adviser", options.adviser);
+      // "full" is this client's name for the mode; the wire only understands
+      // the boolean switch the server's `_flag` parser accepts, which
+      // `_adviser_mode` then resolves to the full council.
+      if (options?.adviser === "full") {
+        query.set("adviser", "true");
+      } else if (options?.adviser) {
+        query.set("adviser", options.adviser);
+      }
       try {
-        const payload = await fetchJson(`/decision?${query.toString()}`, signal);
+        const payload = await fetchJson(
+          `/decision?${query.toString()}`,
+          signal,
+          options?.adviser === "full" ? COUNCIL_TIMEOUT_MS : undefined,
+        );
         const decision = decodeDecisionEnvelope(payload, { now: now() });
         if (
           decision.symbol !== normalizedSymbol ||

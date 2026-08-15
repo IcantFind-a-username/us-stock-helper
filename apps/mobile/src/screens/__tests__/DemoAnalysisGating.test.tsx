@@ -14,11 +14,13 @@ import {
   AnalysisRequestError,
   type AnalysisSource,
 } from "@/data/analysisGateway";
+import { decisionFixture } from "@/data/__tests__/decision.fixture";
 import {
   marketBriefFixture,
   marketBriefUnavailableFixture,
 } from "@/data/__tests__/marketBrief.fixture";
-import type { MarketBrief } from "@/domain/models";
+import type { Decision, MarketBrief } from "@/domain/models";
+import { DeviceSessionProvider } from "@/state/DeviceSessionProvider";
 
 import { AdvisersScreen } from "../AdvisersScreen";
 import { AgentScreen } from "../AgentScreen";
@@ -63,6 +65,10 @@ async function renderScreen(screen: ReactElement, demoMode: boolean) {
   );
 }
 
+// 顾问 is deliberately absent from this table: since it gained an explicit
+// invoke flow, its real-mode surface is not the blanket "analysis-not-
+// connected" shape every other screen here still has -- it is exercised in
+// its own describe block below instead.
 const SCREENS: { name: string; element: ReactElement; demoText: RegExp }[] = [
   { name: "发现", element: <DiscoverScreen />, demoText: /NVDA · NVIDIA/ },
   {
@@ -70,7 +76,6 @@ const SCREENS: { name: string; element: ReactElement; demoText: RegExp }[] = [
     element: <AlertsScreen />,
     demoText: /NVDA 接近量价确认区/,
   },
-  { name: "顾问", element: <AdvisersScreen />, demoText: /客观算法结论/ },
   { name: "Agent", element: <AgentScreen />, demoText: /为什么短线不追高？/ },
 ];
 
@@ -94,11 +99,11 @@ describe.each(SCREENS)("$name 屏幕的演示门控", ({ element, demoText }) =>
 
 // Each of these screens is blocked on something different. They shared one
 // sentence before, and that sentence blamed an analysis service that has since
-// shipped — so the guard is that the reasons stay distinct and concrete.
+// shipped — so the guard is that the reasons stay distinct and concrete. 顾问
+// is absent here for the same reason it is absent from SCREENS above.
 const BLOCKERS: { name: string; element: ReactElement; reason: RegExp }[] = [
   { name: "发现", element: <DiscoverScreen />, reason: /全市场扫描服务/ },
   { name: "提醒", element: <AlertsScreen />, reason: /提醒服务本身/ },
-  { name: "顾问", element: <AdvisersScreen />, reason: /ANTHROPIC_API_KEY/ },
   { name: "Agent", element: <AgentScreen />, reason: /ANTHROPIC_API_KEY/ },
 ];
 
@@ -109,6 +114,70 @@ describe.each(BLOCKERS)("$name 占位文案", ({ element, reason }) => {
     await waitFor(() =>
       expect(view.getByTestId("analysis-not-connected")).toHaveTextContent(
         reason,
+      ),
+    );
+    expect(view.queryByText(/真实分析服务上线前/)).toBeNull();
+  });
+});
+
+// 顾问's real mode is no longer a single blanket refusal: `GET
+// /decision?adviser=true` is deployed and invocable now (b05de28/0495488,
+// 4170859), so the screen offers an explicit, cost-and-duration-labelled
+// invoke flow instead of assuming the whole feature is missing. The generic
+// SCREENS/BLOCKERS tables above cannot express that three-state shape
+// (idle-before-tap / live-and-rendered / genuinely-not-deployed), so it gets
+// its own block, wrapped in the DeviceSessionProvider its own analysis
+// client construction now depends on.
+async function renderAdvisers(demoMode: boolean, analysis?: AnalysisSource) {
+  return render(
+    <AppStateProvider>
+      <DeviceSessionProvider pairingRequired={false}>
+        <MarketDataProvider
+          development
+          initialDemoMode={demoMode}
+          repository={idleRepository}>
+          <AdvisersScreen analysis={analysis} />
+        </MarketDataProvider>
+      </DeviceSessionProvider>
+    </AppStateProvider>,
+  );
+}
+
+describe("顾问 屏幕的演示门控", () => {
+  it("演示模式下展示演示内容，不出现真实委员会的邀请流程", async () => {
+    const view = await renderAdvisers(true);
+
+    await waitFor(() => expect(view.getByText("客观算法结论")).toBeTruthy());
+    expect(view.queryByTestId("analysis-not-connected")).toBeNull();
+    expect(view.queryByTestId("adviser-council-not-requested")).toBeNull();
+  });
+
+  it("真实模式下点击之前展示邀请流程，不渲染任何演示分析内容，也不是笼统的未接入", async () => {
+    const view = await renderAdvisers(false);
+
+    await waitFor(() =>
+      expect(view.getByTestId("adviser-council-not-requested")).toBeTruthy(),
+    );
+    expect(view.queryByText("客观算法结论")).toBeNull();
+    expect(view.queryByTestId("analysis-not-connected")).toBeNull();
+  });
+
+  it("真实模式下服务端确实没有携带委员会字段时，具体说明缺的是什么", async () => {
+    const view = await renderAdvisers(false, {
+      getDecision: async () =>
+        ({ ...decisionFixture(), adviserCouncil: null }) as unknown as Decision,
+    });
+
+    await waitFor(() =>
+      expect(view.getByTestId("adviser-council-invoke")).toBeTruthy(),
+    );
+    await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+
+    await waitFor(() =>
+      expect(
+        view.getByTestId("adviser-council-not-deployed"),
+      ).toHaveTextContent(
+        /部署的分析服务版本比这台手机认识的委员会解析更旧|委员会层尚未在服务端配置/,
       ),
     );
     expect(view.queryByText(/真实分析服务上线前/)).toBeNull();

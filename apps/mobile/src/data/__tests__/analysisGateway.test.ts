@@ -582,6 +582,118 @@ describe("analysis client transport", () => {
     );
   });
 
+  it("wires the full council mode to the server's boolean adviser flag, not the literal word", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse(decisionFixture()),
+    ) as unknown as typeof fetch;
+    const client = createAnalysisClient({
+      baseUrl: "http://127.0.0.1:8788",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await client.getDecision("nvda", "short", undefined, { adviser: "full" });
+
+    // `_flag` on the server only ever parses "1/true/yes/0/false/no/news";
+    // the literal string "full" is not in that vocabulary and would 400. The
+    // council is reached the same way `adviser=true` already is: `_flag`
+    // reads it as the boolean True and `_adviser_mode(True)` resolves to the
+    // "full" mode server-side.
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8788/decision?symbol=NVDA&horizon=short&adviser=true",
+      expect.any(Object),
+    );
+  });
+
+  it("gives the council call the server's 300-second ceiling instead of the normal deadline", async () => {
+    jest.useFakeTimers();
+    try {
+      let fetchSignal: AbortSignal | undefined;
+      const fetchImpl = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((resolve, reject) => {
+            fetchSignal = init?.signal as AbortSignal;
+            const answer = setTimeout(
+              () => resolve(jsonResponse(decisionFixture())),
+              290_000,
+            );
+            fetchSignal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(answer);
+                reject(
+                  Object.assign(new Error("request aborted"), {
+                    name: "AbortError",
+                  }),
+                );
+              },
+              { once: true },
+            );
+          }),
+      ) as unknown as typeof fetch;
+      const client = createAnalysisClient({
+        baseUrl: "http://127.0.0.1:8788",
+        fetchImpl,
+        now: () => now,
+      });
+
+      const request = client.getDecision("NVDA", "short", undefined, {
+        adviser: "full",
+      });
+      // The plain decision path's own 45-second deadline must not fire here:
+      // the council is still legitimately working at that mark.
+      await jest.advanceTimersByTimeAsync(45_000);
+      expect(fetchSignal?.aborted).toBe(false);
+
+      await jest.advanceTimersByTimeAsync(245_000);
+      expect(fetchSignal?.aborted).toBe(false);
+      await expect(request).resolves.toMatchObject({ symbol: "NVDA" });
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("still abandons a plain decision at the client's normal deadline, not the council's", async () => {
+    jest.useFakeTimers();
+    try {
+      let fetchSignal: AbortSignal | undefined;
+      const fetchImpl = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            fetchSignal = init?.signal as AbortSignal;
+            fetchSignal.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  Object.assign(new Error("timed out"), { name: "AbortError" }),
+                ),
+              { once: true },
+            );
+          }),
+      ) as unknown as typeof fetch;
+      const client = createAnalysisClient({
+        baseUrl: "http://127.0.0.1:8788",
+        fetchImpl,
+        now: () => now,
+        timeoutMs: 25,
+      });
+
+      const request = client.getDecision("NVDA", "short");
+      await Promise.resolve();
+      jest.advanceTimersByTime(25);
+
+      expect(fetchSignal?.aborted).toBe(true);
+      await expect(request).rejects.toMatchObject({
+        name: "AnalysisRequestError",
+        kind: "timeout",
+      });
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("requires an ephemeral token before connecting to a LAN analysis service", () => {
     expect(() =>
       createAnalysisClient({

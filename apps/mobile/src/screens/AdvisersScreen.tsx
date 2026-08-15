@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { AdviserSummary } from "@/components/advisers/AdviserSummary";
 import { PlanSelector } from "@/components/advisers/PlanSelector";
@@ -11,21 +11,87 @@ import {
 } from "@/components/dashboard/DashboardDetailSheet";
 import { AnalysisNotConnected } from "@/components/ui/AnalysisNotConnected";
 import { Screen } from "@/components/ui/Screen";
+import { getAnalysisRuntimeConfig } from "@/config/runtimeConfig";
+import { createAnalysisClient, type AnalysisSource } from "@/data/analysisGateway";
+import { MarketDataError } from "@/data/marketRepository";
 import { ADVISER_SCORE_CAP } from "@/domain/models";
-import type { PlanSide, RiskPreference } from "@/domain/models";
+import type {
+  AdviserCitation,
+  AdviserConclusion,
+  AdviserUsage,
+  CouncilFrameworkOpinion,
+  DecisionAdviserCouncil,
+  Horizon,
+  PlanSide,
+  RiskPreference,
+} from "@/domain/models";
 import { evaluateTradePlanSafety, selectTradePlan } from "@/domain/plan";
 import { fixtureRepository } from "@/fixtures/repository";
+import { useAdviserCouncil } from "@/hooks/useAdviserCouncil";
+import { describeMarketError } from "@/i18n/marketErrorCopy";
 import { useAppState } from "@/state/AppStateProvider";
+import { useDeviceSession } from "@/state/DeviceSessionProvider";
 import { useMarketDataMode } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
-export function AdvisersScreen() {
+/**
+ * How many of the thirteen frameworks `select_frameworks` actually convenes
+ * for each horizon (services/adviser_llm/src/adviser_llm/frameworks.py):
+ * every framework whose `suitable_horizons` include this one, in declaration
+ * order. Shown as an expectation on the invoke button, not asserted against
+ * the server's answer -- the server, not this map, is the source of truth
+ * for who actually showed up.
+ */
+const COUNCIL_SEATS_BY_HORIZON: Record<Horizon, number> = {
+  short: 7,
+  swing: 12,
+  long: 9,
+};
+
+/**
+ * Builds the one client this screen's council call goes through.
+ *
+ * Deliberately independent of `MarketDataProvider`'s shared `analysis`
+ * client: the council is a slow, opt-in, symbol-scoped call with no reason to
+ * share that provider's context, and `createAnalysisClient` holds no state
+ * that would make a second instance observably different from the first.
+ */
+function buildCouncilAnalysisSource(deviceToken: string | null): AnalysisSource {
+  try {
+    const config = getAnalysisRuntimeConfig();
+    if (!config.apiUrl) {
+      throw new Error("EXPO_PUBLIC_ANALYSIS_API_URL is not configured");
+    }
+    const token = deviceToken ?? config.authorizationToken;
+    return createAnalysisClient({
+      baseUrl: config.apiUrl,
+      ...(token ? { authorizationToken: token } : {}),
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "invalid analysis configuration";
+    return {
+      getDecision: async () =>
+        Promise.reject(new MarketDataError("configuration", message)),
+    };
+  }
+}
+
+export function AdvisersScreen({
+  analysis: analysisOverride,
+}: { analysis?: AnalysisSource | undefined } = {}) {
   const params = useLocalSearchParams<{ symbol?: string | string[] }>();
   const router = useRouter();
   const { horizon, savePlan } = useAppState();
   const { demoMode } = useMarketDataMode();
+  const { deviceToken } = useDeviceSession();
   const symbolParam = Array.isArray(params.symbol) ? params.symbol[0] : params.symbol;
   const symbol = (symbolParam ?? "NVDA").toUpperCase();
+  const councilAnalysis = useMemo(
+    () => analysisOverride ?? buildCouncilAnalysisSource(deviceToken),
+    [analysisOverride, deviceToken],
+  );
+  const council = useAdviserCouncil(councilAnalysis, symbol, horizon);
   const stock = fixtureRepository.getStock(symbol, horizon);
   const advisers = fixtureRepository.getAdvisers(symbol, horizon);
   const plans = fixtureRepository.getTradePlans(symbol, horizon);
@@ -78,12 +144,126 @@ export function AdvisersScreen() {
   ];
 
   if (!demoMode) {
+    const block = council.data?.adviserCouncil ?? null;
+    const usage = council.data?.adviserUsage ?? null;
+    const notDeployed = council.status === "live" && block === null;
+    const seatsExpected = COUNCIL_SEATS_BY_HORIZON[horizon];
+    const buttonLabel =
+      council.status === "loading"
+        ? "顾问委员会正在生成…"
+        : council.status === "live" && block?.status === "available"
+          ? "重新生成顾问委员会意见"
+          : "生成顾问委员会意见";
+
     return (
       <Screen hideGlobalHeader style={styles.screen}>
-        <AnalysisNotConnected
-          missing="缺的是大模型凭据：顾问层要读环境变量 ANTHROPIC_API_KEY，目前没有配置，分析服务也还没有暴露逐位顾问的路由。个股结论里的顾问调整项因此固定为 0，不是顾问看空。"
-          surface="顾问会诊"
-        />
+        <View style={styles.header}>
+          <Pressable
+            accessibilityLabel="返回股票详情"
+            accessibilityRole="button"
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.back, pressed && styles.pressed]}>
+            <Text style={styles.backText}>返回</Text>
+          </Pressable>
+          <View style={styles.headerCopy}>
+            <Text style={styles.headerTitle}>{symbol} · 顾问会诊</Text>
+            <Text style={styles.headerMeta}>
+              {council.data
+                ? `证据截止 ${formatAsOf(council.data.decisionCutoff)}`
+                : `${horizon} 周期 · 十三风格顾问委员会`}
+            </Text>
+          </View>
+          <View style={styles.back} />
+        </View>
+
+        {notDeployed ? (
+          <AnalysisNotConnected
+            missing="这次响应没有携带顾问委员会字段：部署的分析服务版本比这台手机认识的委员会解析更旧，或者委员会层尚未在服务端配置。个股结论里的顾问调整项因此固定为 0，这不是委员会看空，是它没有跑起来。"
+            surface="顾问委员会"
+            testID="adviser-council-not-deployed"
+          />
+        ) : (
+          <View style={styles.council} testID="adviser-council">
+            <Text style={styles.disclaimer}>
+              风格模型，非本人意见：以下为公开投资理念的方法论模拟，不代表本人、背书或实时个人意见；受硬门否决，且幅度有上限。
+            </Text>
+
+            <Pressable
+              accessibilityLabel={buttonLabel}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: council.status === "loading" }}
+              disabled={council.status === "loading"}
+              onPress={council.request}
+              style={({ pressed }) => [
+                styles.inviteButton,
+                council.status === "loading" && styles.inviteButtonLoading,
+                pressed && styles.pressed,
+              ]}
+              testID="adviser-council-invoke">
+              <Text style={styles.inviteButtonTitle}>{buttonLabel}</Text>
+              <Text style={styles.inviteButtonMeta}>
+                {`预计花费约 US$0.10 · 最长可能等待 5 分钟 · 每次点击只调用一次模型 · 本周期满编 ${seatsExpected} 席`}
+              </Text>
+            </Pressable>
+
+            {council.status === "idle" ? (
+              <View style={styles.notice} testID="adviser-council-not-requested">
+                <Text style={styles.noticeTitle}>尚未请求委员会</Text>
+                <Text style={styles.noticeBody}>
+                  点击上方按钮，请求一次真实的十三风格顾问委员会分析；在此之前这里不会显示任何结论，也不会调用模型。
+                </Text>
+              </View>
+            ) : council.status === "loading" ? (
+              <View style={styles.notice} testID="adviser-council-loading">
+                <Text style={styles.noticeTitle}>顾问委员会正在生成…</Text>
+                <Text style={styles.noticeBody}>
+                  最长可能等待 5 分钟；请勿重复点击，离开本页会取消这次请求。
+                </Text>
+              </View>
+            ) : council.status === "unavailable" ? (
+              <View style={styles.notice} testID="adviser-council-request-failed">
+                <Text style={styles.noticeTitle}>
+                  {`本次未生成：${describeMarketError(council.error?.category ?? "offline").label}`}
+                </Text>
+                <Text style={styles.noticeBody}>
+                  {describeMarketError(council.error?.category ?? "offline").body}
+                </Text>
+              </View>
+            ) : block?.status === "not-requested" ? (
+              <View
+                style={styles.notice}
+                testID="adviser-council-block-not-requested">
+                <Text style={styles.noticeTitle}>本次未获得委员会意见</Text>
+                <Text style={styles.noticeBody}>
+                  {block.reason ?? "服务端没有说明原因。"}
+                </Text>
+              </View>
+            ) : block?.status === "unavailable" ? (
+              <View style={styles.notice} testID="adviser-council-model-unavailable">
+                <Text style={styles.noticeTitle}>委员会不可用</Text>
+                <Text style={styles.noticeBody}>
+                  {block.reason ?? "模型这次没有给出可用的意见。"}
+                </Text>
+                <Text style={styles.noticeBody}>
+                  这是模型调用失败，不是「没有观点」。
+                </Text>
+              </View>
+            ) : block?.status === "available" && block.value ? (
+              <CouncilResult usage={usage} value={block.value} />
+            ) : null}
+          </View>
+        )}
+
+        <View style={styles.pendingFeatures}>
+          <Text style={styles.pendingTitle}>暂未接入真实数据的部分</Text>
+          <Text style={styles.pendingBody}>
+            客观算法结论、分析方案生成与安全门仍依赖尚未部署的确定性风险引擎，这里暂不展示；接上之前不会用演示内容顶替。
+          </Text>
+        </View>
+
+        <Text style={styles.safety}>
+          仅供分析与建议，不连接券商，不会自动下单。
+        </Text>
       </Screen>
     );
   }
@@ -276,6 +456,110 @@ function formatAsOf(value: string) {
       });
 }
 
+/**
+ * The real council's answer: baseline vs. adjusted score (only ever rendered
+ * when the block is `available` -- the fold has nothing to show otherwise),
+ * the hard-gate ledger, every framework's stance and blind spot with its
+ * quoted evidence, and what the call actually cost.
+ */
+function CouncilResult({
+  usage,
+  value,
+}: {
+  usage: AdviserUsage | null;
+  value: DecisionAdviserCouncil;
+}) {
+  return (
+    <View style={styles.result} testID="adviser-council-available">
+      <Text style={styles.summary}>{value.summary}</Text>
+
+      <View style={styles.scoreFold} testID="adviser-council-score-fold">
+        <Text style={styles.scoreFoldText}>
+          {`基线 ${value.baselineScore.toFixed(1)} → 调整后 ${value.adjustedScore.toFixed(1)}（${
+            value.scoreAdjustment >= 0 ? "+" : ""
+          }${value.scoreAdjustment.toFixed(1)}）`}
+        </Text>
+      </View>
+
+      {value.blockedBy.length > 0 ? (
+        <View style={styles.councilBlocked} testID="adviser-council-blocked">
+          <Text style={styles.councilBlockedTitle}>硬门已拦截本次调整</Text>
+          <Text style={styles.councilBlockedBody}>{value.blockedBy.join(" · ")}</Text>
+        </View>
+      ) : null}
+
+      {value.opinions.map((opinion) => (
+        <FrameworkOpinionCard key={opinion.frameworkId} opinion={opinion} />
+      ))}
+
+      <Text style={styles.councilDisclaimer}>{value.disclaimer}</Text>
+
+      {usage ? (
+        <Text style={styles.cost} testID="adviser-council-cost">
+          {`本次模型调用 ${usage.inputTokens + usage.outputTokens} tokens · 实测花费 US$${usage.costUsd.toFixed(4)}${
+            usage.model === null ? "" : ` · ${usage.model}`
+          }`}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function FrameworkOpinionCard({ opinion }: { opinion: CouncilFrameworkOpinion }) {
+  return (
+    <View
+      style={styles.frameworkCard}
+      testID={`adviser-council-framework-${opinion.frameworkId}`}>
+      <Text style={styles.frameworkName}>{opinion.displayName}</Text>
+      <Text style={styles.frameworkStance}>{`立场：${opinion.stance}`}</Text>
+      <Text style={styles.frameworkBlindSpot}>{`已知盲区：${opinion.blindSpot}`}</Text>
+      {opinion.conclusions.map((conclusion, index) => (
+        <ConclusionRow
+          conclusion={conclusion}
+          key={`${index}-${conclusion.statement}`}
+        />
+      ))}
+    </View>
+  );
+}
+
+function ConclusionRow({ conclusion }: { conclusion: AdviserConclusion }) {
+  return (
+    <View style={styles.conclusion}>
+      <Text style={styles.conclusionStatement}>{conclusion.statement}</Text>
+      <Text style={styles.conclusionConfidence}>
+        {`模型自评置信度 ${conclusion.confidence}`}
+      </Text>
+      {[...conclusion.citations, ...conclusion.counterEvidence].map(
+        (citation) => (
+          <CitationChip citation={citation} key={citation.evidenceId} />
+        ),
+      )}
+    </View>
+  );
+}
+
+function CitationChip({ citation }: { citation: AdviserCitation }) {
+  return (
+    <Pressable
+      accessibilityHint="在浏览器中打开被引用的原始报道"
+      accessibilityLabel={`打开引用来源：${citation.publisher}`}
+      accessibilityRole="link"
+      onPress={() => {
+        void Linking.openURL(citation.url);
+      }}
+      style={({ pressed }) => [styles.citation, pressed && styles.pressed]}>
+      <Text style={styles.citationPublisher}>
+        {`${citation.publisher}${citation.isCounterEvidence ? " · 反证" : ""} ↗`}
+      </Text>
+      {/* Verbatim from the source; the server refuses any quote it cannot
+          find there, which is what lets the reader check the conclusion
+          without leaving this screen. */}
+      <Text style={styles.citationQuote}>{`「${citation.quote}」`}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { gap: spacing.md, paddingTop: spacing.xs },
   header: { alignItems: "center", flexDirection: "row" },
@@ -335,4 +619,84 @@ const styles = StyleSheet.create({
   saveText: { color: colors.card, fontSize: 12, fontWeight: "900" },
   safety: { color: colors.muted, fontSize: 11, fontWeight: "800", textAlign: "center" },
   pressed: { opacity: 0.68 },
+  inviteButton: {
+    backgroundColor: colors.navy,
+    borderRadius: radius.md,
+    gap: 4,
+    minHeight: 56,
+    justifyContent: "center",
+    padding: spacing.md,
+  },
+  inviteButtonLoading: { opacity: 0.72 },
+  inviteButtonTitle: { color: colors.card, fontSize: 13, fontWeight: "900" },
+  inviteButtonMeta: { color: colors.navyMuted, fontSize: 11, lineHeight: 15 },
+  notice: {
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    gap: spacing.xxs,
+    padding: spacing.sm,
+  },
+  noticeTitle: { color: colors.ink, fontSize: 12, fontWeight: "800", lineHeight: 17 },
+  noticeBody: { color: colors.muted, fontSize: 11, lineHeight: 15 },
+  pendingFeatures: {
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    gap: 4,
+    padding: spacing.sm,
+  },
+  pendingTitle: { color: colors.ink, fontSize: 11, fontWeight: "900" },
+  pendingBody: { color: colors.muted, fontSize: 11, lineHeight: 15 },
+  result: { gap: spacing.sm },
+  summary: { color: colors.ink, fontSize: 13, fontWeight: "700", lineHeight: 19 },
+  scoreFold: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: spacing.sm,
+  },
+  scoreFoldText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "900",
+  },
+  councilBlocked: {
+    backgroundColor: colors.amberSoft,
+    borderRadius: radius.md,
+    gap: 4,
+    padding: spacing.sm,
+  },
+  councilBlockedTitle: { color: "#704B05", fontSize: 11, fontWeight: "900" },
+  councilBlockedBody: { color: "#8B5C08", fontSize: 11, lineHeight: 14 },
+  frameworkCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+    padding: spacing.sm,
+  },
+  frameworkName: { color: colors.ink, fontSize: 13, fontWeight: "900" },
+  frameworkStance: { color: colors.blue, fontSize: 11, fontWeight: "800" },
+  frameworkBlindSpot: { color: colors.muted, fontSize: 11, lineHeight: 15 },
+  conclusion: {
+    borderLeftColor: colors.blue,
+    borderLeftWidth: 2,
+    gap: spacing.xxs,
+    paddingLeft: spacing.sm,
+  },
+  conclusionStatement: { color: colors.ink, fontSize: 12, fontWeight: "700", lineHeight: 17 },
+  conclusionConfidence: { color: colors.muted, fontSize: 11, fontWeight: "700" },
+  citation: {
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.sm,
+    gap: 2,
+    minHeight: 44,
+    padding: spacing.xs,
+  },
+  citationPublisher: { color: colors.blue, fontSize: 11, fontWeight: "800" },
+  citationQuote: { color: colors.muted, fontSize: 11, lineHeight: 16 },
+  councilDisclaimer: { color: colors.muted, fontSize: 11, fontStyle: "italic", lineHeight: 15 },
+  cost: { color: colors.muted, fontSize: 11, fontVariant: ["tabular-nums"], lineHeight: 15 },
 });
