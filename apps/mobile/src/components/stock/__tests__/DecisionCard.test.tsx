@@ -70,6 +70,30 @@ it("names the unscored factors in Chinese instead of printing field names", asyn
   expect(missing).not.toHaveTextContent(/fundamentals/);
 });
 
+it("names the adviser soft factor's card title in Chinese, not the bare identifier", async () => {
+  // Franz's 2026-08-15 real-mode QA: the "adviser" contribution scoring.py
+  // appends outside the FeatureSet rendered as the bare identifier "adviser"
+  // on the stock page because FACTOR_NAMES had no entry for it.
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        const score = value.score as Record<string, unknown>;
+        (score.contributions as unknown[]).push({
+          name: "adviser",
+          rawValue: 0.4,
+          weight: 0,
+          points: 1.2,
+          explanation: "顾问软因子设有上限：最多影响 ±3 分，且不能绕过任何硬性拦截。",
+        });
+      })}
+    />,
+  );
+
+  const factors = view.getByTestId("decision-factor-breakdown");
+  expect(factors).toHaveTextContent(/顾问软因子/);
+  expect(factors).not.toHaveTextContent(/^adviser$/);
+});
+
 it("keeps a factor it has no Chinese name for", async () => {
   const view = await render(
     <DecisionCard
@@ -133,6 +157,26 @@ it("translates the note about partial factor coverage", async () => {
   const card = view.getByTestId("decision-card");
   expect(card).toHaveTextContent(/70% 的因子权重/);
   expect(card).not.toHaveTextContent(/the rest has no source yet/);
+});
+
+it("translates the unavailable-factor-with-reason note, the exact string Franz's QA reported", async () => {
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        value.notes = [
+          "geopolitics unavailable (no_qualified_source).",
+          "institutional_flow unavailable (no_qualified_source).",
+        ];
+      })}
+    />,
+  );
+
+  const card = view.getByTestId("decision-card");
+  expect(card).toHaveTextContent(/地缘政治/);
+  expect(card).toHaveTextContent(/机构资金/);
+  expect(card).toHaveTextContent(/无合规数据源/);
+  expect(card).not.toHaveTextContent(/no_qualified_source/);
+  expect(card).not.toHaveTextContent(/unavailable \(/);
 });
 
 it("shows a note and a warning it cannot translate, word for word", async () => {

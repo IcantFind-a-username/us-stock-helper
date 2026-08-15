@@ -99,6 +99,14 @@ describe("factor names", () => {
     // beats invisible: an omitted factor reads as a factor that was scored.
     expect(factorLabel("options_skew")).toBe("options_skew");
   });
+
+  it("names the adviser soft factor's card title in Chinese", () => {
+    // scoring.py appends "adviser" as a ninth FactorContribution outside the
+    // FeatureSet the other eight names come from; it rendered as the bare
+    // identifier "adviser" on the stock page until this entry existed
+    // (2026-08-15 served-copy sweep, Franz's real-mode QA).
+    expect(factorLabel("adviser")).toBe("顾问软因子");
+  });
 });
 
 describe("hard gates", () => {
@@ -186,6 +194,31 @@ describe("service sentences", () => {
 
     expect(warning).toContain("数据陈旧");
     expect(warning).toContain("quiet_period");
+  });
+
+  it("translates a factor-unavailable note into the factor name and the reason", () => {
+    // The exact note Franz's 2026-08-15 real-mode QA reported as unreadable
+    // code-log English on the stock page.
+    const geopolitics = serviceTextLabel(
+      "geopolitics unavailable (no_qualified_source).",
+    );
+    expect(geopolitics).toContain("地缘政治");
+    expect(geopolitics).toContain("无合规数据源");
+    expectReadableChinese(geopolitics);
+
+    const institutionalFlow = serviceTextLabel(
+      "institutional_flow unavailable (no_qualified_source).",
+    );
+    expect(institutionalFlow).toContain("机构资金");
+    expect(institutionalFlow).toContain("无合规数据源");
+    expectReadableChinese(institutionalFlow);
+  });
+
+  it("keeps an unknown factor-unavailable reason code visible", () => {
+    const note = serviceTextLabel("macro unavailable (rate_limited).");
+
+    expect(note).toContain("宏观");
+    expect(note).toContain("rate_limited");
   });
 });
 

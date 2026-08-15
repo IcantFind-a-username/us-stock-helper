@@ -29,6 +29,7 @@ import { evaluateTradePlanSafety, selectTradePlan } from "@/domain/plan";
 import { fixtureRepository } from "@/fixtures/repository";
 import { useAdviserCouncil } from "@/hooks/useAdviserCouncil";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { serviceTextLabel } from "@/i18n/serverVocabulary";
 import { useAppState } from "@/state/AppStateProvider";
 import { useDeviceSession } from "@/state/DeviceSessionProvider";
 import { useMarketDataMode } from "@/state/MarketDataProvider";
@@ -209,14 +210,18 @@ export function AdvisersScreen({
                 testID="adviser-council-block-not-requested">
                 <Text style={styles.noticeTitle}>本次未获得委员会意见</Text>
                 <Text style={styles.noticeBody}>
-                  {block.reason ?? "服务端没有说明原因。"}
+                  {block.reason
+                    ? serviceTextLabel(block.reason)
+                    : "服务端没有说明原因。"}
                 </Text>
               </View>
             ) : block?.status === "unavailable" ? (
               <View style={styles.notice} testID="adviser-council-model-unavailable">
                 <Text style={styles.noticeTitle}>委员会不可用</Text>
                 <Text style={styles.noticeBody}>
-                  {block.reason ?? "模型这次没有给出可用的意见。"}
+                  {block.reason
+                    ? serviceTextLabel(block.reason)
+                    : "模型这次没有给出可用的意见。"}
                 </Text>
                 <Text style={styles.noticeBody}>
                   这是模型调用失败，不是「没有观点」。

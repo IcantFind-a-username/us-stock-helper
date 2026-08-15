@@ -329,6 +329,34 @@ it("keeps a model that was asked and could not answer distinct from one nobody a
   expect(view.queryByTestId("adviser-council-not-requested")).toBeNull();
 });
 
+it("translates the council's own reason instead of showing it raw", async () => {
+  // Defense in depth (2026-08-15 served-copy sweep): `block.reason` used to
+  // render straight through with no translation pass, which is how English
+  // adviser-degradation reasons (SDK missing, unexpected failure) reached
+  // this screen before those server strings were translated at the source.
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  await act(async () => {
+    calls[0]?.resolve({
+      ...decisionFixture(),
+      adviserCouncil: {
+        status: "unavailable",
+        reason: "Realized volatility could not be measured, so no scenario range is offered.",
+        value: null,
+      },
+    } as unknown as Decision);
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("adviser-council-model-unavailable")).toBeTruthy(),
+  );
+  expect(view.getByText(/无法测得已实现波动率/)).toBeTruthy();
+  expect(view.queryByText(/Realized volatility/)).toBeNull();
+});
+
 it("shows the request-failed copy, distinct from a model refusal, when the call itself never lands", async () => {
   const { analysis, calls } = deferredAnalysis();
   const view = await renderRealMode(analysis);

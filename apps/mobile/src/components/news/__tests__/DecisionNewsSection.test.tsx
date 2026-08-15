@@ -250,6 +250,27 @@ describe("why the interpretation is not on the screen", () => {
     expect(view.queryByTestId("decision-interpretation-not-requested")).toBeNull();
   });
 
+  it("translates the interpretation's own reason instead of showing it raw", async () => {
+    // Defense in depth (2026-08-15 served-copy sweep): `block.reason` used to
+    // render straight through with no translation pass -- how English
+    // adviser-degradation reasons reached this card before those server
+    // strings were translated at the source.
+    const view = await renderSection({
+      decision: decision({
+        citations: cited,
+        newsInterpretation: {
+          status: "unavailable",
+          reason: "Realized volatility could not be measured, so no scenario range is offered.",
+          value: null,
+        },
+      }),
+    });
+
+    const notice = view.getByTestId("decision-interpretation-unavailable");
+    expect(notice).toHaveTextContent(/无法测得已实现波动率/);
+    expect(notice).not.toHaveTextContent(/Realized volatility/);
+  });
+
   it("says the deployment has no such feature when the field is absent", async () => {
     const view = await renderSection({
       decision: decision({ citations: cited, newsInterpretation: null }),

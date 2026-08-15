@@ -14,6 +14,7 @@ import { DataHealthBanner } from "@/components/ui/DataHealthBanner";
 import type { MarketDataError } from "@/data/marketRepository";
 import type { MarketBrief, MarketDriverCategory } from "@/domain/models";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { serviceTextLabel } from "@/i18n/serverVocabulary";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 /**
@@ -107,7 +108,7 @@ export function MarketBriefCard({ status, brief, error, onRetry }: MarketBriefCa
       <View style={styles.unavailableCard} testID="market-brief-unavailable">
         <Text style={styles.unavailableTitle}>市场简报不可用</Text>
         <Text style={styles.unavailableBody} testID="market-brief-unavailable-reason">
-          {brief.reason}
+          {brief.reason ? serviceTextLabel(brief.reason) : brief.reason}
         </Text>
         <Pressable
           accessibilityLabel="重试市场简报"
@@ -177,7 +178,7 @@ export function MarketBriefCard({ status, brief, error, onRetry }: MarketBriefCa
 
       {notes.map((note) => (
         <Text key={note} style={styles.note} testID="market-brief-note">
-          · {note}
+          · {serviceTextLabel(note)}
         </Text>
       ))}
 
