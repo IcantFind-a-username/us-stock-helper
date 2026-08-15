@@ -431,6 +431,24 @@ export function StockDetailScreen() {
         />
       )}
       <Pressable
+        accessibilityLabel="顾问会诊"
+        accessibilityRole="button"
+        onPress={() =>
+          router.push({
+            pathname: "/stocks/[symbol]/advisers",
+            params: { symbol },
+          })
+        }
+        style={({ pressed }) => [
+          styles.adviserCouncilButton,
+          pressed && styles.pressed,
+        ]}>
+        <Text style={styles.adviserCouncilButtonTitle}>顾问会诊</Text>
+        <Text style={styles.adviserCouncilButtonText}>
+          风格模型，非本人意见
+        </Text>
+      </Pressable>
+      <Pressable
         accessibilityLabel="查看完整图表"
         accessibilityRole="button"
         onPress={() =>
@@ -656,4 +674,24 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   retryText: { color: colors.card, fontSize: 12, fontWeight: "900" },
+  adviserCouncilButton: {
+    alignItems: "center",
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    gap: 2,
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  adviserCouncilButtonTitle: {
+    color: colors.blue,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  adviserCouncilButtonText: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "600",
+  },
 });

@@ -1115,3 +1115,19 @@ it("carries the same explanation into the news surface", async () => {
     /analysis-failed/,
   );
 });
+
+it("navigates to the adviser council screen when the adviser button is pressed", async () => {
+  const view = await renderDetail();
+
+  await waitFor(() =>
+    expect(view.getByRole("button", { name: "顾问会诊" })).toBeTruthy(),
+  );
+  await userEvent.setup().press(
+    view.getByRole("button", { name: "顾问会诊" }),
+  );
+
+  expect(mockPush).toHaveBeenCalledWith({
+    pathname: "/stocks/[symbol]/advisers",
+    params: { symbol: "NVDA" },
+  });
+});
