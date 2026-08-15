@@ -8,6 +8,9 @@ from information_layer.feeds import (
     FRESHNESS_ATTRIBUTE,
     STALE_ATTRIBUTE,
     EvidenceUnavailable,
+    HttpRequest,
+    HttpResponse,
+    SecCurrentFilingsAdapter,
     SourceFailure,
 )
 from us_stock_helper_analysis_api.evidence_provider import (
@@ -240,6 +243,38 @@ class ProviderConfigTests(unittest.TestCase):
         provider = evidence_provider_from_environment(dict(CONTACT))
 
         self.assertGreater(len(provider.collector.adapters), 1)
+
+    def test_the_sec_adapters_are_wired_with_a_cik_registry(self) -> None:
+        # Without a registry every filing's symbol_relevance comes back
+        # empty, so the collector's scope filter drops it from every
+        # symbol-scoped read: the highest-reliability evidence this system
+        # can get (a verified 8-K or Form 4) silently never reaches any
+        # decision. Building the production provider must actually wire one.
+        provider = evidence_provider_from_environment(dict(CONTACT))
+
+        sec_adapters = [
+            adapter
+            for adapter in provider.collector.adapters
+            if isinstance(adapter, SecCurrentFilingsAdapter)
+        ]
+        self.assertTrue(sec_adapters, "no SEC filing adapters were built at all")
+        for adapter in sec_adapters:
+            with self.subTest(adapter=adapter.adapter_id):
+                self.assertIsNotNone(adapter.cik_registry)
+
+    def test_building_the_provider_performs_no_network_io(self) -> None:
+        # The registry is ~10 MB and network-backed; fetching it eagerly at
+        # wiring time would mean a slow SEC response keeps the whole process
+        # from starting even before any request needs it.
+        class ExplodingTransport:
+            def request(self, request: HttpRequest) -> HttpResponse:
+                raise AssertionError(
+                    "constructing the provider must not perform I/O"
+                )
+
+        evidence_provider_from_environment(
+            dict(CONTACT), transport=ExplodingTransport()
+        )
 
     def test_a_window_that_is_not_a_positive_number_is_refused(self) -> None:
         for value in ("", "0", "-1", "soon"):

@@ -27,11 +27,15 @@ from information_layer.feeds import (
     DEFAULT_RETENTION_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     EvidenceCollector,
+    HttpTransport,
     UrllibHttpsTransport,
     build_adapters,
     contact_email_from_environment,
+    user_agent_for,
 )
 from us_stock_helper_core import OHLCVBar
+
+from .cik_registry_provider import LazySecTickerRegistry
 
 
 class BarSource(Protocol):
@@ -111,6 +115,8 @@ class CompositeAnalysisProvider:
 
 def evidence_provider_from_environment(
     environment: Mapping[str, str] | None = None,
+    *,
+    transport: HttpTransport | None = None,
 ) -> FeedEvidenceProvider:
     env = os.environ if environment is None else environment
     # Raises when no contact address is configured. EDGAR ships in the
@@ -133,11 +139,22 @@ def evidence_provider_from_environment(
         "ANALYSIS_API_EVIDENCE_RETENTION_SECONDS",
         DEFAULT_RETENTION_SECONDS,
     )
+    resolved_transport = transport or UrllibHttpsTransport()
+    # Without this, an SEC filing adapter still builds and still polls, but
+    # every event it returns carries an empty symbol_relevance, and the
+    # collector's scope filter then drops it from every symbol-scoped read —
+    # the highest-reliability evidence this system can get, silently absent
+    # from every decision. build_adapters refuses to construct one without a
+    # registry, so there is no path left that omits it quietly.
+    cik_registry = LazySecTickerRegistry(
+        resolved_transport, user_agent_for(contact_email)
+    )
     return FeedEvidenceProvider(
         EvidenceCollector(
             build_adapters(
-                transport=UrllibHttpsTransport(),
+                transport=resolved_transport,
                 contact_email=contact_email,
+                cik_registry=cik_registry,
             ),
             lookback_seconds=lookback,
             stale_after_seconds=stale_after,

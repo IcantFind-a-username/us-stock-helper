@@ -148,6 +148,9 @@ class SourceRegistry:
             item for item in self.sources if item.requires_contact_user_agent
         )
 
+    def requiring_cik_registry(self) -> tuple[SourceSpec, ...]:
+        return tuple(item for item in self.sources if item.sec_form_type is not None)
+
     def of_kind(self, kind: SourceKind) -> tuple[SourceSpec, ...]:
         return tuple(item for item in self.sources if item.kind is kind)
 
@@ -314,6 +317,20 @@ def build_adapters(
         listed = ", ".join(item.source_id for item in demanding)
         raise FeedAccessError(
             f"{listed} refuse to start until {CONTACT_EMAIL_VARIABLE} is set"
+        )
+    # An SEC filing adapter built without a registry still polls and still
+    # "succeeds", but every event it returns carries empty symbol_relevance:
+    # the collector's scope filter then drops it from every symbol-scoped
+    # read, silently discarding the highest-reliability evidence this system
+    # can get. Refusing here, at wiring time, is the only place this omission
+    # is loud instead of a quiet, permanent gap in every decision.
+    needing_registry = registry.requiring_cik_registry()
+    if needing_registry and cik_registry is None:
+        listed = ", ".join(item.source_id for item in needing_registry)
+        raise FeedAccessError(
+            f"{listed} refuse to start without a CIK ticker registry: built "
+            "without one, every filing's symbol attribution comes back empty "
+            "and the collector's scope filter drops it from every decision"
         )
     user_agent = user_agent_for(contact or None)
     return tuple(
