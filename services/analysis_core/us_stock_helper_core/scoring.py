@@ -30,6 +30,12 @@ from .temporal import select_bars_as_of, select_evidence_as_of
 # rather than repeating the number, or the layers drift apart silently.
 ADVISER_SCORE_CAP = 3.0
 
+# The smallest window any pattern detector can read: three-bar fractals need
+# three completed bars (magic nine needs five closes, everything else more).
+# Below this no detector ran at all, and "the detectors found nothing" would
+# be a claim about a reading nobody took.
+_SMALLEST_PATTERN_WINDOW = 3
+
 
 class HardGate(str, Enum):
     STALE_DATA = "stale_data"
@@ -182,9 +188,15 @@ def extract_horizon_features(
         pattern_values.append(
             0.3 if fractals[-1].direction == Direction.BULLISH else -0.3
         )
-    # No confirmed pattern is a genuine reading of zero: the detectors ran and
-    # found nothing. It stays 0.0, unlike a factor that could not be computed.
-    pattern = max(pattern_values, key=abs) if pattern_values else 0.0
+    if len(selected_bars) < _SMALLEST_PATTERN_WINDOW:
+        # Too few bars for any detector to have looked. Claiming a measured
+        # zero here would report "looked and found nothing" for a window that
+        # was never looked at.
+        pattern = None
+    else:
+        # No confirmed pattern is a genuine reading of zero: the detectors ran
+        # and found nothing. It stays 0.0, unlike a factor nothing could read.
+        pattern = max(pattern_values, key=abs) if pattern_values else 0.0
 
     confidence_total = sum(record.confidence for record in selected_evidence)
     # Only sources something actually read contribute an opinion. Unread ones

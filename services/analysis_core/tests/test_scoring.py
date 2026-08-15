@@ -493,3 +493,54 @@ class UncomputableFactorTests(unittest.TestCase):
         # A default of 0.0 hands every caller that omits the argument a
         # measured neutral for a factor that has no feed at all.
         self.assertIsNone(signature.parameters["fundamentals"].default)
+
+    def test_a_window_no_pattern_detector_could_read_is_unavailable_not_zero(
+        self,
+    ) -> None:
+        # The smallest detector (three-bar fractals) needs three completed
+        # bars. Below that, "the detectors ran and found nothing" is false —
+        # nothing ran — and a claimed 0.0 dresses blindness up as a reading.
+        features = extract_horizon_features(
+            Horizon.SHORT, make_bars([100.0, 100.5]), (), context()
+        )
+
+        self.assertIsNone(features.pattern)
+
+    def test_a_window_the_detectors_did_read_keeps_its_measured_zero(
+        self,
+    ) -> None:
+        # Monotonic closes over enough bars: the detectors ran and confirmed
+        # nothing. That is a genuine reading of zero, not an absence, and the
+        # unmeasured-window fix must not erase it.
+        features = extract_horizon_features(
+            Horizon.SHORT,
+            make_bars([100.0, 100.5, 101.0, 101.5]),
+            (),
+            context(),
+        )
+
+        self.assertEqual(features.pattern, 0.0)
+
+    def test_a_blind_live_snapshot_reaches_the_no_usable_factor_rule(
+        self,
+    ) -> None:
+        # Two bars, no evidence, no context factors: nothing could be read.
+        # While pattern claimed a measured zero here, the "a score built on
+        # nothing is not actionable" rule was unreachable from any live path.
+        blind_context = MarketContext(
+            as_of=AS_OF,
+            market_sentiment=None,
+            macro=None,
+            geopolitics=None,
+            institutional_flow=None,
+        )
+
+        result = score_horizon(
+            extract_horizon_features(
+                Horizon.SHORT, make_bars([100.0, 100.5]), (), blind_context
+            )
+        )
+
+        self.assertIn("pattern", result.unavailable_factors)
+        self.assertEqual(result.factor_coverage, 0.0)
+        self.assertFalse(result.actionable)

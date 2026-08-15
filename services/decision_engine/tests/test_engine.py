@@ -48,6 +48,7 @@ def event(
     status: ClaimStatus,
     publisher: str = "sec",
     sentiment: float = 0.7,
+    sentiment_measured: bool = True,
     available_at: datetime = AS_OF - timedelta(minutes=2),
     symbols: tuple[tuple[str, float], ...] = (("NVDA", 0.9),),
 ) -> EvidenceEvent:
@@ -71,6 +72,7 @@ def event(
         retrieved_at=available_at,
         claim_status=status,
         sentiment=sentiment,
+        sentiment_measured=sentiment_measured,
         confidence=0.95,
         symbol_relevance=symbols,
     )
@@ -318,6 +320,81 @@ class LiveInputAvailabilityTests(unittest.TestCase):
         # Passing zeros for macro, geopolitics and institutional flow would
         # state neutral judgements no source made.
         self.assertIn("float | None", source)
+
+
+class UnmeasuredSentimentScoringTests(unittest.TestCase):
+    """A news window nobody measured must not score as a measured neutral.
+
+    market_sentiment used to enter the score as 0.0 at full (renormalized)
+    weight whenever the packet was empty or nothing could read it — the
+    factor's weight scaled UP exactly when the system was most blind. An
+    unmeasured reading is factor-unavailable; a measured zero is a reading.
+    """
+
+    def contribution(self, output) -> object:
+        return next(
+            item
+            for item in output.adjusted_score.contributions
+            if item.name == "market_sentiment"
+        )
+
+    def test_an_empty_news_window_reports_the_sentiment_factor_unavailable(
+        self,
+    ) -> None:
+        output = DecisionEngine().evaluate(inputs(()))
+
+        score = output.adjusted_score
+        self.assertIn("market_sentiment", score.unavailable_factors)
+        self.assertIsNone(self.contribution(output).raw_value)
+        self.assertEqual(self.contribution(output).weight, 0.0)
+        # SHORT weights minus the 0.20 sentiment weight: the coverage must
+        # say how blind the score was, not absorb the blindness.
+        self.assertAlmostEqual(score.factor_coverage, 0.8)
+
+    def test_a_window_nothing_could_read_is_unavailable_not_neutral(
+        self,
+    ) -> None:
+        unread = (
+            event(
+                "filing-a",
+                status=ClaimStatus.VERIFIED,
+                sentiment=0.0,
+                sentiment_measured=False,
+            ),
+            event(
+                "filing-b",
+                status=ClaimStatus.VERIFIED,
+                sentiment=0.0,
+                sentiment_measured=False,
+            ),
+        )
+
+        output = DecisionEngine().evaluate(inputs(unread))
+
+        # The information layer itself flags the window as unmeasured; the
+        # score must agree with it rather than call the same window neutral.
+        self.assertIn(
+            "情绪未测量", output.evidence_packet.sentiment.uncertainty
+        )
+        self.assertIn(
+            "market_sentiment", output.adjusted_score.unavailable_factors
+        )
+        self.assertIsNone(self.contribution(output).raw_value)
+
+    def test_a_measured_neutral_still_scores_as_an_available_factor(
+        self,
+    ) -> None:
+        # 测得中性 is a reading. It must keep its weight and its zero, or the
+        # fix for unmeasured windows would erase genuinely neutral ones.
+        neutral = event("filing", status=ClaimStatus.VERIFIED, sentiment=0.0)
+
+        output = DecisionEngine().evaluate(inputs((neutral,)))
+
+        self.assertNotIn(
+            "market_sentiment", output.adjusted_score.unavailable_factors
+        )
+        self.assertEqual(self.contribution(output).raw_value, 0.0)
+        self.assertGreater(self.contribution(output).weight, 0.0)
 
 
 class LivePathEndToEndTests(unittest.TestCase):

@@ -299,6 +299,11 @@ class EvidenceCluster:
 class MarketSentiment:
     conclusion: str
     action_score: float
+    # False means no measured actionable cluster contributed to action_score:
+    # the 0.0 there is 没测, not 测得中性. Carried as a type because every
+    # consumer that treats an unmeasured window as a measured neutral scores
+    # the market most confidently exactly when it is most blind.
+    action_score_measured: bool
     observed_score: float
     confidence: float
     decision_signal: str

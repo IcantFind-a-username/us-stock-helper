@@ -135,7 +135,16 @@ class DecisionEngine:
         records = self._analysis_records(symbol, packet, inputs.evidence)
         context = MarketContext(
             as_of=inputs.as_of,
-            market_sentiment=packet.sentiment.action_score,
+            # An unmeasured window crosses this boundary as None, so scoring
+            # reports the factor unavailable and renormalizes its weight away.
+            # Passing the packet's 0.0 here scored an unread market as a
+            # measured neutral at full weight — the blinder the system, the
+            # more confidently average it looked.
+            market_sentiment=(
+                packet.sentiment.action_score
+                if packet.sentiment.action_score_measured
+                else None
+            ),
             macro=inputs.macro,
             geopolitics=inputs.geopolitics,
             institutional_flow=inputs.institutional_flow,
