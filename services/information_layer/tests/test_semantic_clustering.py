@@ -327,6 +327,18 @@ class ClusterMeasurementTests(unittest.TestCase):
 
 
 class BlindPacketTests(unittest.TestCase):
+    def test_a_window_with_zero_clusters_still_says_unmeasured(self) -> None:
+        # `if clusters and not any(...)` skipped the marker whenever clusters
+        # was empty (no evidence at all): action_score_measured correctly
+        # comes out False, but the served uncertainty array said nothing,
+        # so a zero-news window looked exactly like a measured 中性.
+        from information_layer.sentiment import assess_sentiment
+
+        result = assess_sentiment(())
+
+        self.assertFalse(result.action_score_measured)
+        self.assertIn("情绪未测量", result.uncertainty)
+
     def test_a_packet_nobody_could_read_does_not_sound_confident(self) -> None:
         from information_layer.sentiment import assess_sentiment
 

@@ -314,6 +314,24 @@ class AnalysisContractTests(unittest.TestCase):
             self.assertIs(citation["stale"], True)
         self.assertTrue(any("stale" in note.lower() for note in result["notes"]))
 
+    def test_a_symbol_with_zero_evidence_serves_an_unmeasured_sentiment(
+        self,
+    ) -> None:
+        # sentiment.py's uncertainty marker used to be gated on `clusters`
+        # being non-empty, so a symbol with no evidence at all -- the
+        # simplest way to be unmeasured -- served conclusion 中性 with an
+        # empty uncertainty array, indistinguishable from a measured neutral
+        # read straight off the wire.
+        class NoEvidenceProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                return ()
+
+        result = service(NoEvidenceProvider()).decision("NVDA", "short")
+
+        self.assertEqual(result["citations"], [])
+        self.assertIn("情绪未测量", result["sentiment"]["uncertainty"])
+        self.assertIn("market_sentiment", result["score"]["unavailableFactors"])
+
     def test_an_unknown_horizon_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             service().decision("NVDA", "forever")

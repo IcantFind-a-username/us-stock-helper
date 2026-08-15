@@ -41,9 +41,12 @@ def assess_sentiment(
         cluster.action_independent_source_count < 2 for cluster in actionable
     ):
         uncertainty.append("独立来源不足")
-    if clusters and not any(cluster.sentiment_measured for cluster in clusters):
+    if not any(cluster.sentiment_measured for cluster in clusters):
         # Reporting a plain "中性" with nothing read claims a reading that was
-        # never taken; the reader has to know the difference.
+        # never taken; the reader has to know the difference. `any()` on an
+        # empty sequence is already False, so a zero-cluster window (no
+        # evidence at all) carries this marker too -- it is not only the
+        # all-unmeasured case that must say so.
         uncertainty.append("情绪未测量")
 
     confidence = (
