@@ -38,3 +38,4 @@
 （上限 15 条；新增时若已满或某条已过时/已被测试覆盖固化，删掉它。只留仍然有效的规则。）
 
 - `deploy/tests`、`scripts/tests` 在 Linux 容器里会有环境性失败（launchd/fchmod/systemd 假设），不代表代码坏了，勿花 token 去"修"
+- `services/market_gateway` 的 `test_snapshot_contract_v3.py` 两个 contract fixture 测试目前不绿（fixture 与 serializer 输出对不上，如 `101.9` vs `101.89999999999999`），与本条目无关的改动跑 `test_changed.sh` 也会被拖红；已作为独立 backlog 条目排队，未查明前不要当作"我的改动搞坏的"
