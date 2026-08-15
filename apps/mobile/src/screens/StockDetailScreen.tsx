@@ -11,6 +11,7 @@ import {
 import { DecisionNewsSection } from "@/components/news/DecisionNewsSection";
 import { DecisionCard } from "@/components/stock/DecisionCard";
 import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
+import { PatternHintsCard } from "@/components/stock/PatternHintsCard";
 import {
   adaptDemoHoldingsSection,
   InstitutionalHoldingsCard,
@@ -305,6 +306,13 @@ export function StockDetailScreen() {
       <PriceChart
         compact
         dataStatus={dataStatus}
+        patternShapes={
+          stock.demoData
+            ? []
+            : liveStock!.indicators.patternShapes.detections.flatMap(
+                (detection) => detection.signals,
+              )
+        }
         showForecast={visibleTools.forecast}
         showMacd={visibleTools.macd}
         showMagicNine={visibleTools.magicNine}
@@ -405,6 +413,12 @@ export function StockDetailScreen() {
           testID="plain-reading-card-magic-nine"
         />
       ) : null}
+
+      {/* Demo snapshots carry no server-computed shapes -- patternShapes only
+          ever arrives on a real gateway response. */}
+      {stock.demoData ? null : (
+        <PatternHintsCard detections={liveStock!.indicators.patternShapes.detections} />
+      )}
 
       {visibleTools.participation ? (
         <ParticipationCard bars={stock.participationBars} />
