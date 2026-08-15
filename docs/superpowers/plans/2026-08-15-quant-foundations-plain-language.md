@@ -1,6 +1,6 @@
 # Quant Foundations with Plain-Language Presentation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add the first tier of genuinely useful quantitative algorithms — market breadth, sector relative strength, time-of-day-normalized relative volume, and range-based volatility — and present every one of them in language an ordinary investor can understand, without ever crossing into 喊单.
 
