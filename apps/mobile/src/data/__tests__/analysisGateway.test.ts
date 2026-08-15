@@ -525,11 +525,72 @@ describe("market brief envelope validation", () => {
           "vibes";
       },
     ],
+    [
+      "a driver coverage list with a duplicate category standing in for a missing one",
+      (value: Record<string, unknown>) => {
+        // Nine entries by count alone: "breadth" is silently dropped and
+        // "news-sentiment" appears twice instead. A decoder that only checks
+        // .length === 9 would accept this and quietly lose a whole category.
+        const driverCoverage = value.driverCoverage as Record<string, unknown>[];
+        driverCoverage[1] = { ...driverCoverage[0] };
+      },
+    ],
+    [
+      "an unavailable brief whose driver coverage still claims an available category",
+      (value: Record<string, unknown>) => {
+        // Mirrors decodeDecisionEnvelope's "an unavailable decision must not
+        // carry a score" rule at the brief level: status: "unavailable" must
+        // hold for every driverCoverage entry too, not just the top-level
+        // dataHealth/sentiment/citations fields.
+        value.status = "unavailable";
+        value.reason = "本次未能读取任何情报源：sec-current-8-k（HTTP 503）";
+        value.dataHealth = null;
+        value.sentiment = null;
+        value.citations = [];
+        // driverCoverage left as the fixture's default, where news-sentiment
+        // is available: true.
+      },
+    ],
   ])("rejects %s", (_label, mutate) => {
     const value = marketBriefFixture() as Record<string, unknown>;
     mutate(value);
 
     expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow();
+  });
+
+  it("decodes the news-sentiment driver entry as unavailable, never a measured-looking zero, when nothing was measured this round", () => {
+    // Pins the shape landed in 601b131 on services/analysis_api: the
+    // unmeasured case flips news-sentiment's own driverCoverage entry to
+    // available: false with a dedicated missingReason, instead of
+    // available: true with a 中性/0.0 conclusion that looks measured to any
+    // consumer reading driverCoverage alone.
+    const value = marketBriefFixture();
+    (value.sentiment as Record<string, unknown>).uncertainty = ["情绪未测量"];
+    (value.sentiment as Record<string, unknown>).actionScore = 0.0;
+    value.dataHealth = "insufficient";
+    value.driverCoverage = value.driverCoverage.map((item) =>
+      item.category === "news-sentiment"
+        ? {
+            category: "news-sentiment",
+            available: false,
+            conclusion: null,
+            actionScore: null,
+            missingReason: "情绪未测量（该时段无可读事件）",
+          }
+        : item,
+    );
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    const newsSentiment = brief.driverCoverage.find(
+      (item) => item.category === "news-sentiment",
+    );
+    expect(newsSentiment).toMatchObject({
+      available: false,
+      conclusion: null,
+      actionScore: null,
+      missingReason: "情绪未测量（该时段无可读事件）",
+    });
   });
 });
 
@@ -1031,6 +1092,13 @@ describe("market brief client transport", () => {
     value.dataHealth = null;
     value.sentiment = null;
     value.citations = [];
+    value.driverCoverage = value.driverCoverage.map((item) => ({
+      ...item,
+      available: false,
+      conclusion: null,
+      actionScore: null,
+      missingReason: "本次没有可读取的情报源，无法给出该驱动的结论。",
+    }));
     const client = createAnalysisClient({
       baseUrl: "http://127.0.0.1:8788",
       fetchImpl: jest.fn(async () => jsonResponse(value)) as unknown as typeof fetch,

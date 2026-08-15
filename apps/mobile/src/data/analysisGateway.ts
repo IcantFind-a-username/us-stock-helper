@@ -694,6 +694,15 @@ export function decodeMarketBriefEnvelope(
       "market brief must name all nine driver categories",
     );
   }
+  const driverCoverage = value.driverCoverage.map(decodeMarketBriefDriverCoverage);
+  if (new Set(driverCoverage.map((item) => item.category)).size !== 9) {
+    // Nine entries by count alone lets a duplicate category silently stand
+    // in for a dropped one -- the reader would see nine rows and never
+    // notice one of the nine designed categories never actually showed up.
+    throw new DecisionValidationError(
+      "market brief driver categories must be nine distinct categories",
+    );
+  }
   if (!Array.isArray(value.citations)) {
     throw new DecisionValidationError("market brief citations must be an array");
   }
@@ -726,6 +735,15 @@ export function decodeMarketBriefEnvelope(
     if (value.citations.length !== 0) {
       throw new DecisionValidationError(
         "an unavailable market brief must not carry citations",
+      );
+    }
+    if (driverCoverage.some((item) => item.available)) {
+      // Same rule decodeDecisionEnvelope already holds for a decision's own
+      // score: the two states render differently, so a payload claiming
+      // both -- the whole brief unavailable, one driver category available
+      // -- reads as sourced on one screen and as an outage on another.
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry an available driver category",
       );
     }
     dataHealth = null;
@@ -761,7 +779,7 @@ export function decodeMarketBriefEnvelope(
     marketSession: marketSession as MarketBrief["marketSession"],
     dataHealth,
     sentiment,
-    driverCoverage: value.driverCoverage.map(decodeMarketBriefDriverCoverage),
+    driverCoverage,
     citations: value.citations.map(decodeMarketBriefCitation),
     sourceGaps: value.sourceGaps.map(String),
   };
