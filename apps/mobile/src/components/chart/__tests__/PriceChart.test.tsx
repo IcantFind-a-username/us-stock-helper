@@ -391,6 +391,44 @@ it("keeps following the newest bar when a refresh brings two more", async () => 
   expect(visibleBodies(view)).toHaveLength(drawn);
 });
 
+it("keeps a parked window on the same bars when a refresh rolls a fixed-count series", async () => {
+  // Unlike the growing series above, the server can just as well publish "the
+  // last N bars": total stays the same, but the oldest bars drop off the
+  // front as new ones close. A bare offset cannot tell that apart from having
+  // not moved at all, so a window parked in history used to silently end up
+  // showing bars shifted newer by however many rolled off — same offset,
+  // different candles, no signal to the reader that anything had changed.
+  const view = await render(<PriceChart stock={deep} />);
+
+  await dragBy(120);
+  const drawn = visibleBodies(view).length;
+  const oldestBefore = await selectedTimestamp(view, 0);
+  const newestBefore = await selectedTimestamp(view, 10_000);
+  // Confirms the parked window landed well clear of both ends of the 240-bar
+  // series, so a 3-bar roll cannot possibly run the anchor off the front.
+  expect(oldestBefore).not.toContain(deepCandles[0]!.timestamp);
+  expect(newestBefore).not.toContain(deepCandles.at(-1)!.timestamp);
+
+  const rolledCandles = [
+    ...deepCandles.slice(3),
+    candleAt(240),
+    candleAt(241),
+    candleAt(242),
+  ];
+  await act(async () => {
+    view.rerender(
+      <PriceChart
+        stock={deepSnapshot(rolledCandles, "2026-07-25T16:05:00.000Z")}
+      />,
+    );
+  });
+
+  // Same bars, same zoom — just re-found in a series that shifted under them.
+  expect(await selectedTimestamp(view, 0)).toBe(oldestBefore);
+  expect(await selectedTimestamp(view, 10_000)).toBe(newestBefore);
+  expect(visibleBodies(view)).toHaveLength(drawn);
+});
+
 it("resets a parked window instead of showing a slice of a different series when the interval changes", async () => {
   const dayCandles: Candle[] = Array.from({ length: 250 }, (_, index) =>
     candleAt(index),

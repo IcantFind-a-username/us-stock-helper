@@ -296,18 +296,47 @@ const followsLatest = (window: ChartWindow) =>
   window.offset + window.size >= window.total;
 
 /**
+ * What a parked window needs to survive a refresh that isn't simple growth.
+ *
+ * `timestamp` is the bar that sat at the window's own `offset` the last time
+ * it was resolved, from whatever series it was resolved against then —
+ * `null` when no such bar is known (an empty series, say). `timestamps` is
+ * the new series' point-in-time order, oldest first, the same order `offset`
+ * is counted against; {@link decidedCandleTimestamps} builds exactly this
+ * from a candle list and a decision cutoff.
+ */
+export type ChartWindowAnchor = {
+  timestamp: string | null;
+  timestamps: readonly string[];
+};
+
+/**
  * Moves a window measured against one series length onto another.
  *
  * A window whose right edge was on the last bar belongs to a reader standing
- * at the live edge, so it keeps ending on the last bar as new ones close.
- * A window parked in history keeps the bars it was showing, because dragging
- * back to a particular hour is a request for that hour, not for whatever is
- * newest. Bars only ever arrive at the newest end of a point-in-time series,
- * which is what makes the second case a plain offset again.
+ * at the live edge, so it keeps ending on the last bar as new ones close —
+ * this holds regardless of `anchor`, and is checked first.
+ *
+ * A window parked in history keeps the bars it was showing. For a series
+ * that only ever grows at the newest end, the bars already in it never move,
+ * so the bare offset above still names them after growth alone — which is
+ * all `anchor` omitted does. A series the server publishes as a fixed-count
+ * window instead ("last 300 bars") rolls: it drops its oldest bars as new
+ * ones close, which shifts every offset behind the drop even though `total`
+ * itself does not change, the one case a bare offset cannot tell apart from
+ * not having moved at all. `anchor`, when given, relocates the bar the
+ * window was last anchored on in the new series' own order and re-offsets to
+ * it, which keeps the same bars on screen through either kind of refresh
+ * instead of a slice quietly shifted by however many rolled off the front.
+ * If that bar is gone entirely — rolled off past the window's own offset —
+ * there is nothing honest left to anchor on, so the window parks on the
+ * oldest bar the new series still has rather than keeping a stale offset
+ * against a series it no longer describes.
  */
 export function reanchorChartWindow(
   window: ChartWindow,
   total: number,
+  anchor?: ChartWindowAnchor | null,
 ): ChartWindow {
   // A window can only have been measured against a series it fits inside, so a
   // recorded total shorter than the window itself is not one; its own extent
@@ -319,12 +348,20 @@ export function reanchorChartWindow(
       wholeBars(window.offset) + wholeBars(window.size),
     ),
   );
-  return clampChartWindow(
-    followsLatest(previous)
-      ? { size: previous.size, offset: wholeBars(total) - previous.size }
-      : previous,
-    total,
-  );
+  if (followsLatest(previous)) {
+    return clampChartWindow(
+      { size: previous.size, offset: wholeBars(total) - previous.size },
+      total,
+    );
+  }
+  if (anchor && anchor.timestamp !== null) {
+    const located = anchor.timestamps.indexOf(anchor.timestamp);
+    return clampChartWindow(
+      { size: previous.size, offset: located === -1 ? 0 : located },
+      total,
+    );
+  }
+  return clampChartWindow(previous, total);
 }
 
 /**
@@ -667,6 +704,52 @@ const finiteAt = (values: readonly (number | null)[] | undefined, index: number)
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 };
 
+/**
+ * The point-in-time bars a chart window's `offset` is counted against: only
+ * complete candles the decision cutoff had already seen, oldest first. Every
+ * series the server sent is indexed against the candle list it came with, so
+ * the source index travels along rather than being re-derived — re-indexing
+ * after the fact would silently shift an indicator onto the wrong candle.
+ */
+function decidedEntries(
+  candles: readonly Candle[],
+  decisionCutoff: string,
+): { candle: Candle; sourceIndex: number }[] {
+  const decisionTime = Date.parse(decisionCutoff);
+  if (!Number.isFinite(decisionTime)) return [];
+  return candles
+    .map((candle, sourceIndex) => ({ candle, sourceIndex }))
+    .filter(({ candle }) => {
+      const availableAt = Date.parse(candle.availableAt);
+      return (
+        candle.complete &&
+        Number.isFinite(availableAt) &&
+        availableAt <= decisionTime
+      );
+    })
+    .sort(
+      (left, right) =>
+        Date.parse(left.candle.timestamp) - Date.parse(right.candle.timestamp),
+    );
+}
+
+/**
+ * The point-in-time order a {@link ChartWindow}'s `offset` is counted
+ * against — exactly the series {@link buildChartGeometry} itself decides
+ * from, exposed so a caller holding a window across a refresh (a poll that
+ * replaces the candle list without the symbol or interval changing) can
+ * locate the bar it was anchored on and hand {@link reanchorChartWindow} a
+ * {@link ChartWindowAnchor} instead of a bare offset that cannot tell a
+ * fixed-count series rolling its oldest bars off from one that has not moved
+ * at all.
+ */
+export function decidedCandleTimestamps(
+  candles: readonly Candle[],
+  decisionCutoff: string,
+): string[] {
+  return decidedEntries(candles, decisionCutoff).map(({ candle }) => candle.timestamp);
+}
+
 export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
   const {
     candles,
@@ -683,27 +766,7 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
   } = input;
 
   const decisionTime = Date.parse(decisionCutoff);
-  const hasValidCutoff = Number.isFinite(decisionTime);
-  // Every series the server sent is indexed against the candle list it came
-  // with, so the source index travels with the bar through the point-in-time
-  // filter and the visible window. Re-indexing after the fact would silently
-  // shift an indicator onto the wrong candle.
-  const decided = hasValidCutoff
-    ? candles
-        .map((candle, sourceIndex) => ({ candle, sourceIndex }))
-        .filter(({ candle }) => {
-          const availableAt = Date.parse(candle.availableAt);
-          return (
-            candle.complete &&
-            Number.isFinite(availableAt) &&
-            availableAt <= decisionTime
-          );
-        })
-        .sort(
-          (left, right) =>
-            Date.parse(left.candle.timestamp) - Date.parse(right.candle.timestamp),
-        )
-    : [];
+  const decided = decidedEntries(candles, decisionCutoff);
   const publishedForecast = forecast?.points ?? [];
   const totalBars = decided.length;
   // Every bar stays in memory to be dragged back into view; only the window is

@@ -18,9 +18,11 @@ import {
 import {
   alignTouchXToViewBox,
   buildChartGeometry,
+  decidedCandleTimestamps,
   findNearestByX,
   focusRatioForX,
   panChartWindow,
+  reanchorChartWindow,
   resolveChartWidth,
   zoomChartWindow,
   type ChartOverlaySeries,
@@ -118,10 +120,50 @@ export const PriceChart = memo(function PriceChart({
   // built for the new series is already the one the reader asked for.
   const seriesIdentity = `${snapshot.symbol}|${snapshot.interval}`;
   const [priorSeriesIdentity, setPriorSeriesIdentity] = useState(seriesIdentity);
-  if (seriesIdentity !== priorSeriesIdentity) {
+  const [priorCandles, setPriorCandles] = useState(snapshot.candles);
+  const [priorDecisionCutoff, setPriorDecisionCutoff] = useState(
+    snapshot.source.decisionCutoff,
+  );
+  const seriesChanged = seriesIdentity !== priorSeriesIdentity;
+  // Not a series switch, but the candle list (or the cutoff cutting it) is a
+  // new reference: a refresh replaced the data under the same symbol and
+  // interval. A series that only grows never moves the bars already in it, so
+  // the window's bare offset happens to still name them — but a server that
+  // instead publishes a fixed-count series ("last 300 bars") rolls, dropping
+  // its oldest bars as new ones close, which shifts every offset behind the
+  // drop with `total` unchanged: the one case that bare offset cannot tell
+  // apart from not having moved at all.
+  const dataRefreshed =
+    !seriesChanged &&
+    (snapshot.candles !== priorCandles ||
+      snapshot.source.decisionCutoff !== priorDecisionCutoff);
+  if (seriesChanged) {
     setPriorSeriesIdentity(seriesIdentity);
     setVisibleWindow(null);
     setSelectedTimestamp(null);
+  } else if (dataRefreshed && visibleWindow) {
+    // Relocate the bar the window was anchored on (its own `offset`, in the
+    // series it was last resolved against) inside the freshly refreshed
+    // series, and re-offset to it — keeping the same bars on screen through
+    // either kind of refresh instead of a slice quietly shifted by however
+    // many bars rolled off the front. reanchorChartWindow leaves a live-edge
+    // window following the newest bar regardless, and snaps a window whose
+    // anchor rolled off entirely to the oldest bar still available.
+    const previousTimestamps = decidedCandleTimestamps(priorCandles, priorDecisionCutoff);
+    const nextTimestamps = decidedCandleTimestamps(
+      snapshot.candles,
+      snapshot.source.decisionCutoff,
+    );
+    setVisibleWindow(
+      reanchorChartWindow(visibleWindow, nextTimestamps.length, {
+        timestamp: previousTimestamps[visibleWindow.offset] ?? null,
+        timestamps: nextTimestamps,
+      }),
+    );
+  }
+  if (seriesChanged || dataRefreshed) {
+    setPriorCandles(snapshot.candles);
+    setPriorDecisionCutoff(snapshot.source.decisionCutoff);
   }
   const hasForecast = showForecast && snapshot.forecast !== null;
 
