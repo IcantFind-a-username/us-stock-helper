@@ -78,6 +78,7 @@ export function marketBriefFixture(
       },
     ],
     sourceGaps: [],
+    notes: [],
     ...overrides,
   };
 }
@@ -107,6 +108,7 @@ export function marketBriefUnavailableFixture(
     driverCoverage,
     citations: [],
     sourceGaps: ["sec-current-8-k（HTTP 503）", "fred-releases（unreachable）"],
+    notes: [],
     ...overrides,
   };
 }

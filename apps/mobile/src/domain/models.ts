@@ -342,6 +342,8 @@ export interface MarketBrief {
   driverCoverage: MarketBriefDriverCoverage[];
   citations: MarketBriefCitation[];
   sourceGaps: string[];
+  /** Point-in-time exclusion disclosures (e.g., events after the decision cutoff). */
+  notes: string[];
 }
 
 export interface Candle {

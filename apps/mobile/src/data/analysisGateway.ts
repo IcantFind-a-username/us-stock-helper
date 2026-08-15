@@ -709,6 +709,17 @@ export function decodeMarketBriefEnvelope(
   if (!Array.isArray(value.sourceGaps)) {
     throw new DecisionValidationError("market brief sourceGaps must be an array");
   }
+  if (!Array.isArray(value.notes)) {
+    throw new DecisionValidationError("market brief notes must be an array");
+  }
+  const notes = value.notes.map((note) => {
+    if (typeof note !== "string" || note.trim() === "") {
+      throw new DecisionValidationError(
+        "market brief notes must contain non-empty strings",
+      );
+    }
+    return note;
+  });
 
   let dataHealth: DataHealth | null;
   let sentiment: MarketBriefSentiment | null;
@@ -782,6 +793,7 @@ export function decodeMarketBriefEnvelope(
     driverCoverage,
     citations: value.citations.map(decodeMarketBriefCitation),
     sourceGaps: value.sourceGaps.map(String),
+    notes,
   };
 }
 

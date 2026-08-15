@@ -104,6 +104,7 @@ function marketBriefFixture() {
       },
     ] as Record<string, unknown>[],
     sourceGaps: [] as string[],
+    notes: [] as string[],
   };
 }
 
@@ -591,6 +592,73 @@ describe("market brief envelope validation", () => {
       actionScore: null,
       missingReason: "情绪未测量（该时段无可读事件）",
     });
+  });
+
+  it("decodes notes from an available brief", () => {
+    const value = marketBriefFixture() as Record<string, unknown>;
+    (value.notes as string[]) = [
+      "有 1 条证据在决策截点之后才可用，未纳入本次结论：future-1",
+    ];
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    expect(brief.notes).toEqual([
+      "有 1 条证据在决策截点之后才可用，未纳入本次结论：future-1",
+    ]);
+  });
+
+  it("decodes empty notes array from an available brief", () => {
+    const value = marketBriefFixture();
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    expect(brief.notes).toEqual([]);
+  });
+
+  it("decodes empty notes array from an unavailable brief", () => {
+    const value = marketBriefFixture();
+    value.status = "unavailable";
+    value.reason =
+      "本次未能读取任何情报源：sec-current-8-k（HTTP 503）、fred-releases（unreachable）";
+    value.dataHealth = null;
+    value.sentiment = null;
+    value.citations = [];
+    value.sourceGaps = [
+      "sec-current-8-k（HTTP 503）",
+      "fred-releases（unreachable）",
+    ];
+    value.driverCoverage = value.driverCoverage.map((item) => ({
+      ...item,
+      available: false,
+      conclusion: null,
+      actionScore: null,
+      missingReason: "本次没有可读取的情报源，无法给出该驱动的结论。",
+    }));
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    expect(brief.notes).toEqual([]);
+  });
+
+  it("rejects a brief with missing notes field", () => {
+    const value = marketBriefFixture() as Record<string, unknown>;
+    delete value.notes;
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow(/notes/i);
+  });
+
+  it("rejects a brief with non-array notes", () => {
+    const value = marketBriefFixture() as Record<string, unknown>;
+    value.notes = "not an array";
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow(/notes.*array/i);
+  });
+
+  it("rejects a brief with empty-string note entries", () => {
+    const value = marketBriefFixture() as Record<string, unknown>;
+    (value.notes as unknown[]) = ["有效备注", ""];
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow(/note.*non-empty/i);
   });
 });
 

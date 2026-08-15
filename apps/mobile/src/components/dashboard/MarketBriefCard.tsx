@@ -120,7 +120,7 @@ export function MarketBriefCard({ status, brief, error, onRetry }: MarketBriefCa
     );
   }
 
-  const { sentiment, driverCoverage, citations, dataHealth, marketSession, sourceGaps } = brief;
+  const { sentiment, driverCoverage, citations, dataHealth, marketSession, sourceGaps, notes } = brief;
   if (!sentiment || !dataHealth) {
     // The contract guarantees both are present whenever status is
     // "available" -- this is an unreachable defensive fallback, not a state
@@ -174,6 +174,12 @@ export function MarketBriefCard({ status, brief, error, onRetry }: MarketBriefCa
           本轮未能读取：{sourceGaps.join("、")}
         </Text>
       ) : null}
+
+      {notes.map((note) => (
+        <Text key={note} style={styles.note} testID="market-brief-note">
+          · {note}
+        </Text>
+      ))}
 
       <Modal
         animationType="slide"
@@ -268,6 +274,7 @@ const styles = StyleSheet.create({
   coverageValue: { color: colors.muted, fontSize: 12 },
   coverageMissing: { color: colors.muted, fontSize: 12, fontStyle: "italic" },
   sourceGaps: { color: colors.amber, fontSize: 11, fontWeight: "700", lineHeight: 16 },
+  note: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   sheetSafeArea: { backgroundColor: colors.backgroundRaised, flex: 1 },
   sheetHeader: {
     alignItems: "center",
