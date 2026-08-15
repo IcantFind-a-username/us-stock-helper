@@ -376,6 +376,101 @@ class CutoffRaceTests(unittest.TestCase):
         self.assertEqual(result["status"], "live")
 
 
+class EvidenceCutoffRaceTests(unittest.TestCase):
+    """Evidence the request itself fetched must reach the conclusion.
+
+    The bar-side race was fixed by taking the cutoff after the bars were in
+    hand; the evidence fetch had the same race with a quieter failure. A live
+    collector stamps available_at = retrieved_at, so every event first
+    retrieved during the request landed after a cutoff sampled before the
+    fetch and was silently filed as future — the request a user makes on
+    seeing breaking news was served a measured-looking neutral built on
+    nothing, with no disclosure.
+    """
+
+    @staticmethod
+    def retrieved_now(retrieved: datetime) -> tuple[EvidenceEvent, ...]:
+        # The warm-store steady state: a collector polled by the request
+        # stamps what it fetched with the moment of the fetch itself.
+        return tuple(
+            replace(
+                item,
+                published_at=retrieved - timedelta(minutes=1),
+                first_seen_at=retrieved,
+                available_at=retrieved,
+                retrieved_at=retrieved,
+            )
+            for item in evidence()
+        )
+
+    def test_evidence_fetched_during_the_request_reaches_the_conclusion(
+        self,
+    ) -> None:
+        now = {"value": AS_OF}
+        make = self.retrieved_now
+
+        class BreakingNewsProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                # The fetch takes time, and everything it returns was
+                # retrieved at the end of that time.
+                now["value"] += timedelta(seconds=2)
+                return make(now["value"])
+
+        raced = AnalysisService(
+            BreakingNewsProvider(), clock=lambda: now["value"]
+        ).decision("NVDA", "short")
+        settled = service().decision("NVDA", "short")
+
+        # Identical evidence, retrieved during the request instead of before
+        # it, must not flip the served conclusion.
+        self.assertEqual(
+            [item["id"] for item in raced["citations"]],
+            [item["id"] for item in settled["citations"]],
+        )
+        self.assertEqual(
+            raced["sentiment"]["conclusion"],
+            settled["sentiment"]["conclusion"],
+        )
+        self.assertEqual(
+            raced["sentiment"]["actionScore"],
+            settled["sentiment"]["actionScore"],
+        )
+        self.assertEqual(raced["score"]["value"], settled["score"]["value"])
+
+    def test_evidence_still_future_at_the_cutoff_is_named_in_the_notes(
+        self,
+    ) -> None:
+        # An event stamped after even the honestly-taken cutoff (an embargo,
+        # a skewed publisher clock) is excluded by the point-in-time
+        # invariant — but never silently: an exclusion the reader cannot see
+        # is a patched record, not a protected one.
+        embargoed = tuple(
+            replace(
+                item,
+                event_id=f"embargoed-{item.event_id}",
+                published_at=AS_OF + timedelta(minutes=5),
+                first_seen_at=AS_OF + timedelta(minutes=5),
+                available_at=AS_OF + timedelta(minutes=5),
+                retrieved_at=AS_OF + timedelta(minutes=5),
+            )
+            for item in evidence()
+        )
+
+        class EmbargoedProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                return embargoed
+
+        payload = service(EmbargoedProvider()).decision("NVDA", "short")
+
+        self.assertTrue(
+            any(
+                "embargoed-a" in note and "embargoed-b" in note
+                for note in payload["notes"]
+            ),
+            f"the excluded evidence was not disclosed: {payload['notes']}",
+        )
+
+
 class UnreadableSourceTests(unittest.TestCase):
     """A partial evidence sweep must be served, and must say it was partial."""
 

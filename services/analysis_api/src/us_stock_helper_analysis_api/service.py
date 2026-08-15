@@ -124,16 +124,12 @@ class AnalysisService:
             raise InvalidRequest(f"unsupported risk preference: {risk_preference}")
         adviser_mode = _adviser_mode(adviser)
 
-        # Take the cutoff after the data is in hand. Sampling it first made
-        # any bar published during the round trip newer than the cutoff, and
-        # the chain's own point-in-time invariant then rejected the request.
         bars = self.provider.bars_for(normalized, self.interval)
-        as_of = self.clock()
         if not bars:
             return self._unavailable(
                 normalized,
                 horizon,
-                as_of,
+                self.clock(),
                 "No completed candles were available at the decision cutoff.",
                 # Nothing was scored, so there is no baseline for a council to
                 # move and no reason to spend anything finding that out.
@@ -144,7 +140,16 @@ class AnalysisService:
                 ),
             )
 
+        # Take the cutoff after ALL the data is in hand — evidence as well as
+        # bars. Sampling it before the bar fetch made any bar published during
+        # the round trip newer than the cutoff and failed the request; sampling
+        # it before the evidence fetch was quieter and worse: a live collector
+        # stamps available_at = retrieved_at, so every event first retrieved
+        # during the request fell after the cutoff and was silently filed as
+        # future — breaking news was invisible to precisely the request that
+        # fetched it, served as a measured-looking neutral.
         evidence = self.provider.evidence_for(normalized)
+        as_of = self.clock()
         factors, factor_failure = self._factor_snapshot(normalized, as_of)
         output = DecisionEngine().evaluate(
             DecisionInputs(
@@ -203,6 +208,16 @@ class AnalysisService:
                 "Scored on "
                 f"{output.adjusted_score.factor_coverage:.0%} of the factor "
                 "weight; the rest has no source yet."
+            )
+        # The point-in-time invariant may still exclude an event stamped after
+        # even this honestly-taken cutoff (an embargo, a skewed publisher
+        # clock). The exclusion is legitimate; hiding it is not — an exclusion
+        # the reader cannot see patches the record instead of protecting it.
+        excluded = output.evidence_packet.excluded_future_event_ids
+        if excluded:
+            notes.append(
+                f"有 {len(excluded)} 条证据在决策截点之后才可用，"
+                "未纳入本次结论：" + "、".join(excluded)
             )
         # A source that could not be read is stated rather than absorbed. The
         # decision is still served — one slow publisher used to fail every
