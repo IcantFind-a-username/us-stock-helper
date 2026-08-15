@@ -41,17 +41,14 @@ NEWS_ONLY_COUNCIL_REASON = (
     "本次仅请求新闻解读，没有召开 13 席顾问会诊，因此没有产生会诊 token。"
 )
 NO_DECISION_REASON = (
-    "The decision chain reached no conclusion, so no council was convened and "
-    "nothing was spent."
+    "决策链没有得出结论，因此没有召开顾问委员会，也没有产生任何花费。"
 )
 _SDK_MISSING_REASON = (
-    "The adviser layer is not installed on this deployment (the model SDK "
-    "could not be imported), so no interpretation was produced."
+    "本次部署没有安装顾问层（无法导入模型 SDK），因此没有产生解读。"
 )
 _UNEXPECTED_FAILURE_REASON = (
-    "The adviser layer failed in a way this service will not repeat verbatim, "
-    "because such messages can carry the outbound credential. No "
-    "interpretation was produced."
+    "顾问层出现了本服务不会原样转述的失败，因为这类信息可能带有外发凭据。"
+    "没有产生解读。"
 )
 
 # What a credential looks like once it has escaped into a message. Matching on
@@ -202,8 +199,8 @@ class LlmAdviserProvider:
         except ValueError as error:
             return unavailable_for_mode(
                 mode,
-                "No citable evidence was available at the decision cutoff, so "
-                f"the model was not asked to interpret anything: {error}"
+                "决策截止时点没有可引用的证据，因此没有请求模型做任何解读："
+                f"{error}"
             )
 
         notes: list[str] = []
@@ -212,8 +209,8 @@ class LlmAdviserProvider:
             # news window, which is the one thing the evidence layer exists to
             # prevent.
             notes.append(
-                f"{skipped} evidence item(s) carried no quotable text or no "
-                "usable link and were left out of the adviser's packet."
+                f"有 {skipped} 条证据没有可引用文本或没有可用链接，"
+                "未纳入本次顾问材料包。"
             )
 
         try:

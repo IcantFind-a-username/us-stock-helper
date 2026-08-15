@@ -298,17 +298,19 @@ def score_horizon(
     features: FeatureSet, hard_gates: Iterable[HardGate] = ()
 ) -> ScoreResult:
     weights = _WEIGHTS[features.horizon]
+    # Investor-readable Chinese, exact-pinned by tests/test_scoring.py. These
+    # strings ride the wire verbatim as `contributions[].explanation` — the
+    # analysis_api layer does no translation of its own — so this is the one
+    # place they are written, not a template a downstream layer fills in.
     explanations = {
-        "technical_trend": "Closed-bar return over the horizon-specific lookback.",
-        "momentum": "RSI and MACD momentum calculated from closed bars only.",
-        "pattern": "Confirmed close-only pattern evidence; unconfirmed shapes contribute zero.",
-        "market_sentiment": "Point-in-time market mood blended with cited news evidence.",
-        "macro": "As-of macroeconomic context, treated as a soft factor.",
-        "geopolitics": "As-of geopolitical context, treated as a soft factor.",
-        "institutional_flow": (
-            "As-of institutional-flow estimate with no claim of hidden order knowledge."
-        ),
-        "fundamentals": "Point-in-time company financial health.",
+        "technical_trend": "按周期对应的回看窗口，用已收盘K线计算涨跌幅。",
+        "momentum": "RSI 与 MACD 动量，只用已收盘K线计算。",
+        "pattern": "只计入收盘确认的形态证据；未确认的形态贡献为零。",
+        "market_sentiment": "按当时可见的市场情绪，结合引用的新闻证据。",
+        "macro": "按当时可见的宏观经济背景，作为软因子处理。",
+        "geopolitics": "按当时可见的地缘政治背景，作为软因子处理。",
+        "institutional_flow": ("按当时可见的机构资金流估算，不声称掌握隐藏订单信息。"),
+        "fundamentals": "按当时可见的公司财务状况。",
     }
     contributions: list[FactorContribution] = []
     unavailable = tuple(
@@ -331,7 +333,7 @@ def score_horizon(
                     raw_value=None,
                     weight=0.0,
                     points=0.0,
-                    explanation=f"{explanations[name]} Unavailable for this snapshot.",
+                    explanation=f"{explanations[name]}本次快照不可用。",
                 )
             )
             continue
@@ -352,8 +354,8 @@ def score_horizon(
             weight=0.0,
             points=adviser_points,
             explanation=(
-                f"Bounded style-adviser soft factor; capped at "
-                f"±{ADVISER_SCORE_CAP:g} points and never bypasses a hard gate."
+                f"顾问软因子设有上限：最多影响 ±{ADVISER_SCORE_CAP:g} 分，"
+                "且不能绕过任何硬性拦截。"
             ),
         )
     )

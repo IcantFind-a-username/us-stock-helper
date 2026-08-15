@@ -138,9 +138,9 @@ class AnalysisService:
         try:
             snapshot = read(symbol, as_of)
         except Exception:  # noqa: BLE001 - this is the degradation boundary
-            return None, "Public factor sources could not be read for this decision."
+            return None, "本次未能读取公开因子数据源。"
         if not isinstance(snapshot, FactorSnapshot):
-            return None, "Public factor sources returned an unsupported snapshot."
+            return None, "公开因子数据源返回了不支持的快照格式。"
         return snapshot, None
 
     def decision(
@@ -210,7 +210,7 @@ class AnalysisService:
                 ),
                 risk_preference=_PREFERENCES[risk_preference],
                 invalidation_conditions=(
-                    "The cited evidence is withdrawn or contradicted.",
+                    "引用的证据被撤回或被证伪。",
                 ),
             )
         )

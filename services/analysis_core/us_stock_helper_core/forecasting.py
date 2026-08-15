@@ -127,14 +127,13 @@ def build_scenario_forecast(
         ),
         ScenarioKind.BULL: (0.75 * expected_move, 0.35 * expected_move),
     }
+    # Investor-readable Chinese (2026-08-15 served-copy sweep), exact-pinned
+    # by analysis_api's decision-fixture tests; these ride the wire verbatim
+    # as `forecast.cases[].explanation`.
     explanations = {
-        ScenarioKind.BEAR: (
-            "Adverse range based on observed volatility and the current evidence score."
-        ),
-        ScenarioKind.BASE: "Central uncertainty range; it is not a single-price prediction.",
-        ScenarioKind.BULL: (
-            "Favorable range based on observed volatility and the current evidence score."
-        ),
+        ScenarioKind.BEAR: ("按已实现波动率与当前证据评分推算的不利区间。"),
+        ScenarioKind.BASE: "中性不确定区间；不是单一价格的预测。",
+        ScenarioKind.BULL: ("按已实现波动率与当前证据评分推算的有利区间。"),
     }
     cases: list[ScenarioCase] = []
     for kind in ScenarioKind:

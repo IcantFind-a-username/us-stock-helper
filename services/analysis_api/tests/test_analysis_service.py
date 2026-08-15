@@ -166,6 +166,20 @@ class ProviderWithFactors(Provider):
         )
 
 
+class ProviderWithBrokenFactors(Provider):
+    """`factors_for` exists but raises — the whole factor layer is down."""
+
+    def factors_for(self, symbol: str, as_of: datetime) -> FactorSnapshot:
+        raise RuntimeError("factor source unreachable")
+
+
+class ProviderWithMalformedFactors(Provider):
+    """`factors_for` exists but hands back something that is not a snapshot."""
+
+    def factors_for(self, symbol: str, as_of: datetime) -> object:
+        return {"not": "a snapshot"}
+
+
 def service(provider: Provider | None = None) -> AnalysisService:
     return AnalysisService(provider or Provider(), clock=lambda: AS_OF)
 
@@ -232,6 +246,43 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertEqual(contributions["macro"]["rawValue"], 0.2)
         self.assertEqual(contributions["fundamentals"]["rawValue"], 0.6)
 
+    def test_unavailable_factor_notes_name_the_factor_and_the_reason_code(
+        self,
+    ) -> None:
+        # Pinned deliberately in this raw, code-bearing shape: `name` and
+        # `reason.value` are stable wire identifiers (mirrors "Hard gate
+        # active: <gate>,<gate>"), and apps/mobile/src/i18n/serverVocabulary.ts
+        # is what turns this into Chinese for the screen, not this service.
+        # This is the exact note Franz's 2026-08-15 real-mode QA reported as
+        # unreadable code-log English on the stock page.
+        provider = ProviderWithFactors()
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertIn(
+            "geopolitics unavailable (no_qualified_source).", result["notes"]
+        )
+        self.assertIn(
+            "institutional_flow unavailable (no_qualified_source).",
+            result["notes"],
+        )
+
+    def test_a_broken_factor_source_degrades_into_a_chinese_note(self) -> None:
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): this is
+        # pure server-authored prose with no embedded machine identifier, so
+        # unlike the note pinned above it is translated at the source.
+        result = service(ProviderWithBrokenFactors()).decision("NVDA", "short")
+
+        self.assertIn("本次未能读取公开因子数据源。", result["notes"])
+        self.assertFalse(
+            any("Public factor sources" in note for note in result["notes"])
+        )
+
+    def test_a_malformed_factor_snapshot_degrades_into_a_chinese_note(self) -> None:
+        result = service(ProviderWithMalformedFactors()).decision("NVDA", "short")
+
+        self.assertIn("公开因子数据源返回了不支持的快照格式。", result["notes"])
+
     def test_the_forecast_carries_three_scenarios_and_its_disclaimer(self) -> None:
         forecast = service().decision("NVDA", "short")["forecast"]
 
@@ -244,6 +295,18 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertTrue(forecast["disclaimer"])
         self.assertEqual(forecast["calibrationStatus"], "uncalibrated")
         self.assertTrue(forecast["invalidationConditions"])
+
+    def test_the_forecast_invalidation_condition_and_scenarios_are_chinese(
+        self,
+    ) -> None:
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): both ride
+        # the wire verbatim with no client-side translation table.
+        forecast = service().decision("NVDA", "short")["forecast"]
+
+        self.assertIn("引用的证据被撤回或被证伪。", forecast["invalidationConditions"])
+        explanations = {case["kind"]: case["explanation"] for case in forecast["cases"]}
+        for explanation in explanations.values():
+            self.assertNotRegex(explanation, r"[a-z]{3,}")
 
     def test_an_unmeasurable_volatility_yields_no_forecast_and_says_why(
         self,

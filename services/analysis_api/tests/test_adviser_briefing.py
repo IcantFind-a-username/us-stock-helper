@@ -328,6 +328,34 @@ class CostControlTests(unittest.TestCase):
 
 
 class DegradationTests(unittest.TestCase):
+    def test_no_citable_evidence_degrades_into_a_chinese_reason(self) -> None:
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): a decision
+        # was reached (bars exist), but nothing in the evidence feed could be
+        # quoted, so the model was never asked. Both the prose this service
+        # writes and the packet-builder's own ValueError it appends are
+        # Chinese, so the whole reason reaches the AdvisersScreen readable.
+        class NoEvidenceProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[Any, ...]:
+                return ()
+
+        # service() always builds a plain Provider(); this case needs the
+        # empty-evidence provider instead, so the service is built directly.
+        result = AnalysisService(
+            NoEvidenceProvider(),
+            clock=lambda: AS_OF,
+            adviser_factory=lambda: provider_with(
+                parse=[FakeMessage(news_answer())],
+                stream=[FakeMessage(council_answer())],
+            ),
+        ).decision("NVDA", "short", adviser=True)
+
+        reason = result["newsInterpretation"]["reason"]
+        self.assertTrue(
+            reason.startswith("决策截止时点没有可引用的证据，因此没有请求模型做任何解读："),
+            msg=reason,
+        )
+        self.assertNotRegex(reason, r"[a-z]{3,}")
+
     def test_a_missing_key_is_stated_rather_than_read_as_no_opinion(self) -> None:
         result = service(
             LlmAdviserProvider(environ={}, sleep=lambda _seconds: None)
@@ -430,7 +458,13 @@ class DegradationTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(result["newsInterpretation"]["status"], "unavailable")
-        self.assertTrue(result["newsInterpretation"]["reason"])
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): this
+        # reason reaches the AdvisersScreen and the stock page's model-
+        # interpretation card verbatim, with no client-side translation.
+        self.assertEqual(
+            result["newsInterpretation"]["reason"],
+            "决策链没有得出结论，因此没有召开顾问委员会，也没有产生任何花费。",
+        )
         self.assertIsNone(result["adviserUsage"])
 
 
@@ -487,9 +521,12 @@ class EvidencePacketTests(unittest.TestCase):
         result = service.decision("NVDA", "short", adviser=True)
 
         self.assertEqual(result["newsInterpretation"]["status"], "available")
-        self.assertTrue(
-            any("1 evidence item" in note for note in result["notes"]),
-            msg=result["notes"],
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): pinned
+        # exactly, consistent with the served-vocabulary conventions this
+        # note now follows.
+        self.assertIn(
+            "有 1 条证据没有可引用文本或没有可用链接，未纳入本次顾问材料包。",
+            result["notes"],
         )
 
 
@@ -717,7 +754,13 @@ class CredentialTests(unittest.TestCase):
         # Redacting must not turn into silence: the reader still has to learn
         # the model was asked and could not answer.
         self.assertEqual(result["newsInterpretation"]["status"], "unavailable")
-        self.assertTrue(result["newsInterpretation"]["reason"])
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): reaches
+        # the AdvisersScreen and the model-interpretation card verbatim.
+        self.assertEqual(
+            result["newsInterpretation"]["reason"],
+            "顾问层出现了本服务不会原样转述的失败，因为这类信息可能带有外发凭据。"
+            "没有产生解读。",
+        )
 
     def test_a_credential_shaped_reason_is_withheld_rather_than_forwarded(
         self,
@@ -774,7 +817,13 @@ class LazyImportTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(result[key]["status"], "unavailable")
                 self.assertIsNone(result[key]["value"])
-                self.assertTrue(result[key]["reason"])
+                # Investor-readable Chinese (2026-08-15 served-copy sweep):
+                # reaches the AdvisersScreen and the model-interpretation card
+                # verbatim, with no client-side translation.
+                self.assertEqual(
+                    result[key]["reason"],
+                    "本次部署没有安装顾问层（无法导入模型 SDK），因此没有产生解读。",
+                )
 
     def test_the_service_starts_and_answers_with_no_sdk_installed(self) -> None:
         """A top-level import of an optional dependency is how a whole product

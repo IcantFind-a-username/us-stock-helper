@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import random
+import re
 import unittest
 
 from us_stock_helper_core.models import (
@@ -343,6 +344,29 @@ class ExplainableScoreTests(unittest.TestCase):
         self.assertTrue({"market_sentiment", "macro", "geopolitics"} <= names)
         self.assertTrue(all(item.explanation for item in result.contributions))
 
+    def test_every_factor_explanation_is_investor_readable_chinese(self) -> None:
+        # 2026-08-15 served-copy sweep: `contributions[].explanation` rides the
+        # wire verbatim (analysis_api does no translation of it), so an
+        # English sentence here reaches the stock page unreadable. A run of
+        # three or more lowercase ASCII letters is that sentence's signature;
+        # short tokens the reader does understand ("K线", "RSI", "MACD") stay
+        # under that threshold.
+        available = score_horizon(manual_features())
+        unavailable = score_horizon(
+            replace(
+                manual_features(adviser_factor=1.0),
+                macro=None,
+                geopolitics=None,
+                institutional_flow=None,
+                fundamentals=None,
+            )
+        )
+        for result in (available, unavailable):
+            for item in result.contributions:
+                with self.subTest(name=item.name, explanation=item.explanation):
+                    self.assertTrue(item.explanation.strip())
+                    self.assertNotRegex(item.explanation, r"[a-z]{3,}")
+
     def test_hard_gate_blocks_action_even_with_maximum_adviser_support(self) -> None:
         result = score_horizon(
             manual_features(adviser_factor=1.0),
@@ -485,7 +509,11 @@ class UnavailableFactorTests(unittest.TestCase):
         )
         self.assertIsNone(macro.raw_value)
         self.assertEqual(macro.points, 0.0)
-        self.assertIn("unavailable", macro.explanation.lower())
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): the reader
+        # never sees "unavailable" as a bare English word on this card, so the
+        # unavailability marker pinned here is the Chinese phrase the service
+        # actually emits.
+        self.assertIn("本次快照不可用", macro.explanation)
 
     def test_a_score_with_no_usable_factor_is_not_actionable(self) -> None:
         blind = replace(

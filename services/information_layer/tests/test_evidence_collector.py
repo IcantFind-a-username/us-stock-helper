@@ -305,6 +305,31 @@ class FailureTests(unittest.TestCase):
         with self.assertRaises(EvidenceUnavailable):
             subject.collect()
 
+    def test_failure_reasons_are_investor_readable_chinese(self) -> None:
+        # 2026-08-15 served-copy sweep: `SourceFailure.reason` rides straight
+        # through into `source_id（reason）` gap entries that reach a real-mode
+        # screen -- both a decision's own notes and `GET /market-brief`'s
+        # `reason`/`sourceGaps` -- so an English adjective here was the
+        # "sec-current-8-k（unreachable）" leak Franz's real-mode QA reported.
+        cases = {
+            "unreachable": (
+                FakeTransport(OSError("connection refused")),
+                "无法连接",
+            ),
+            "unparsable": (FakeTransport(response(b"not a feed")), "无法解析该信息源返回的内容"),
+        }
+        for name, (transport, expected_reason) in cases.items():
+            with self.subTest(failure=name):
+                subject = collector(transport, Clock(FIRST_POLL))
+
+                with self.assertRaises(EvidenceUnavailable) as failure:
+                    subject.collect()
+
+                self.assertEqual(
+                    [item.reason for item in failure.exception.failures],
+                    [expected_reason],
+                )
+
     def test_a_retryable_upstream_status_is_a_failure_not_an_empty_answer(
         self,
     ) -> None:

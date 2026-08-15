@@ -254,12 +254,16 @@ def _is_in_scope(event: EvidenceEvent, focus: set[str]) -> bool:
 
 
 def _reason(error: Exception) -> str:
+    # Investor-readable Chinese (2026-08-15 served-copy sweep): this string
+    # rides straight through into `source_id（reason）` gap entries that reach
+    # a real-mode screen untranslated, both in a decision's own notes and in
+    # `GET /market-brief`'s `reason`/`sourceGaps`.
     if isinstance(error, FeedParseError):
-        return "unparsable feed"
+        return "无法解析该信息源返回的内容"
     if isinstance(error, ResponseTooLargeError):
-        return "oversized response"
+        return "响应体超出大小限制"
     if isinstance(error, FeedAccessError):
-        return "access refused"
+        return "访问被拒绝"
     if isinstance(error, FeedError):
-        return "feed error"
-    return "unreachable"
+        return "信息源出错"
+    return "无法连接"
