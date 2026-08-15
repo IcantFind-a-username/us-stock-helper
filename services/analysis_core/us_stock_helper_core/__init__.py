@@ -70,6 +70,12 @@ from .risk import (
     ShortBorrowSnapshot,
     build_risk_plan,
 )
+from .rvol import (
+    RVOL_VERSION,
+    RelativeVolumeResult,
+    SessionBucket,
+    time_of_day_relative_volume,
+)
 from .scoring import (
     ADVISER_SCORE_CAP,
     FactorContribution,
@@ -124,7 +130,9 @@ __all__ = [
     "PatternKind",
     "PatternSignal",
     "PercentAboveMAResult",
+    "RVOL_VERSION",
     "RelativeStrengthRanking",
+    "RelativeVolumeResult",
     "RiskPlan",
     "RiskPreference",
     "SECTOR_RS_VERSION",
@@ -133,6 +141,7 @@ __all__ = [
     "ScenarioKind",
     "ScoreResult",
     "SectorRelativeStrength",
+    "SessionBucket",
     "ShortBorrowSnapshot",
     "TDSetupResult",
     "TD_SETUP_VERSION",
@@ -170,6 +179,7 @@ __all__ = [
     "select_evidence_as_of",
     "td_setup",
     "three_bar_fractals",
+    "time_of_day_relative_volume",
     "warmup_ema_series",
     "wilder_atr",
 ]
