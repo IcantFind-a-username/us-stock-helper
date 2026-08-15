@@ -23,6 +23,7 @@ type StockSearchSheetProps = {
   options: StockSearchOption[];
   onClose(): void;
   onSelect(symbol: string): void;
+  demoMode?: boolean;
 };
 
 export function StockSearchSheet({
@@ -30,6 +31,7 @@ export function StockSearchSheet({
   options,
   onClose,
   onSelect,
+  demoMode = false,
 }: StockSearchSheetProps) {
   const [query, setQuery] = useState("");
 
@@ -59,7 +61,11 @@ export function StockSearchSheet({
       <SafeAreaView edges={["top", "bottom"]} style={styles.safeArea}>
         <View style={styles.header}>
           <View>
-            <Text style={styles.eyebrow}>本地关注列表 · 演示</Text>
+            <Text style={styles.eyebrow}>
+              {demoMode
+                ? "本地关注列表 · 演示"
+                : "搜索范围：我的关注 · 全市场搜索尚未接入"}
+            </Text>
             <Text style={styles.title}>搜索关注标的</Text>
           </View>
           <Pressable
@@ -113,8 +119,16 @@ export function StockSearchSheet({
           ))}
           {filtered.length === 0 ? (
             <View style={styles.empty}>
-              <Text style={styles.emptyTitle}>没有匹配的演示标的</Text>
-              <Text style={styles.emptyBody}>真实搜索将在 moomoo 只读网关接通后提供。</Text>
+              <Text style={styles.emptyTitle}>
+                {demoMode
+                  ? "没有匹配的演示标的"
+                  : "关注列表里没有匹配的标的"}
+              </Text>
+              <Text style={styles.emptyBody}>
+                {demoMode
+                  ? "真实搜索将在 moomoo 只读网关接通后提供。"
+                  : "在 moomoo 中添加自选后刷新。"}
+              </Text>
             </View>
           ) : null}
         </View>

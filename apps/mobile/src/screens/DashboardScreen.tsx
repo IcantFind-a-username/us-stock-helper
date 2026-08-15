@@ -334,6 +334,7 @@ export function DashboardScreen() {
         visible={detail !== null}
       />
       <StockSearchSheet
+        demoMode={demoMode}
         onClose={() => setSearchVisible(false)}
         onSelect={(symbol) => {
           setSearchVisible(false);
