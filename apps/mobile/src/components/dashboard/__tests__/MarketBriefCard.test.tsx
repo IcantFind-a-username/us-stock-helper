@@ -2,8 +2,95 @@ import { expect, it } from "@jest/globals";
 import { render } from "@testing-library/react-native";
 
 import { marketBriefFixture } from "@/data/__tests__/marketBrief.fixture";
+import type { MarketBriefDriverCoverage } from "@/domain/models";
 
 import { MarketBriefCard } from "../MarketBriefCard";
+
+/**
+ * 2026-08-15 quant-foundations Task 5: `breadth` and `sector` are now
+ * sourced by the server (breadth-v1 / sector-rs-v1). `MarketBriefCard`
+ * itself needed no change for this -- driverCoverage already renders any
+ * `available: true` entry's `conclusion`/`actionScore` generically -- so
+ * this proves that generic path actually carries the two newly-sourced
+ * categories' own scope label (自选广度（N 只）, never 市场广度) through
+ * to the screen, rather than re-testing the renderer's existing behaviour.
+ */
+function withSourcedBreadthAndSector(
+  driverCoverage: MarketBriefDriverCoverage[],
+): MarketBriefDriverCoverage[] {
+  return driverCoverage.map((entry) => {
+    if (entry.category === "breadth") {
+      return {
+        category: "breadth",
+        available: true,
+        conclusion: "自选广度（5 只）· 多数走强 · 60% 收于50日均线上方",
+        actionScore: 0.2,
+        missingReason: null,
+      };
+    }
+    if (entry.category === "sector") {
+      return {
+        category: "sector",
+        available: true,
+        conclusion: "板块强弱（21日，对比 SPY）· 领涨 XLK 超额收益 +9.1%",
+        actionScore: 0.091,
+        missingReason: null,
+      };
+    }
+    return entry;
+  });
+}
+
+it("renders the breadth driver's conclusion, score and 自选广度 scope label once sourced", async () => {
+  const base = marketBriefFixture();
+  const brief = {
+    ...base,
+    driverCoverage: withSourcedBreadthAndSector(base.driverCoverage),
+  };
+
+  const view = await render(
+    <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+  );
+
+  expect(
+    view.getByText("自选广度（5 只）· 多数走强 · 60% 收于50日均线上方 · +0.20"),
+  ).toBeTruthy();
+});
+
+it("renders the sector driver's conclusion and score once sourced", async () => {
+  const base = marketBriefFixture();
+  const brief = {
+    ...base,
+    driverCoverage: withSourcedBreadthAndSector(base.driverCoverage),
+  };
+
+  const view = await render(
+    <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+  );
+
+  expect(
+    view.getByText("板块强弱（21日，对比 SPY）· 领涨 XLK 超额收益 +9.1% · +0.09"),
+  ).toBeTruthy();
+});
+
+it("never renders 市场广度 as the breadth driver's own scope claim", async () => {
+  // The row's fixed category chrome still reads "市场广度" (see
+  // CATEGORY_LABELS below) -- that label names the topic, not a coverage
+  // claim. The coverage claim lives entirely in the server-composed
+  // conclusion text, which must say 自选广度, never imply full-market reach.
+  const base = marketBriefFixture();
+  const brief = {
+    ...base,
+    driverCoverage: withSourcedBreadthAndSector(base.driverCoverage),
+  };
+
+  const view = await render(
+    <MarketBriefCard status="live" brief={brief} error={null} onRetry={() => {}} />,
+  );
+
+  const breadthValue = view.getByText(/自选广度（5 只）/);
+  expect(breadthValue).not.toHaveTextContent("市场广度");
+});
 
 it("renders a note from the brief", async () => {
   const brief = marketBriefFixture({
