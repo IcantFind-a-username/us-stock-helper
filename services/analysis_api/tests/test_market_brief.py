@@ -43,6 +43,7 @@ from us_stock_helper_analysis_api.market_brief import (
     MarketBriefUniverse,
     MarketBriefUniverseConfig,
 )
+from us_stock_helper_analysis_api.market_universe_cache import MarketUniverseCache
 from us_stock_helper_analysis_api.service import AnalysisService
 from us_stock_helper_core import OHLCVBar
 from us_stock_helper_core import relative_strength_ranking as core_relative_strength_ranking
@@ -50,6 +51,7 @@ from us_stock_helper_device_auth import DeviceAuthService, DeviceStore
 
 from test_analysis_service import AS_OF, Provider, _all_keys, evidence, service
 from test_device_pairing import FAST_SCRYPT, START, call
+from test_market_universe_cache import FakeMonotonic
 
 
 _ALL_CATEGORIES = {
@@ -715,6 +717,12 @@ class UniverseProvider(Provider):
             raise AttributeError("watchlist not configured")
         return self._watchlist
 
+    def recover(self) -> None:
+        """Simulates a gateway restart: every symbol that used to raise now
+        answers normally, without touching anything else about the fixture."""
+
+        self._raises.clear()
+
 
 def _brief_with_universe(
     provider: UniverseProvider, config: MarketBriefUniverseConfig
@@ -1038,6 +1046,113 @@ class UniverseCacheTests(unittest.TestCase):
         # fetch-count assertion above is what actually pins "no refetch".
         self.assertEqual(_driver(first, "breadth")["computedAt"], first["decisionCutoff"])
         self.assertEqual(_driver(second, "breadth")["computedAt"], first["decisionCutoff"])
+
+
+# ---------------------------------------------------------------------------
+# Retry TTL: a failure or a partial universe must heal well inside a single
+# trading session, not freeze until the 16:00 ET rollover -- the reviewer's
+# own outage-then-recovery scenario.
+# ---------------------------------------------------------------------------
+
+
+class RetryAfterFailureTests(unittest.TestCase):
+    def test_a_wholly_failed_universe_retries_live_once_the_ttl_elapses(
+        self,
+    ) -> None:
+        # 3 of 5 above their own MA50 once the gateway recovers -- the same
+        # hand-checkable split BreadthDriverTests already relies on.
+        universe = {
+            "AAA": _breadth_bars("AAA", last_close=110.0),
+            "BBB": _breadth_bars("BBB", last_close=110.0),
+            "CCC": _breadth_bars("CCC", last_close=110.0),
+            "DDD": _breadth_bars("DDD", last_close=90.0),
+            "EEE": _breadth_bars("EEE", last_close=90.0),
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        provider = UniverseProvider(universe, raises=tuple(universe), stamped=True)
+        clock = FakeMonotonic()
+        shared_universe = MarketBriefUniverse(
+            config=config,
+            cache=MarketUniverseCache(retry_after_seconds=60.0, monotonic=clock),
+        )
+        shared_service = service(provider)
+
+        # First request during the outage: every symbol fails, served
+        # honestly unavailable.
+        first = MarketBriefService(shared_service, shared_universe).market_brief()
+        first_entry = _driver(first, "breadth")
+        self.assertFalse(first_entry["available"])
+        self.assertEqual(len(provider.universe_requests), 5)
+
+        # A second request still inside the retry window is replayed from
+        # cache, not refetched -- an outage must not be hammered every read.
+        second = MarketBriefService(shared_service, shared_universe).market_brief()
+        self.assertFalse(_driver(second, "breadth")["available"])
+        self.assertEqual(len(provider.universe_requests), 5)
+
+        # The gateway recovers, and the retry window elapses.
+        provider.recover()
+        clock.advance(61.0)
+
+        # A request after the retry TTL performs a fresh fetch and serves
+        # live values -- this must not wait for the 16:00 ET rollover.
+        third = MarketBriefService(shared_service, shared_universe).market_brief()
+        third_entry = _driver(third, "breadth")
+        self.assertTrue(third_entry["available"])
+        self.assertIn("60%", third_entry["conclusion"])
+        self.assertEqual(len(provider.universe_requests), 10)
+
+    def test_a_healthy_universe_still_survives_the_whole_trading_date(self) -> None:
+        # Regression guard alongside the retry-TTL fix above: a result every
+        # symbol answered must still be exempt from the short retry window.
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        provider = UniverseProvider(universe, stamped=True)
+        clock = FakeMonotonic()
+        shared_universe = MarketBriefUniverse(
+            config=config,
+            cache=MarketUniverseCache(retry_after_seconds=60.0, monotonic=clock),
+        )
+        shared_service = service(provider)
+
+        first = MarketBriefService(shared_service, shared_universe).market_brief()
+        clock.advance(10_000.0)  # long past the short retry window
+        second = MarketBriefService(shared_service, shared_universe).market_brief()
+
+        self.assertTrue(_driver(first, "breadth")["available"])
+        self.assertEqual(
+            _driver(first, "breadth")["computedAt"], _driver(second, "breadth")["computedAt"]
+        )
+        self.assertEqual(len(provider.universe_requests), 5)
+
+    def test_a_replayed_failure_never_claims_this_round_and_states_when_computed(
+        self,
+    ) -> None:
+        # F6's wording half: a cached failure served on a later, unrelated
+        # request must not say "本次" ("this round") as if the fetch just
+        # happened -- it must instead state when the attempt was actually
+        # made, via computedAt and the message itself.
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        provider = UniverseProvider(raises=tuple(universe), stamped=True)
+        shared_universe = MarketBriefUniverse(
+            config=config, cache=MarketUniverseCache(retry_after_seconds=60.0)
+        )
+        shared_service = service(provider)
+
+        first = MarketBriefService(shared_service, shared_universe).market_brief()
+        replayed = MarketBriefService(shared_service, shared_universe).market_brief()
+
+        for result in (first, replayed):
+            entry = _driver(result, "breadth")
+            self.assertNotIn("本次", entry["missingReason"])
+            self.assertEqual(entry["computedAt"], first["decisionCutoff"])
 
 
 class DataHealthInterplayTests(unittest.TestCase):

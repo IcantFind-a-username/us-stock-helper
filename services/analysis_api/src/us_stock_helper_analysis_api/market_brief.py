@@ -32,7 +32,7 @@ from us_stock_helper_core import (
     relative_strength_ranking,
 )
 
-from .market_universe_cache import MarketUniverseCache
+from .market_universe_cache import CacheOutcome, MarketUniverseCache
 from .service import AnalysisProvider, AnalysisService, _citation, _iso
 
 
@@ -251,7 +251,9 @@ class MarketBriefService:
         self,
         name: str,
         as_of: datetime,
-        compute: Callable[[datetime], tuple[dict[str, Any], tuple[str, ...]]],
+        compute: Callable[
+            [datetime], CacheOutcome[tuple[dict[str, Any], tuple[str, ...]]]
+        ],
     ) -> tuple[dict[str, Any], tuple[str, ...]]:
         trading_date = _trading_date(as_of)
         value, _hit = self.universe.cache.get_or_compute(
@@ -261,13 +263,19 @@ class MarketBriefService:
 
     def _compute_breadth(
         self, as_of: datetime
-    ) -> tuple[dict[str, Any], tuple[str, ...]]:
-        return _breadth_driver_entry(self.service.provider, self.universe.config, as_of)
+    ) -> CacheOutcome[tuple[dict[str, Any], tuple[str, ...]]]:
+        entry, notes, healthy = _breadth_driver_entry(
+            self.service.provider, self.universe.config, as_of
+        )
+        return CacheOutcome(value=(entry, notes), healthy=healthy)
 
     def _compute_sector(
         self, as_of: datetime
-    ) -> tuple[dict[str, Any], tuple[str, ...]]:
-        return _sector_driver_entry(self.service.provider, self.universe.config, as_of)
+    ) -> CacheOutcome[tuple[dict[str, Any], tuple[str, ...]]]:
+        entry, notes, healthy = _sector_driver_entry(
+            self.service.provider, self.universe.config, as_of
+        )
+        return CacheOutcome(value=(entry, notes), healthy=healthy)
 
     def _unavailable(self, error: EvidenceUnavailable) -> dict[str, Any]:
         # Every configured source failed and nothing was already held for any
@@ -431,14 +439,16 @@ def _driver_coverage(
 # ---------------------------------------------------------------------------
 
 
-def _unavailable_entry(category: str, reason: str) -> dict[str, Any]:
+def _unavailable_entry(
+    category: str, reason: str, *, computed_at: str | None = None
+) -> dict[str, Any]:
     return {
         "category": category,
         "available": False,
         "conclusion": None,
         "actionScore": None,
         "missingReason": reason,
-        "computedAt": None,
+        "computedAt": computed_at,
     }
 
 
@@ -518,10 +528,10 @@ def _breadth_driver_entry(
     provider: AnalysisProvider,
     config: MarketBriefUniverseConfig,
     as_of: datetime,
-) -> tuple[dict[str, Any], tuple[str, ...]]:
+) -> tuple[dict[str, Any], tuple[str, ...], bool]:
     symbols, truncation_note = _resolve_breadth_symbols(provider, config)
     if not symbols:
-        return _unavailable_entry("breadth", _BREADTH_NOT_CONFIGURED_REASON), ()
+        return _unavailable_entry("breadth", _BREADTH_NOT_CONFIGURED_REASON), (), False
 
     universe, failed = _fetch_universe(provider, symbols, _BREADTH_INTERVAL)
     notes: tuple[str, ...] = (truncation_note,) if truncation_note else ()
@@ -529,10 +539,12 @@ def _breadth_driver_entry(
         return (
             _unavailable_entry(
                 "breadth",
-                f"自选广度（{len(symbols)} 只）本次均未能从行情网关获取日K线，"
-                "暂无法给出结论。",
+                f"自选广度（{len(symbols)} 只）于 {_iso(as_of)} 尝试获取日K线均未"
+                "成功，暂无法给出结论。",
+                computed_at=_iso(as_of),
             ),
             notes,
+            False,
         )
     if failed:
         notes += (
@@ -550,6 +562,7 @@ def _breadth_driver_entry(
                 "只），暂无法给出结论。",
             ),
             notes,
+            False,
         )
 
     assert result.percent_above is not None
@@ -565,7 +578,11 @@ def _breadth_driver_entry(
         "missingReason": None,
         "computedAt": _iso(as_of),
     }
-    return entry, notes
+    # A fully-answered universe earns the whole trading date's cache; any
+    # failure along the way earns only the short retry TTL, so a transient
+    # gateway restart heals inside the same session (F6).
+    healthy = not failed
+    return entry, notes, healthy
 
 
 # ---------------------------------------------------------------------------
@@ -578,9 +595,9 @@ def _sector_driver_entry(
     provider: AnalysisProvider,
     config: MarketBriefUniverseConfig,
     as_of: datetime,
-) -> tuple[dict[str, Any], tuple[str, ...]]:
+) -> tuple[dict[str, Any], tuple[str, ...], bool]:
     if not config.sector_symbols or config.sector_benchmark is None:
-        return _unavailable_entry("sector", _SECTOR_NOT_CONFIGURED_REASON), ()
+        return _unavailable_entry("sector", _SECTOR_NOT_CONFIGURED_REASON), (), False
 
     benchmark_universe, benchmark_failed = _fetch_universe(
         provider, (config.sector_benchmark,), _BREADTH_INTERVAL
@@ -594,11 +611,13 @@ def _sector_driver_entry(
         return (
             _unavailable_entry(
                 "sector",
-                "板块强弱所需品种本次未能从行情网关获取日K线（"
+                f"板块强弱所需品种于 {_iso(as_of)} 尝试获取日K线未能成功（"
                 + "、".join(failed)
                 + "），暂无法给出结论。",
+                computed_at=_iso(as_of),
             ),
             (),
+            False,
         )
 
     notes: tuple[str, ...] = (
@@ -626,6 +645,7 @@ def _sector_driver_entry(
                 f"{config.sector_benchmark}）样本不足，暂无法给出结论。",
             ),
             notes,
+            False,
         )
 
     leader = min(
@@ -643,4 +663,7 @@ def _sector_driver_entry(
         "missingReason": None,
         "computedAt": _iso(as_of),
     }
-    return entry, notes
+    # Same F6 retention split as breadth: only a fetch nothing failed earns
+    # the whole trading date.
+    healthy = not sector_failed
+    return entry, notes, healthy
