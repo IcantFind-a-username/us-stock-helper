@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import unittest
 
-from adviser_llm import Citation, Conclusion, FabricatedFactError, trace_conclusion
+from adviser_llm import (
+    Citation,
+    Conclusion,
+    CouncilBrief,
+    FabricatedFactError,
+    FrameworkOpinion,
+    NewsInterpretation,
+    trace_brief,
+    trace_conclusion,
+    trace_interpretation,
+)
 
 from tests.fakes import evidence_item, sample_packet
 
@@ -153,6 +163,117 @@ class StatementGroundingTest(unittest.TestCase):
         )
         traced = trace_conclusion(conclusion, self.packet)
         self.assertTrue(traced.citations)
+
+
+class BriefAndInterpretationGroundingTest(unittest.TestCase):
+    """Every free-text field the model authors must be grounded, not only
+    Conclusion.statement: a summary, blind-spot note, headline, cross-source
+    reading or unknown can carry a fabricated fact just as easily as a
+    conclusion can, and each is served verbatim to the phone."""
+
+    def setUp(self) -> None:
+        self.packet = sample_packet(
+            evidence_item(
+                item_id="ev-1",
+                headline="Nvidia 上调数据中心指引",
+                body="公司称本季数据中心收入指引上调 12%。",
+                symbols=("NVDA",),
+            )
+        )
+        self.grounded_conclusion = Conclusion(
+            statement="指引上调 12%",
+            confidence="medium",
+            citations=[Citation(evidence_id="ev-1", quote="指引上调 12%")],
+        )
+
+    def test_a_fabricated_brief_summary_is_rejected(self) -> None:
+        brief = CouncilBrief(
+            summary="NVDA 将下跌 62%——DOJ 已确认总部突击检查",
+            opinions=[
+                FrameworkOpinion(
+                    framework_id="value",
+                    stance="bearish",
+                    conclusions=[self.grounded_conclusion],
+                    blind_spot_note="样本有限",
+                )
+            ],
+        )
+        with self.assertRaises(FabricatedFactError):
+            trace_brief(brief, self.packet)
+
+    def test_a_fabricated_blind_spot_note_is_rejected_even_with_clean_conclusions(
+        self,
+    ) -> None:
+        brief = CouncilBrief(
+            summary="指引上调 12%",
+            opinions=[
+                FrameworkOpinion(
+                    framework_id="value",
+                    stance="bearish",
+                    conclusions=[self.grounded_conclusion],
+                    blind_spot_note="GS 报告空头持仓比例达 87%",
+                )
+            ],
+        )
+        with self.assertRaises(FabricatedFactError):
+            trace_brief(brief, self.packet)
+
+    def test_a_fabricated_headline_summary_is_rejected(self) -> None:
+        interpretation = NewsInterpretation(
+            headline_summary="AMD 明天将暴跌 45%，SEC 已提起欺诈指控",
+            cross_source_reading="消息与本季指引上调一致",
+            investment_impact=[self.grounded_conclusion],
+            unknowns=[],
+        )
+        with self.assertRaises(FabricatedFactError):
+            trace_interpretation(interpretation, self.packet)
+
+    def test_a_fabricated_cross_source_reading_is_rejected(self) -> None:
+        interpretation = NewsInterpretation(
+            headline_summary="指引上调 12%",
+            cross_source_reading="TSLA 下跌 40%，内部人士已确认抛售 7800 万股",
+            investment_impact=[self.grounded_conclusion],
+            unknowns=[],
+        )
+        with self.assertRaises(FabricatedFactError):
+            trace_interpretation(interpretation, self.packet)
+
+    def test_a_fabricated_unknown_entry_is_rejected(self) -> None:
+        interpretation = NewsInterpretation(
+            headline_summary="指引上调 12%",
+            cross_source_reading="消息与本季指引上调一致",
+            investment_impact=[self.grounded_conclusion],
+            unknowns=["MSFT 是否失去了 990 亿美元的合同尚不明确"],
+        )
+        with self.assertRaises(FabricatedFactError):
+            trace_interpretation(interpretation, self.packet)
+
+    def test_clean_free_text_fields_still_pass(self) -> None:
+        brief = CouncilBrief(
+            summary="指引上调 12%，短线情绪偏正面",
+            opinions=[
+                FrameworkOpinion(
+                    framework_id="value",
+                    stance="bullish",
+                    conclusions=[self.grounded_conclusion],
+                    blind_spot_note="样本有限，尚待更多来源确认",
+                )
+            ],
+        )
+        traced = trace_brief(brief, self.packet)
+        self.assertEqual(traced.summary, brief.summary)
+
+        interpretation = NewsInterpretation(
+            headline_summary="指引上调 12%",
+            cross_source_reading="消息与本季指引上调一致",
+            investment_impact=[self.grounded_conclusion],
+            unknowns=["其他产品线的需求尚不明确"],
+        )
+        traced_interpretation = trace_interpretation(interpretation, self.packet)
+        self.assertEqual(
+            traced_interpretation.headline_summary,
+            interpretation.headline_summary,
+        )
 
 
 if __name__ == "__main__":

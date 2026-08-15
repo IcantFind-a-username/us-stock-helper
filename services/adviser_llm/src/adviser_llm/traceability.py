@@ -165,6 +165,10 @@ def _trace_opinion(
         raise TraceabilityError(
             f"未知分析框架: {opinion.framework_id}"
         ) from exc
+    # blind_spot_note is served verbatim beside the traced conclusions, so it
+    # is as much a served free-text field as conclusion.statement and must be
+    # held to the same grounding check.
+    _reject_facts_outside_the_packet(opinion.blind_spot_note, packet)
     return TracedOpinion(
         framework_id=framework.id,
         display_name=framework.display_name,
@@ -179,7 +183,9 @@ def _trace_opinion(
 def trace_brief(brief: CouncilBrief, packet: EvidencePacket) -> TracedBrief:
     # Any single failure rejects the whole brief. Showing the sourced half
     # beside a dropped claim would leave the reader unable to tell that
-    # something was removed.
+    # something was removed. summary is served above every traced
+    # conclusion, so it must be grounded before anything else is built.
+    _reject_facts_outside_the_packet(brief.summary, packet)
     return TracedBrief(
         summary=brief.summary,
         opinions=tuple(
@@ -191,6 +197,13 @@ def trace_brief(brief: CouncilBrief, packet: EvidencePacket) -> TracedBrief:
 def trace_interpretation(
     interpretation: NewsInterpretation, packet: EvidencePacket
 ) -> TracedInterpretation:
+    # headline_summary, cross_source_reading and each unknowns entry are all
+    # served verbatim to the phone, so every one of them is checked for
+    # facts outside the frozen packet, exactly like a conclusion statement.
+    _reject_facts_outside_the_packet(interpretation.headline_summary, packet)
+    _reject_facts_outside_the_packet(interpretation.cross_source_reading, packet)
+    for unknown in interpretation.unknowns:
+        _reject_facts_outside_the_packet(unknown, packet)
     return TracedInterpretation(
         headline_summary=interpretation.headline_summary,
         cross_source_reading=interpretation.cross_source_reading,
