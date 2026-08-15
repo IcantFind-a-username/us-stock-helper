@@ -25,11 +25,13 @@ from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .device_gate import MAX_PAIRING_BODY_BYTES, DeviceGate, rate_limit_identity
+from .market_brief import MarketBriefService
 from .service import AnalysisService, InvalidRequest
 
 
 PAIRING_PATH = "/v1/device-pairings"
-_READ_PATHS = {"/health", "/decision"}
+MARKET_BRIEF_PATH = "/market-brief"
+_READ_PATHS = {"/health", "/decision", MARKET_BRIEF_PATH}
 # What the deployment must expose, read and write together. The edge allowlist
 # is tied to this set by a test in deploy/tests.
 _PATHS = _READ_PATHS | {PAIRING_PATH}
@@ -70,6 +72,20 @@ class AnalysisApplication:
                 "status": "ready",
                 "asOf": _iso(self.clock()),
             }
+        if path == MARKET_BRIEF_PATH:
+            # Reads through the same AnalysisService a decision uses, and
+            # therefore the same shared evidence provider and collector — a
+            # repeated brief request never stands up a second collector for
+            # the poll coordinator to throttle separately from a decision's.
+            try:
+                return 200, headers, MarketBriefService(self.service).market_brief()
+            except Exception:
+                # Provider failures can carry credentials in their text;
+                # replace the message rather than forwarding it, exactly as
+                # the decision branch below does.
+                return 500, headers, _error(
+                    "ANALYSIS_FAILED", "The market brief could not be composed"
+                )
 
         try:
             symbol = _one(query, "symbol")

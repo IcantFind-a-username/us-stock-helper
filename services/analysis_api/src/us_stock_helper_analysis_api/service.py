@@ -103,6 +103,22 @@ class AnalysisService:
         report = getattr(self.provider, "evidence_gaps", None)
         return events, (tuple(report()) if callable(report) else ())
 
+    def read_market_evidence(
+        self,
+    ) -> tuple[tuple[EvidenceEvent, ...], tuple[str, ...]]:
+        """Everything the shared evidence provider currently holds, unscoped.
+
+        Reuses `_read_evidence`'s bridging between the preferred
+        `read_evidence` shape and the legacy `evidence_for`/`evidence_gaps`
+        shape, but asks for no symbol. `EvidenceCollector.evidence`'s own
+        scope filter (`if not focus or ...`) already treats an empty focus as
+        "every symbol currently held", so a per-decision read with nothing to
+        focus on is what turns this into a market-wide read — not a second
+        fetch path, and not a second collector for the poll coordinator to
+        throttle separately from a decision's.
+        """
+        return self._read_evidence("")
+
     def _factor_snapshot(
         self,
         symbol: str,
