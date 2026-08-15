@@ -142,6 +142,7 @@ durable local launcher fixes the LAN host/port, loopback gateway URL, and
 | `ANALYSIS_API_BREADTH_UNIVERSE` | unset | Comma-separated US symbols (≤60) for `GET /market-brief`'s breadth driver. Unset falls back to the operator's watchlist, read live from the gateway's `GET /watchlist`; neither source leaves breadth `available: false`. |
 | `ANALYSIS_API_SECTOR_RS_SYMBOLS` | unset | Comma-separated sector-ETF symbols (≤30) for the brief's sector-RS driver. Must be set together with `ANALYSIS_API_SECTOR_RS_BENCHMARK`. |
 | `ANALYSIS_API_SECTOR_RS_BENCHMARK` | unset | Single benchmark symbol (e.g. `SPY`) for sector-RS. Must be set together with `ANALYSIS_API_SECTOR_RS_SYMBOLS`. |
+| `ANALYSIS_API_MARKET_BRIEF_FETCH_DEADLINE_SECONDS` | `30` | Wall-time bound (>0, ≤300) on one breadth/sector-RS universe fetch; remaining symbols are skipped once it elapses rather than sequentially retried behind an unresponsive gateway. Bounds a single-flight leader's worst-case hold on `GET /market-brief`. |
 
 `ANALYSIS_API_TOKEN` is gone. It was one static bearer token that every phone
 shared, could not expire and could not be revoked one device at a time, so a

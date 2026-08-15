@@ -1004,6 +1004,34 @@ class UniverseConfigEnvironmentTests(unittest.TestCase):
         self.assertEqual(config.sector_symbols, ("XLK", "XLE"))
         self.assertEqual(config.sector_benchmark, "SPY")
 
+    def test_the_fetch_deadline_defaults_when_unset(self) -> None:
+        config = MarketBriefUniverseConfig.from_environment({})
+
+        self.assertGreater(config.fetch_deadline_seconds, 0)
+
+    def test_the_fetch_deadline_is_parsed_from_the_environment(self) -> None:
+        config = MarketBriefUniverseConfig.from_environment(
+            {"ANALYSIS_API_MARKET_BRIEF_FETCH_DEADLINE_SECONDS": "5"}
+        )
+
+        self.assertEqual(config.fetch_deadline_seconds, 5.0)
+
+    def test_a_non_numeric_fetch_deadline_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            MarketBriefUniverseConfig.from_environment(
+                {"ANALYSIS_API_MARKET_BRIEF_FETCH_DEADLINE_SECONDS": "soon"}
+            )
+
+    def test_an_out_of_range_fetch_deadline_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            MarketBriefUniverseConfig.from_environment(
+                {"ANALYSIS_API_MARKET_BRIEF_FETCH_DEADLINE_SECONDS": "0"}
+            )
+        with self.assertRaises(ValueError):
+            MarketBriefUniverseConfig.from_environment(
+                {"ANALYSIS_API_MARKET_BRIEF_FETCH_DEADLINE_SECONDS": "301"}
+            )
+
 
 class UniverseCacheTests(unittest.TestCase):
     def test_two_briefs_the_same_trading_date_perform_one_universe_fetch(
@@ -1153,6 +1181,163 @@ class RetryAfterFailureTests(unittest.TestCase):
             entry = _driver(result, "breadth")
             self.assertNotIn("本次", entry["missingReason"])
             self.assertEqual(entry["computedAt"], first["decisionCutoff"])
+
+
+# ---------------------------------------------------------------------------
+# Single-flight: a concurrent miss on the same cache slot must never queue a
+# follower behind the leader's own network I/O (F7).
+# ---------------------------------------------------------------------------
+
+
+class BlockingUniverseProvider(UniverseProvider):
+    """A `UniverseProvider` whose `bars_for` blocks on `released` the first
+    time it is asked for `blocked_symbol`, signalling `entered` first --
+    house-style hooks/events, never a sleep, for pinning a concurrent race."""
+
+    def __init__(
+        self,
+        universe: dict[str, tuple[OHLCVBar, ...]],
+        *,
+        blocked_symbol: str,
+        entered: threading.Event,
+        released: threading.Event,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(universe, **kwargs)
+        self._blocked_symbol = blocked_symbol
+        self._entered = entered
+        self._released = released
+
+    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
+        if symbol == self._blocked_symbol:
+            self._entered.set()
+            if not self._released.wait(timeout=5):
+                raise AssertionError("leader was never released -- test bug")
+        return super().bars_for(symbol, interval)
+
+
+class SingleFlightTests(unittest.TestCase):
+    def test_a_follower_returns_promptly_while_the_leader_computes(self) -> None:
+        universe = {
+            "AAA": _breadth_bars("AAA", last_close=110.0),
+            "BBB": _breadth_bars("BBB", last_close=110.0),
+            "CCC": _breadth_bars("CCC", last_close=110.0),
+            "DDD": _breadth_bars("DDD", last_close=90.0),
+            "EEE": _breadth_bars("EEE", last_close=90.0),
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        entered = threading.Event()
+        released = threading.Event()
+        provider = BlockingUniverseProvider(
+            universe,
+            blocked_symbol="AAA",
+            entered=entered,
+            released=released,
+            stamped=True,
+        )
+        shared_service = service(provider)
+        shared_universe = MarketBriefUniverse(config=config)
+
+        leader_result: dict[str, dict] = {}
+        follower_result: dict[str, dict] = {}
+
+        def run_leader() -> None:
+            leader_result["value"] = MarketBriefService(
+                shared_service, shared_universe
+            ).market_brief()
+
+        leader_thread = threading.Thread(target=run_leader)
+        leader_thread.start()
+        self.assertTrue(entered.wait(timeout=5), "leader never reached the fetch")
+
+        # The follower must answer without waiting for the leader's own
+        # blocked fetch to unblock -- the whole point of not holding the
+        # cache lock across compute().
+        follower_result["value"] = MarketBriefService(
+            shared_service, shared_universe
+        ).market_brief()
+
+        follower_entry = _driver(follower_result["value"], "breadth")
+        self.assertFalse(follower_entry["available"])
+        self.assertIn("计算中", follower_entry["missingReason"])
+
+        released.set()
+        leader_thread.join(timeout=5)
+        self.assertFalse(leader_thread.is_alive(), "leader thread never finished")
+
+        leader_entry = _driver(leader_result["value"], "breadth")
+        self.assertTrue(leader_entry["available"])
+        self.assertIn("60%", leader_entry["conclusion"])
+
+        # Single-flight held: the follower never triggered a fetch of its
+        # own -- only the leader's 5 symbol reads were ever made.
+        self.assertEqual(len(provider.universe_requests), 5)
+
+
+# ---------------------------------------------------------------------------
+# Fetch deadline: bounds one universe fetch's total wall time so a leader's
+# worst-case hold on this route stays far under 91 sequential timeouts (F7).
+# ---------------------------------------------------------------------------
+
+
+class SlowUniverseProvider(UniverseProvider):
+    """A `UniverseProvider` whose `bars_for` advances a shared fake monotonic
+    clock by a fixed amount per call, so a fetch-deadline bound can be pinned
+    exactly -- no real sleep, no timing flakiness."""
+
+    def __init__(
+        self,
+        universe: dict[str, tuple[OHLCVBar, ...]],
+        *,
+        clock: FakeMonotonic,
+        seconds_per_call: float,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(universe, **kwargs)
+        self._clock = clock
+        self._seconds_per_call = seconds_per_call
+
+    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
+        self._clock.advance(self._seconds_per_call)
+        return super().bars_for(symbol, interval)
+
+
+class UniverseFetchDeadlineTests(unittest.TestCase):
+    def test_a_universe_fetch_stops_attempting_symbols_once_the_deadline_elapses(
+        self,
+    ) -> None:
+        # 7 symbols, each attempted fetch "takes" 2s, deadline 9s: symbols
+        # 1-5 are attempted (elapsed checked before each: 0, 2, 4, 6, 8, all
+        # < 9), leaving elapsed at 10; symbols 6-7 are then skipped before
+        # ever calling bars_for, since 10 >= 9. 5 answers still meets
+        # breadth-v1's own 5-symbol minimum for a live reading.
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG")
+        }
+        config = MarketBriefUniverseConfig(
+            breadth_symbols=tuple(universe), fetch_deadline_seconds=9.0
+        )
+        clock = FakeMonotonic()
+        provider = SlowUniverseProvider(
+            universe, clock=clock, seconds_per_call=2.0, stamped=True
+        )
+        shared_universe = MarketBriefUniverse(
+            config=config, cache=MarketUniverseCache(monotonic=clock)
+        )
+
+        result = MarketBriefService(service(provider), shared_universe).market_brief()
+
+        entry = _driver(result, "breadth")
+        self.assertTrue(entry["available"])
+        self.assertEqual(len(provider.universe_requests), 5)
+        self.assertTrue(
+            any(
+                "FFF" in note and "GGG" in note and "自选广度" in note
+                for note in result["notes"]
+            ),
+            result["notes"],
+        )
 
 
 class DataHealthInterplayTests(unittest.TestCase):

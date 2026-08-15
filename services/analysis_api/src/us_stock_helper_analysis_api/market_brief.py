@@ -19,6 +19,7 @@ inventing a number for them.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
@@ -88,6 +89,14 @@ _BREADTH_NOT_CONFIGURED_REASON = (
 )
 _SECTOR_NOT_CONFIGURED_REASON = "板块强弱尚未配置板块 ETF 与基准品种，暂无法给出结论。"
 
+# Bounds one `_fetch_universe` call's total wall time so a single-flight
+# leader's worst-case hold on this route stays far under the ~15 minutes 91
+# sequential per-fetch timeouts (breadth's ≤60 plus sector's ≤30 symbols and
+# its benchmark) could otherwise reach. Once elapsed, the remaining symbols
+# are skipped rather than attempted, named in the same partial-fetch note a
+# real gateway failure already produces.
+_UNIVERSE_FETCH_DEADLINE_SECONDS_DEFAULT = 30.0
+
 
 @dataclass(frozen=True, slots=True)
 class MarketBriefUniverseConfig:
@@ -103,6 +112,7 @@ class MarketBriefUniverseConfig:
     breadth_symbols: tuple[str, ...] | None = None
     sector_symbols: tuple[str, ...] = ()
     sector_benchmark: str | None = None
+    fetch_deadline_seconds: float = _UNIVERSE_FETCH_DEADLINE_SECONDS_DEFAULT
 
     @classmethod
     def from_environment(
@@ -133,10 +143,12 @@ class MarketBriefUniverseConfig:
                 "ANALYSIS_API_SECTOR_RS_SYMBOLS is required when "
                 "ANALYSIS_API_SECTOR_RS_BENCHMARK is set"
             )
+        fetch_deadline_seconds = _env_fetch_deadline_seconds(env)
         return cls(
             breadth_symbols=breadth,
             sector_symbols=sector,
             sector_benchmark=benchmark,
+            fetch_deadline_seconds=fetch_deadline_seconds,
         )
 
 
@@ -150,6 +162,22 @@ def _env_symbol_list(env: Mapping[str, str], name: str) -> tuple[str, ...] | Non
     if not symbols:
         raise ValueError(f"{name} must not be blank when set")
     return symbols
+
+
+_FETCH_DEADLINE_ENV_VAR = "ANALYSIS_API_MARKET_BRIEF_FETCH_DEADLINE_SECONDS"
+
+
+def _env_fetch_deadline_seconds(env: Mapping[str, str]) -> float:
+    raw = env.get(_FETCH_DEADLINE_ENV_VAR)
+    if raw is None:
+        return _UNIVERSE_FETCH_DEADLINE_SECONDS_DEFAULT
+    try:
+        deadline = float(raw)
+    except ValueError as error:
+        raise ValueError(f"{_FETCH_DEADLINE_ENV_VAR} must be numeric") from error
+    if not 0 < deadline <= 300:
+        raise ValueError(f"{_FETCH_DEADLINE_ENV_VAR} must be between 0 and 300")
+    return deadline
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,10 +246,10 @@ class MarketBriefService:
             )
 
         breadth_entry, breadth_notes = self._cached_entry(
-            "breadth", as_of, self._compute_breadth
+            "breadth", "breadth", as_of, self._compute_breadth
         )
         sector_entry, sector_notes = self._cached_entry(
-            "sector", as_of, self._compute_sector
+            "sector", "sector", as_of, self._compute_sector
         )
         notes.extend(breadth_notes)
         notes.extend(sector_notes)
@@ -250,6 +278,7 @@ class MarketBriefService:
     def _cached_entry(
         self,
         name: str,
+        category: str,
         as_of: datetime,
         compute: Callable[
             [datetime], CacheOutcome[tuple[dict[str, Any], tuple[str, ...]]]
@@ -257,7 +286,11 @@ class MarketBriefService:
     ) -> tuple[dict[str, Any], tuple[str, ...]]:
         trading_date = _trading_date(as_of)
         value, _hit = self.universe.cache.get_or_compute(
-            name, trading_date, lambda: compute(as_of)
+            name,
+            trading_date,
+            as_of,
+            lambda: compute(as_of),
+            lambda started_at: (_in_flight_entry(category, started_at), ()),
         )
         return value
 
@@ -265,7 +298,10 @@ class MarketBriefService:
         self, as_of: datetime
     ) -> CacheOutcome[tuple[dict[str, Any], tuple[str, ...]]]:
         entry, notes, healthy = _breadth_driver_entry(
-            self.service.provider, self.universe.config, as_of
+            self.service.provider,
+            self.universe.config,
+            as_of,
+            monotonic=self.universe.cache.monotonic,
         )
         return CacheOutcome(value=(entry, notes), healthy=healthy)
 
@@ -273,7 +309,10 @@ class MarketBriefService:
         self, as_of: datetime
     ) -> CacheOutcome[tuple[dict[str, Any], tuple[str, ...]]]:
         entry, notes, healthy = _sector_driver_entry(
-            self.service.provider, self.universe.config, as_of
+            self.service.provider,
+            self.universe.config,
+            as_of,
+            monotonic=self.universe.cache.monotonic,
         )
         return CacheOutcome(value=(entry, notes), healthy=healthy)
 
@@ -452,6 +491,22 @@ def _unavailable_entry(
     }
 
 
+_DRIVER_LABEL: dict[str, str] = {"breadth": "自选广度", "sector": "板块强弱"}
+
+
+def _in_flight_entry(category: str, started_at: datetime) -> dict[str, Any]:
+    """What a follower gets when it lands on a slot the leader is already
+    computing: never a wait, an honest typed-unavailable entry disclosing
+    when the attempt now in progress began, so a reader can judge for
+    themselves whether it is worth a prompt retry."""
+
+    return _unavailable_entry(
+        category,
+        f"{_DRIVER_LABEL[category]}正在计算中（本轮尝试始于 {_iso(started_at)}），"
+        "请稍后重试。",
+    )
+
+
 def _clamp(value: float) -> float:
     return max(-1.0, min(1.0, value))
 
@@ -492,17 +547,31 @@ def _resolve_breadth_symbols(
 
 
 def _fetch_universe(
-    provider: AnalysisProvider, symbols: Sequence[str], interval: str
+    provider: AnalysisProvider,
+    symbols: Sequence[str],
+    interval: str,
+    *,
+    deadline_seconds: float = _UNIVERSE_FETCH_DEADLINE_SECONDS_DEFAULT,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, tuple[OHLCVBar, ...]], tuple[str, ...]]:
     """Sequential, one symbol at a time — connection-reuse restraint over the
     loopback gateway rather than a fetch fanned out per symbol. A symbol the
     gateway could not answer for is named as a gap; it never aborts the rest
     of the universe.
+
+    Bounded by ``deadline_seconds`` of total wall time (F7): once elapsed,
+    every remaining symbol is named as a gap without even being attempted,
+    rather than this call running for as long as up to ~60 sequential
+    per-fetch timeouts would otherwise allow.
     """
 
     universe: dict[str, tuple[OHLCVBar, ...]] = {}
     failed: list[str] = []
+    deadline = monotonic() + deadline_seconds
     for symbol in symbols:
+        if monotonic() >= deadline:
+            failed.append(symbol)
+            continue
         try:
             bars = provider.bars_for(symbol, interval)
         except Exception:  # noqa: BLE001 - degradation boundary; one bad
@@ -528,12 +597,20 @@ def _breadth_driver_entry(
     provider: AnalysisProvider,
     config: MarketBriefUniverseConfig,
     as_of: datetime,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, Any], tuple[str, ...], bool]:
     symbols, truncation_note = _resolve_breadth_symbols(provider, config)
     if not symbols:
         return _unavailable_entry("breadth", _BREADTH_NOT_CONFIGURED_REASON), (), False
 
-    universe, failed = _fetch_universe(provider, symbols, _BREADTH_INTERVAL)
+    universe, failed = _fetch_universe(
+        provider,
+        symbols,
+        _BREADTH_INTERVAL,
+        deadline_seconds=config.fetch_deadline_seconds,
+        monotonic=monotonic,
+    )
     notes: tuple[str, ...] = (truncation_note,) if truncation_note else ()
     if not universe:
         return (
@@ -595,15 +672,25 @@ def _sector_driver_entry(
     provider: AnalysisProvider,
     config: MarketBriefUniverseConfig,
     as_of: datetime,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, Any], tuple[str, ...], bool]:
     if not config.sector_symbols or config.sector_benchmark is None:
         return _unavailable_entry("sector", _SECTOR_NOT_CONFIGURED_REASON), (), False
 
     benchmark_universe, benchmark_failed = _fetch_universe(
-        provider, (config.sector_benchmark,), _BREADTH_INTERVAL
+        provider,
+        (config.sector_benchmark,),
+        _BREADTH_INTERVAL,
+        deadline_seconds=config.fetch_deadline_seconds,
+        monotonic=monotonic,
     )
     sectors_universe, sector_failed = _fetch_universe(
-        provider, config.sector_symbols, _BREADTH_INTERVAL
+        provider,
+        config.sector_symbols,
+        _BREADTH_INTERVAL,
+        deadline_seconds=config.fetch_deadline_seconds,
+        monotonic=monotonic,
     )
 
     if benchmark_failed or not sectors_universe:
