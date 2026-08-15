@@ -163,6 +163,33 @@ class EnvironmentFileTests(PreflightTestCase):
         result = self.run_preflight(PREFLIGHT_EXPECTED_OWNER="nobody-who-owns-this")
         self.assertIn("FAIL", result.statuses("environment-file-mode"))
 
+    def test_a_missing_analysis_environment_file_does_not_abort_the_run(self) -> None:
+        # check_credential_database and check_state_directory both read this
+        # file through read_setting; under pipefail a missing file used to
+        # kill the whole script instead of reporting the row and moving on.
+        (self.environment_dir / "analysis-api.env").unlink()
+
+        result = self.run_preflight()
+
+        reported = {name for _, name in result.rows}
+        self.assertEqual(
+            reported,
+            {
+                "environment-file-mode",
+                "environment-file-credential",
+                "state-directory",
+                "unit-plaintext-secret",
+                "unit-syntax",
+                "caddyfile-internal-port",
+                "caddyfile-placeholder",
+                "caddyfile-syntax",
+                "port-exposure",
+                "firewall",
+                "opend-cmdline",
+            },
+        )
+        self.assertIn("check(s) failed", result.stdout)
+
     def rewrite_analysis_environment(self, old: str, new: str) -> None:
         path = self.environment_dir / "analysis-api.env"
         path.write_text(path.read_text("utf-8").replace(old, new), encoding="utf-8")
@@ -362,6 +389,32 @@ class FirewallTests(PreflightTestCase):
             '\\n\\n443/tcp ALLOW IN Anywhere\\nOpenSSH ALLOW IN Anywhere\\n"',
         )
         self.assertEqual(self.run_preflight().statuses("firewall"), {"PASS"})
+
+    def test_a_firewall_that_opens_the_sshd_reported_port_passes(self) -> None:
+        # bootstrap.sh reads the real port from `sshd -T` and opens exactly
+        # this rule for a host whose sshd was moved off 22 (its own comment:
+        # "A host whose sshd was moved elsewhere would become unreachable").
+        # preflight has to accept the very rule it just watched bootstrap open.
+        self.stub("sshd", 'if [ "$1" = "-T" ]; then printf "port 2200\\n"; fi')
+        self.stub(
+            "ufw",
+            'printf "Status: active\\nDefault: deny (incoming), allow (outgoing)'
+            '\\n\\n2200/tcp ALLOW IN Anywhere\\n443/tcp ALLOW IN Anywhere\\n"',
+        )
+        self.assertEqual(self.run_preflight().statuses("firewall"), {"PASS"})
+
+    def test_a_firewall_that_opens_a_port_the_sshd_config_does_not_name_still_fails(
+        self,
+    ) -> None:
+        # A moved sshd does not amnesty every other port: only the one sshd
+        # itself reports is exempt from the whitelist.
+        self.stub("sshd", 'if [ "$1" = "-T" ]; then printf "port 2200\\n"; fi')
+        self.stub(
+            "ufw",
+            'printf "Status: active\\nDefault: deny (incoming), allow (outgoing)'
+            '\\n\\n8765/tcp ALLOW IN Anywhere\\n443/tcp ALLOW IN Anywhere\\n"',
+        )
+        self.assertIn("FAIL", self.run_preflight().statuses("firewall"))
 
 
 class OpenDCommandLineTests(PreflightTestCase):
