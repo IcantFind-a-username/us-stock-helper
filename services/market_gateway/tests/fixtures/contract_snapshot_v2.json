@@ -5316,8 +5316,98 @@
               "direction": "bullish",
               "bars": [
                 {
+                  "index": 5,
+                  "closedAt": "2026-07-24T21:49:55Z"
+                },
+                {
+                  "index": 8,
+                  "closedAt": "2026-07-24T22:04:55Z"
+                },
+                {
                   "index": 11,
                   "closedAt": "2026-07-24T22:19:55Z"
+                }
+              ],
+              "anchorIndex": 8,
+              "eventIndex": 11,
+              "invalidation": "确认前收盘跌破前低 96.30，形态未能成立",
+              "explanation": "两个低点分别在第 5 根与第 8 根K线附近，幅度接近；颈线 105.10。",
+              "reading": {
+                "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
+                "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 8,
+                  "closedAt": "2026-07-24T22:04:55Z"
+                },
+                {
+                  "index": 11,
+                  "closedAt": "2026-07-24T22:19:55Z"
+                },
+                {
+                  "index": 14,
+                  "closedAt": "2026-07-24T22:34:55Z"
+                }
+              ],
+              "anchorIndex": 11,
+              "eventIndex": 14,
+              "invalidation": "收盘跌破颈线 104.40",
+              "explanation": "两个低点分别在第 8 根与第 11 根K线附近，幅度接近；颈线 104.40。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 8,
+                  "closedAt": "2026-07-24T22:04:55Z"
+                },
+                {
+                  "index": 13,
+                  "closedAt": "2026-07-24T22:29:55Z"
+                },
+                {
+                  "index": 14,
+                  "closedAt": "2026-07-24T22:34:55Z"
+                }
+              ],
+              "anchorIndex": 13,
+              "eventIndex": 14,
+              "invalidation": "收盘跌破颈线 104.40",
+              "explanation": "两个低点分别在第 8 根与第 13 根K线附近，幅度接近；颈线 104.40。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 13,
+                  "closedAt": "2026-07-24T22:29:55Z"
                 },
                 {
                   "index": 16,
@@ -5331,7 +5421,7 @@
               "anchorIndex": 16,
               "eventIndex": 19,
               "invalidation": "确认前收盘跌破前低 98.10，形态未能成立",
-              "explanation": "两个低点分别在第 11 根与第 16 根K线附近，幅度接近；颈线 106.90。",
+              "explanation": "两个低点分别在第 13 根与第 16 根K线附近，幅度接近；颈线 106.90。",
               "reading": {
                 "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
                 "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
@@ -5346,8 +5436,98 @@
               "direction": "bullish",
               "bars": [
                 {
+                  "index": 16,
+                  "closedAt": "2026-07-24T22:44:55Z"
+                },
+                {
+                  "index": 19,
+                  "closedAt": "2026-07-24T22:59:55Z"
+                },
+                {
                   "index": 22,
                   "closedAt": "2026-07-24T23:14:55Z"
+                }
+              ],
+              "anchorIndex": 19,
+              "eventIndex": 22,
+              "invalidation": "确认前收盘跌破前低 97.40，形态未能成立",
+              "explanation": "两个低点分别在第 16 根与第 19 根K线附近，幅度接近；颈线 106.20。",
+              "reading": {
+                "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
+                "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 19,
+                  "closedAt": "2026-07-24T22:59:55Z"
+                },
+                {
+                  "index": 22,
+                  "closedAt": "2026-07-24T23:14:55Z"
+                },
+                {
+                  "index": 25,
+                  "closedAt": "2026-07-24T23:29:55Z"
+                }
+              ],
+              "anchorIndex": 22,
+              "eventIndex": 25,
+              "invalidation": "收盘跌破颈线 105.50",
+              "explanation": "两个低点分别在第 19 根与第 22 根K线附近，幅度接近；颈线 105.50。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 19,
+                  "closedAt": "2026-07-24T22:59:55Z"
+                },
+                {
+                  "index": 24,
+                  "closedAt": "2026-07-24T23:24:55Z"
+                },
+                {
+                  "index": 25,
+                  "closedAt": "2026-07-24T23:29:55Z"
+                }
+              ],
+              "anchorIndex": 24,
+              "eventIndex": 25,
+              "invalidation": "收盘跌破颈线 105.50",
+              "explanation": "两个低点分别在第 19 根与第 24 根K线附近，幅度接近；颈线 105.50。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 24,
+                  "closedAt": "2026-07-24T23:24:55Z"
                 },
                 {
                   "index": 27,
@@ -5361,7 +5541,7 @@
               "anchorIndex": 27,
               "eventIndex": 30,
               "invalidation": "确认前收盘跌破前低 99.20，形态未能成立",
-              "explanation": "两个低点分别在第 22 根与第 27 根K线附近，幅度接近；颈线 108.00。",
+              "explanation": "两个低点分别在第 24 根与第 27 根K线附近，幅度接近；颈线 108.00。",
               "reading": {
                 "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
                 "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
@@ -5376,8 +5556,98 @@
               "direction": "bullish",
               "bars": [
                 {
+                  "index": 27,
+                  "closedAt": "2026-07-24T23:39:55Z"
+                },
+                {
+                  "index": 30,
+                  "closedAt": "2026-07-24T23:54:55Z"
+                },
+                {
                   "index": 33,
                   "closedAt": "2026-07-25T00:09:55Z"
+                }
+              ],
+              "anchorIndex": 30,
+              "eventIndex": 33,
+              "invalidation": "确认前收盘跌破前低 98.50，形态未能成立",
+              "explanation": "两个低点分别在第 27 根与第 30 根K线附近，幅度接近；颈线 107.30。",
+              "reading": {
+                "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
+                "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 30,
+                  "closedAt": "2026-07-24T23:54:55Z"
+                },
+                {
+                  "index": 33,
+                  "closedAt": "2026-07-25T00:09:55Z"
+                },
+                {
+                  "index": 36,
+                  "closedAt": "2026-07-25T00:24:55Z"
+                }
+              ],
+              "anchorIndex": 33,
+              "eventIndex": 36,
+              "invalidation": "收盘跌破颈线 106.60",
+              "explanation": "两个低点分别在第 30 根与第 33 根K线附近，幅度接近；颈线 106.60。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 30,
+                  "closedAt": "2026-07-24T23:54:55Z"
+                },
+                {
+                  "index": 35,
+                  "closedAt": "2026-07-25T00:19:55Z"
+                },
+                {
+                  "index": 36,
+                  "closedAt": "2026-07-25T00:24:55Z"
+                }
+              ],
+              "anchorIndex": 35,
+              "eventIndex": 36,
+              "invalidation": "收盘跌破颈线 106.60",
+              "explanation": "两个低点分别在第 30 根与第 35 根K线附近，幅度接近；颈线 106.60。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 35,
+                  "closedAt": "2026-07-25T00:19:55Z"
                 },
                 {
                   "index": 38,
@@ -5391,7 +5661,7 @@
               "anchorIndex": 38,
               "eventIndex": 41,
               "invalidation": "确认前收盘跌破前低 100.30，形态未能成立",
-              "explanation": "两个低点分别在第 33 根与第 38 根K线附近，幅度接近；颈线 109.10。",
+              "explanation": "两个低点分别在第 35 根与第 38 根K线附近，幅度接近；颈线 109.10。",
               "reading": {
                 "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
                 "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
@@ -5406,8 +5676,98 @@
               "direction": "bullish",
               "bars": [
                 {
+                  "index": 38,
+                  "closedAt": "2026-07-25T00:34:55Z"
+                },
+                {
+                  "index": 41,
+                  "closedAt": "2026-07-25T00:49:55Z"
+                },
+                {
                   "index": 44,
                   "closedAt": "2026-07-25T01:04:55Z"
+                }
+              ],
+              "anchorIndex": 41,
+              "eventIndex": 44,
+              "invalidation": "确认前收盘跌破前低 99.60，形态未能成立",
+              "explanation": "两个低点分别在第 38 根与第 41 根K线附近，幅度接近；颈线 108.40。",
+              "reading": {
+                "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
+                "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 41,
+                  "closedAt": "2026-07-25T00:49:55Z"
+                },
+                {
+                  "index": 44,
+                  "closedAt": "2026-07-25T01:04:55Z"
+                },
+                {
+                  "index": 47,
+                  "closedAt": "2026-07-25T01:19:55Z"
+                }
+              ],
+              "anchorIndex": 44,
+              "eventIndex": 47,
+              "invalidation": "收盘跌破颈线 107.70",
+              "explanation": "两个低点分别在第 41 根与第 44 根K线附近，幅度接近；颈线 107.70。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 41,
+                  "closedAt": "2026-07-25T00:49:55Z"
+                },
+                {
+                  "index": 46,
+                  "closedAt": "2026-07-25T01:14:55Z"
+                },
+                {
+                  "index": 47,
+                  "closedAt": "2026-07-25T01:19:55Z"
+                }
+              ],
+              "anchorIndex": 46,
+              "eventIndex": 47,
+              "invalidation": "收盘跌破颈线 107.70",
+              "explanation": "两个低点分别在第 41 根与第 46 根K线附近，幅度接近；颈线 107.70。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 46,
+                  "closedAt": "2026-07-25T01:14:55Z"
                 },
                 {
                   "index": 49,
@@ -5421,7 +5781,7 @@
               "anchorIndex": 49,
               "eventIndex": 52,
               "invalidation": "确认前收盘跌破前低 101.40，形态未能成立",
-              "explanation": "两个低点分别在第 44 根与第 49 根K线附近，幅度接近；颈线 110.20。",
+              "explanation": "两个低点分别在第 46 根与第 49 根K线附近，幅度接近；颈线 110.20。",
               "reading": {
                 "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
                 "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
@@ -5436,8 +5796,98 @@
               "direction": "bullish",
               "bars": [
                 {
+                  "index": 49,
+                  "closedAt": "2026-07-25T01:29:55Z"
+                },
+                {
+                  "index": 52,
+                  "closedAt": "2026-07-25T01:44:55Z"
+                },
+                {
                   "index": 55,
                   "closedAt": "2026-07-25T01:59:55Z"
+                }
+              ],
+              "anchorIndex": 52,
+              "eventIndex": 55,
+              "invalidation": "确认前收盘跌破前低 100.70，形态未能成立",
+              "explanation": "两个低点分别在第 49 根与第 52 根K线附近，幅度接近；颈线 109.50。",
+              "reading": {
+                "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
+                "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 52,
+                  "closedAt": "2026-07-25T01:44:55Z"
+                },
+                {
+                  "index": 55,
+                  "closedAt": "2026-07-25T01:59:55Z"
+                },
+                {
+                  "index": 58,
+                  "closedAt": "2026-07-25T02:14:55Z"
+                }
+              ],
+              "anchorIndex": 55,
+              "eventIndex": 58,
+              "invalidation": "收盘跌破颈线 108.80",
+              "explanation": "两个低点分别在第 52 根与第 55 根K线附近，幅度接近；颈线 108.80。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 52,
+                  "closedAt": "2026-07-25T01:44:55Z"
+                },
+                {
+                  "index": 57,
+                  "closedAt": "2026-07-25T02:09:55Z"
+                },
+                {
+                  "index": 58,
+                  "closedAt": "2026-07-25T02:14:55Z"
+                }
+              ],
+              "anchorIndex": 57,
+              "eventIndex": 58,
+              "invalidation": "收盘跌破颈线 108.80",
+              "explanation": "两个低点分别在第 52 根与第 57 根K线附近，幅度接近；颈线 108.80。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 57,
+                  "closedAt": "2026-07-25T02:09:55Z"
                 },
                 {
                   "index": 60,
@@ -5451,7 +5901,7 @@
               "anchorIndex": 60,
               "eventIndex": 63,
               "invalidation": "确认前收盘跌破前低 102.50，形态未能成立",
-              "explanation": "两个低点分别在第 55 根与第 60 根K线附近，幅度接近；颈线 111.30。",
+              "explanation": "两个低点分别在第 57 根与第 60 根K线附近，幅度接近；颈线 111.30。",
               "reading": {
                 "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
                 "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
@@ -5466,8 +5916,98 @@
               "direction": "bullish",
               "bars": [
                 {
+                  "index": 60,
+                  "closedAt": "2026-07-25T02:24:55Z"
+                },
+                {
+                  "index": 63,
+                  "closedAt": "2026-07-25T02:39:55Z"
+                },
+                {
                   "index": 66,
                   "closedAt": "2026-07-25T02:54:55Z"
+                }
+              ],
+              "anchorIndex": 63,
+              "eventIndex": 66,
+              "invalidation": "确认前收盘跌破前低 101.80，形态未能成立",
+              "explanation": "两个低点分别在第 60 根与第 63 根K线附近，幅度接近；颈线 110.60。",
+              "reading": {
+                "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
+                "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 63,
+                  "closedAt": "2026-07-25T02:39:55Z"
+                },
+                {
+                  "index": 66,
+                  "closedAt": "2026-07-25T02:54:55Z"
+                },
+                {
+                  "index": 69,
+                  "closedAt": "2026-07-25T03:09:55Z"
+                }
+              ],
+              "anchorIndex": 66,
+              "eventIndex": 69,
+              "invalidation": "收盘跌破颈线 109.90",
+              "explanation": "两个低点分别在第 63 根与第 66 根K线附近，幅度接近；颈线 109.90。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "confirmed",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 63,
+                  "closedAt": "2026-07-25T02:39:55Z"
+                },
+                {
+                  "index": 68,
+                  "closedAt": "2026-07-25T03:04:55Z"
+                },
+                {
+                  "index": 69,
+                  "closedAt": "2026-07-25T03:09:55Z"
+                }
+              ],
+              "anchorIndex": 68,
+              "eventIndex": 69,
+              "invalidation": "收盘跌破颈线 109.90",
+              "explanation": "两个低点分别在第 63 根与第 68 根K线附近，幅度接近；颈线 109.90。",
+              "reading": {
+                "summary": "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+                "detail": "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。确认后的关注点是颈线能否守住——收盘再次跌破颈线，说明这次突破可能是假突破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 68,
+                  "closedAt": "2026-07-25T03:04:55Z"
                 },
                 {
                   "index": 71,
@@ -5481,10 +6021,70 @@
               "anchorIndex": 71,
               "eventIndex": 74,
               "invalidation": "确认前收盘跌破前低 103.60，形态未能成立",
-              "explanation": "两个低点分别在第 66 根与第 71 根K线附近，幅度接近；颈线 112.40。",
+              "explanation": "两个低点分别在第 68 根与第 71 根K线附近，幅度接近；颈线 112.40。",
               "reading": {
                 "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
                 "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 71,
+                  "closedAt": "2026-07-25T03:19:55Z"
+                },
+                {
+                  "index": 74,
+                  "closedAt": "2026-07-25T03:34:55Z"
+                },
+                {
+                  "index": 77,
+                  "closedAt": "2026-07-25T03:49:55Z"
+                }
+              ],
+              "anchorIndex": 74,
+              "eventIndex": 77,
+              "invalidation": "确认前收盘跌破前低 102.90，形态未能成立",
+              "explanation": "两个低点分别在第 71 根与第 74 根K线附近，幅度接近；颈线 111.70。",
+              "reading": {
+                "summary": "W底未能成立：价格在收盘站上颈线之前，先跌破了前一个低点，这个结构已经作废。",
+                "detail": "第二个低点本应与第一个低点幅度接近并守住，但收盘价在突破颈线前先跌破了它，说明下跌压力仍在延续，双底结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_bottom",
+              "name": "W底",
+              "status": "forming",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 74,
+                  "closedAt": "2026-07-25T03:34:55Z"
+                },
+                {
+                  "index": 77,
+                  "closedAt": "2026-07-25T03:49:55Z"
+                },
+                {
+                  "index": 79,
+                  "closedAt": "2026-07-25T03:59:55Z"
+                }
+              ],
+              "anchorIndex": 77,
+              "eventIndex": 79,
+              "invalidation": "确认前收盘跌破前低 102.20 视为形态失败",
+              "explanation": "两个低点分别在第 74 根与第 77 根K线附近，幅度接近；颈线 111.00。",
+              "reading": {
+                "summary": "W底正在形成：价格两次探到相近的低点，目前还没有收盘站上颈线，形态尚未成立。",
+                "detail": "两个低点幅度接近，中间隔着一个反弹高点（颈线）。在收盘价站上颈线之前，这只是一个观察中的结构；如果价格先跌破前一个低点，形态会直接失败。",
                 "honesty": "历史胜率待回测"
               },
               "methodVersion": "patterns-shapes-v1"
@@ -5496,8 +6096,8 @@
               "direction": "bearish",
               "bars": [
                 {
-                  "index": 1,
-                  "closedAt": "2026-07-24T21:29:55Z"
+                  "index": 3,
+                  "closedAt": "2026-07-24T21:39:55Z"
                 },
                 {
                   "index": 6,
@@ -5511,7 +6111,37 @@
               "anchorIndex": 6,
               "eventIndex": 8,
               "invalidation": "收盘升破颈线 97.00",
-              "explanation": "两个高点分别在第 1 根与第 6 根K线附近，幅度接近；颈线 97.00。",
+              "explanation": "两个高点分别在第 3 根与第 6 根K线附近，幅度接近；颈线 97.00。",
+              "reading": {
+                "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
+                "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "confirmed",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 6,
+                  "closedAt": "2026-07-24T21:54:55Z"
+                },
+                {
+                  "index": 9,
+                  "closedAt": "2026-07-24T22:09:55Z"
+                },
+                {
+                  "index": 11,
+                  "closedAt": "2026-07-24T22:19:55Z"
+                }
+              ],
+              "anchorIndex": 9,
+              "eventIndex": 11,
+              "invalidation": "收盘升破颈线 96.30",
+              "explanation": "两个高点分别在第 6 根与第 9 根K线附近，幅度接近；颈线 96.30。",
               "reading": {
                 "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
                 "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
@@ -5552,6 +6182,66 @@
             {
               "kind": "double_top",
               "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 9,
+                  "closedAt": "2026-07-24T22:09:55Z"
+                },
+                {
+                  "index": 14,
+                  "closedAt": "2026-07-24T22:34:55Z"
+                },
+                {
+                  "index": 25,
+                  "closedAt": "2026-07-24T23:29:55Z"
+                }
+              ],
+              "anchorIndex": 14,
+              "eventIndex": 25,
+              "invalidation": "确认前收盘升破前高 106.90，形态未能成立",
+              "explanation": "两个高点分别在第 9 根与第 14 根K线附近，幅度接近；颈线 95.60。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "confirmed",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 14,
+                  "closedAt": "2026-07-24T22:34:55Z"
+                },
+                {
+                  "index": 17,
+                  "closedAt": "2026-07-24T22:49:55Z"
+                },
+                {
+                  "index": 19,
+                  "closedAt": "2026-07-24T22:59:55Z"
+                }
+              ],
+              "anchorIndex": 17,
+              "eventIndex": 19,
+              "invalidation": "收盘升破颈线 98.10",
+              "explanation": "两个高点分别在第 14 根与第 17 根K线附近，幅度接近；颈线 98.10。",
+              "reading": {
+                "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
+                "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
               "status": "confirmed",
               "direction": "bearish",
               "bars": [
@@ -5582,12 +6272,72 @@
             {
               "kind": "double_top",
               "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 20,
+                  "closedAt": "2026-07-24T23:04:55Z"
+                },
+                {
+                  "index": 23,
+                  "closedAt": "2026-07-24T23:19:55Z"
+                },
+                {
+                  "index": 25,
+                  "closedAt": "2026-07-24T23:29:55Z"
+                }
+              ],
+              "anchorIndex": 23,
+              "eventIndex": 25,
+              "invalidation": "确认前收盘升破前高 104.80，形态未能成立",
+              "explanation": "两个高点分别在第 20 根与第 23 根K线附近，幅度接近；颈线 96.70。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 20,
+                  "closedAt": "2026-07-24T23:04:55Z"
+                },
+                {
+                  "index": 25,
+                  "closedAt": "2026-07-24T23:29:55Z"
+                },
+                {
+                  "index": 36,
+                  "closedAt": "2026-07-25T00:24:55Z"
+                }
+              ],
+              "anchorIndex": 25,
+              "eventIndex": 36,
+              "invalidation": "确认前收盘升破前高 108.00，形态未能成立",
+              "explanation": "两个高点分别在第 20 根与第 25 根K线附近，幅度接近；颈线 96.70。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
               "status": "confirmed",
               "direction": "bearish",
               "bars": [
                 {
-                  "index": 23,
-                  "closedAt": "2026-07-24T23:19:55Z"
+                  "index": 25,
+                  "closedAt": "2026-07-24T23:29:55Z"
                 },
                 {
                   "index": 28,
@@ -5601,7 +6351,37 @@
               "anchorIndex": 28,
               "eventIndex": 30,
               "invalidation": "收盘升破颈线 99.20",
-              "explanation": "两个高点分别在第 23 根与第 28 根K线附近，幅度接近；颈线 99.20。",
+              "explanation": "两个高点分别在第 25 根与第 28 根K线附近，幅度接近；颈线 99.20。",
+              "reading": {
+                "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
+                "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "confirmed",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 28,
+                  "closedAt": "2026-07-24T23:44:55Z"
+                },
+                {
+                  "index": 31,
+                  "closedAt": "2026-07-24T23:59:55Z"
+                },
+                {
+                  "index": 33,
+                  "closedAt": "2026-07-25T00:09:55Z"
+                }
+              ],
+              "anchorIndex": 31,
+              "eventIndex": 33,
+              "invalidation": "收盘升破颈线 98.50",
+              "explanation": "两个高点分别在第 28 根与第 31 根K线附近，幅度接近；颈线 98.50。",
               "reading": {
                 "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
                 "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
@@ -5642,6 +6422,66 @@
             {
               "kind": "double_top",
               "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 31,
+                  "closedAt": "2026-07-24T23:59:55Z"
+                },
+                {
+                  "index": 36,
+                  "closedAt": "2026-07-25T00:24:55Z"
+                },
+                {
+                  "index": 47,
+                  "closedAt": "2026-07-25T01:19:55Z"
+                }
+              ],
+              "anchorIndex": 36,
+              "eventIndex": 47,
+              "invalidation": "确认前收盘升破前高 109.10，形态未能成立",
+              "explanation": "两个高点分别在第 31 根与第 36 根K线附近，幅度接近；颈线 97.80。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "confirmed",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 36,
+                  "closedAt": "2026-07-25T00:24:55Z"
+                },
+                {
+                  "index": 39,
+                  "closedAt": "2026-07-25T00:39:55Z"
+                },
+                {
+                  "index": 41,
+                  "closedAt": "2026-07-25T00:49:55Z"
+                }
+              ],
+              "anchorIndex": 39,
+              "eventIndex": 41,
+              "invalidation": "收盘升破颈线 100.30",
+              "explanation": "两个高点分别在第 36 根与第 39 根K线附近，幅度接近；颈线 100.30。",
+              "reading": {
+                "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
+                "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
               "status": "confirmed",
               "direction": "bearish",
               "bars": [
@@ -5672,12 +6512,72 @@
             {
               "kind": "double_top",
               "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 42,
+                  "closedAt": "2026-07-25T00:54:55Z"
+                },
+                {
+                  "index": 45,
+                  "closedAt": "2026-07-25T01:09:55Z"
+                },
+                {
+                  "index": 47,
+                  "closedAt": "2026-07-25T01:19:55Z"
+                }
+              ],
+              "anchorIndex": 45,
+              "eventIndex": 47,
+              "invalidation": "确认前收盘升破前高 107.00，形态未能成立",
+              "explanation": "两个高点分别在第 42 根与第 45 根K线附近，幅度接近；颈线 98.90。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 42,
+                  "closedAt": "2026-07-25T00:54:55Z"
+                },
+                {
+                  "index": 47,
+                  "closedAt": "2026-07-25T01:19:55Z"
+                },
+                {
+                  "index": 58,
+                  "closedAt": "2026-07-25T02:14:55Z"
+                }
+              ],
+              "anchorIndex": 47,
+              "eventIndex": 58,
+              "invalidation": "确认前收盘升破前高 110.20，形态未能成立",
+              "explanation": "两个高点分别在第 42 根与第 47 根K线附近，幅度接近；颈线 98.90。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
               "status": "confirmed",
               "direction": "bearish",
               "bars": [
                 {
-                  "index": 45,
-                  "closedAt": "2026-07-25T01:09:55Z"
+                  "index": 47,
+                  "closedAt": "2026-07-25T01:19:55Z"
                 },
                 {
                   "index": 50,
@@ -5691,7 +6591,37 @@
               "anchorIndex": 50,
               "eventIndex": 52,
               "invalidation": "收盘升破颈线 101.40",
-              "explanation": "两个高点分别在第 45 根与第 50 根K线附近，幅度接近；颈线 101.40。",
+              "explanation": "两个高点分别在第 47 根与第 50 根K线附近，幅度接近；颈线 101.40。",
+              "reading": {
+                "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
+                "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "confirmed",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 50,
+                  "closedAt": "2026-07-25T01:34:55Z"
+                },
+                {
+                  "index": 53,
+                  "closedAt": "2026-07-25T01:49:55Z"
+                },
+                {
+                  "index": 55,
+                  "closedAt": "2026-07-25T01:59:55Z"
+                }
+              ],
+              "anchorIndex": 53,
+              "eventIndex": 55,
+              "invalidation": "收盘升破颈线 100.70",
+              "explanation": "两个高点分别在第 50 根与第 53 根K线附近，幅度接近；颈线 100.70。",
               "reading": {
                 "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
                 "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
@@ -5732,6 +6662,66 @@
             {
               "kind": "double_top",
               "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 53,
+                  "closedAt": "2026-07-25T01:49:55Z"
+                },
+                {
+                  "index": 58,
+                  "closedAt": "2026-07-25T02:14:55Z"
+                },
+                {
+                  "index": 69,
+                  "closedAt": "2026-07-25T03:09:55Z"
+                }
+              ],
+              "anchorIndex": 58,
+              "eventIndex": 69,
+              "invalidation": "确认前收盘升破前高 111.30，形态未能成立",
+              "explanation": "两个高点分别在第 53 根与第 58 根K线附近，幅度接近；颈线 100.00。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "confirmed",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 58,
+                  "closedAt": "2026-07-25T02:14:55Z"
+                },
+                {
+                  "index": 61,
+                  "closedAt": "2026-07-25T02:29:55Z"
+                },
+                {
+                  "index": 63,
+                  "closedAt": "2026-07-25T02:39:55Z"
+                }
+              ],
+              "anchorIndex": 61,
+              "eventIndex": 63,
+              "invalidation": "收盘升破颈线 102.50",
+              "explanation": "两个高点分别在第 58 根与第 61 根K线附近，幅度接近；颈线 102.50。",
+              "reading": {
+                "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
+                "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
               "status": "confirmed",
               "direction": "bearish",
               "bars": [
@@ -5762,12 +6752,42 @@
             {
               "kind": "double_top",
               "name": "双头",
+              "status": "invalidated",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 64,
+                  "closedAt": "2026-07-25T02:44:55Z"
+                },
+                {
+                  "index": 67,
+                  "closedAt": "2026-07-25T02:59:55Z"
+                },
+                {
+                  "index": 69,
+                  "closedAt": "2026-07-25T03:09:55Z"
+                }
+              ],
+              "anchorIndex": 67,
+              "eventIndex": 69,
+              "invalidation": "确认前收盘升破前高 109.20，形态未能成立",
+              "explanation": "两个高点分别在第 64 根与第 67 根K线附近，幅度接近；颈线 101.10。",
+              "reading": {
+                "summary": "双头未能成立：价格在收盘跌破颈线之前，先升破了前一个高点，这个结构已经作废。",
+                "detail": "第二个高点本应与第一个高点幅度接近并受阻，但收盘价在跌破颈线前先升破了它，说明上涨动能仍在延续，双头结构不再成立。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
               "status": "confirmed",
               "direction": "bearish",
               "bars": [
                 {
-                  "index": 67,
-                  "closedAt": "2026-07-25T02:59:55Z"
+                  "index": 69,
+                  "closedAt": "2026-07-25T03:09:55Z"
                 },
                 {
                   "index": 72,
@@ -5781,7 +6801,37 @@
               "anchorIndex": 72,
               "eventIndex": 74,
               "invalidation": "收盘升破颈线 103.60",
-              "explanation": "两个高点分别在第 67 根与第 72 根K线附近，幅度接近；颈线 103.60。",
+              "explanation": "两个高点分别在第 69 根与第 72 根K线附近，幅度接近；颈线 103.60。",
+              "reading": {
+                "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
+                "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "double_top",
+              "name": "双头",
+              "status": "confirmed",
+              "direction": "bearish",
+              "bars": [
+                {
+                  "index": 72,
+                  "closedAt": "2026-07-25T03:24:55Z"
+                },
+                {
+                  "index": 75,
+                  "closedAt": "2026-07-25T03:39:55Z"
+                },
+                {
+                  "index": 77,
+                  "closedAt": "2026-07-25T03:49:55Z"
+                }
+              ],
+              "anchorIndex": 75,
+              "eventIndex": 77,
+              "invalidation": "收盘升破颈线 102.90",
+              "explanation": "两个高点分别在第 72 根与第 75 根K线附近，幅度接近；颈线 102.90。",
               "reading": {
                 "summary": "双头已确认：价格两次冲高后，收盘跌破了颈线，短线动能转弱的信号出现了。",
                 "detail": "两个相近的高点之间夹着一个回落低点，即颈线；收盘价跌破颈线视为形态确认。确认后的关注点是颈线能否压住——收盘再次升破颈线，说明这次跌破可能是假跌破。",
@@ -5838,6 +6888,318 @@
           "missingReason": null,
           "methodVersion": "patterns-shapes-v1",
           "signals": [
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 7,
+                  "closedAt": "2026-07-24T21:59:55Z"
+                },
+                {
+                  "index": 8,
+                  "closedAt": "2026-07-24T22:04:55Z"
+                }
+              ],
+              "anchorIndex": 7,
+              "eventIndex": 8,
+              "invalidation": "收盘跌破五日线 98.20（已发生，企稳失败）",
+              "explanation": "五日均线在第 7 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 15,
+                  "closedAt": "2026-07-24T22:39:55Z"
+                },
+                {
+                  "index": 16,
+                  "closedAt": "2026-07-24T22:44:55Z"
+                }
+              ],
+              "anchorIndex": 15,
+              "eventIndex": 16,
+              "invalidation": "收盘跌破五日线 99.96（已发生，企稳失败）",
+              "explanation": "五日均线在第 15 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 18,
+                  "closedAt": "2026-07-24T22:54:55Z"
+                },
+                {
+                  "index": 19,
+                  "closedAt": "2026-07-24T22:59:55Z"
+                }
+              ],
+              "anchorIndex": 18,
+              "eventIndex": 19,
+              "invalidation": "收盘跌破五日线 99.27（已发生，企稳失败）",
+              "explanation": "五日均线在第 18 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 26,
+                  "closedAt": "2026-07-24T23:34:55Z"
+                },
+                {
+                  "index": 27,
+                  "closedAt": "2026-07-24T23:39:55Z"
+                }
+              ],
+              "anchorIndex": 26,
+              "eventIndex": 27,
+              "invalidation": "收盘跌破五日线 101.04（已发生，企稳失败）",
+              "explanation": "五日均线在第 26 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 29,
+                  "closedAt": "2026-07-24T23:49:55Z"
+                },
+                {
+                  "index": 30,
+                  "closedAt": "2026-07-24T23:54:55Z"
+                }
+              ],
+              "anchorIndex": 29,
+              "eventIndex": 30,
+              "invalidation": "收盘跌破五日线 100.35（已发生，企稳失败）",
+              "explanation": "五日均线在第 29 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 37,
+                  "closedAt": "2026-07-25T00:29:55Z"
+                },
+                {
+                  "index": 38,
+                  "closedAt": "2026-07-25T00:34:55Z"
+                }
+              ],
+              "anchorIndex": 37,
+              "eventIndex": 38,
+              "invalidation": "收盘跌破五日线 102.12（已发生，企稳失败）",
+              "explanation": "五日均线在第 37 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 40,
+                  "closedAt": "2026-07-25T00:44:55Z"
+                },
+                {
+                  "index": 41,
+                  "closedAt": "2026-07-25T00:49:55Z"
+                }
+              ],
+              "anchorIndex": 40,
+              "eventIndex": 41,
+              "invalidation": "收盘跌破五日线 101.43（已发生，企稳失败）",
+              "explanation": "五日均线在第 40 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 48,
+                  "closedAt": "2026-07-25T01:24:55Z"
+                },
+                {
+                  "index": 49,
+                  "closedAt": "2026-07-25T01:29:55Z"
+                }
+              ],
+              "anchorIndex": 48,
+              "eventIndex": 49,
+              "invalidation": "收盘跌破五日线 103.19（已发生，企稳失败）",
+              "explanation": "五日均线在第 48 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 51,
+                  "closedAt": "2026-07-25T01:39:55Z"
+                },
+                {
+                  "index": 52,
+                  "closedAt": "2026-07-25T01:44:55Z"
+                }
+              ],
+              "anchorIndex": 51,
+              "eventIndex": 52,
+              "invalidation": "收盘跌破五日线 102.51（已发生，企稳失败）",
+              "explanation": "五日均线在第 51 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 59,
+                  "closedAt": "2026-07-25T02:19:55Z"
+                },
+                {
+                  "index": 60,
+                  "closedAt": "2026-07-25T02:24:55Z"
+                }
+              ],
+              "anchorIndex": 59,
+              "eventIndex": 60,
+              "invalidation": "收盘跌破五日线 104.27（已发生，企稳失败）",
+              "explanation": "五日均线在第 59 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 62,
+                  "closedAt": "2026-07-25T02:34:55Z"
+                },
+                {
+                  "index": 63,
+                  "closedAt": "2026-07-25T02:39:55Z"
+                }
+              ],
+              "anchorIndex": 62,
+              "eventIndex": 63,
+              "invalidation": "收盘跌破五日线 103.59（已发生，企稳失败）",
+              "explanation": "五日均线在第 62 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
+            {
+              "kind": "ma5_pullback",
+              "name": "回踩五日线企稳（回眸一笑）",
+              "status": "invalidated",
+              "direction": "bullish",
+              "bars": [
+                {
+                  "index": 70,
+                  "closedAt": "2026-07-25T03:14:55Z"
+                },
+                {
+                  "index": 71,
+                  "closedAt": "2026-07-25T03:19:55Z"
+                }
+              ],
+              "anchorIndex": 70,
+              "eventIndex": 71,
+              "invalidation": "收盘跌破五日线 105.35（已发生，企稳失败）",
+              "explanation": "五日均线在第 70 根K线保持上升，收盘价回踩到均线附近后，观察后续能否收盘走高并守住均线。",
+              "reading": {
+                "summary": "回踩未能企稳：价格靠近五日均线后没有站稳，收盘明显跌破了均线。",
+                "detail": "价格回落到五日均线附近后，没有出现收盘走高守住均线的确认，反而收盘跌破了均线一定幅度，说明这次回踩未能企稳。",
+                "honesty": "历史胜率待回测"
+              },
+              "methodVersion": "patterns-shapes-v1"
+            },
             {
               "kind": "ma5_pullback",
               "name": "回踩五日线企稳（回眸一笑）",

@@ -32,6 +32,18 @@ This gives the PIT guarantee the plan asks for: a signal detected using bars
 because the scan that produced it only ever consulted bars up to its own
 ``event_index`` -- see the PIT tests in ``test_patterns_shapes.py``.
 
+The exact replay invariant, pinned by ``ReplayInvariantPropertyTests``: for
+every prefix length ``k``, ``detect(bars[:k])`` restricted to signals that
+resolved (confirmed or invalidated) at an index below ``k`` equals exactly
+those signals in ``detect(bars)`` -- a full-history recompute never erases
+or mutates an already-resolved signal. Structurally this holds because every
+candidate (each similar-depth extremum pair, each shoulder/head/shoulder
+triple, each MA5 pullback episode) resolves independently against the bars
+that follow it: no scan shares a cursor between candidates, so one
+candidate's late resolution cannot consume another's history. Only the
+still-``forming`` tail read is provisional, and only the most recent
+unresolved candidate is surfaced as that read.
+
 Below each detector's own minimum window, it returns a typed-unavailable
 ``PatternShapeDetection`` (``quality_status="unavailable"`` with a
 ``missing_reason``) rather than silently reporting "no pattern found" for a
@@ -45,8 +57,12 @@ definition, so the rule this module ships IS the spec (v1):
    greater.
 2. A touch bar is any bar whose close sits within ``near_tolerance`` (default
    1.5%) of that day's MA5, and whose close is below the previous bar's close
-   (the "回踩" -- pulling back toward the average). The most recent qualifying
-   touch bar in the window is used.
+   (the "回踩" -- pulling back toward the average). Each touch opens an
+   episode; while that episode is still unresolved, a further qualifying
+   touch re-anchors it to the most recent touch bar. Once an episode has
+   resolved (rule 3 or 4), it is emitted immutably and a later qualifying
+   touch starts a new episode -- it never re-anchors, and thereby never
+   erases, an episode that already resolved.
 3. Confirmation ("回眸一笑"): the first later bar whose close is above the
    previous bar's close, is not below that day's MA5, and whose MA5 is still
    higher than it was three bars earlier. That bar's index is the
@@ -491,19 +507,28 @@ def _local_extrema(bars: Sequence[OHLCVBar], *, use_high: bool) -> list[int]:
 def _scan_double_pattern(
     bars: Sequence[OHLCVBar], *, use_high: bool, kind: PatternShapeKind, tolerance: float
 ) -> list[PatternShapeSignal]:
+    """Each candidate pair resolves independently, so replay never lies.
+
+    Every extremum anchors at most one candidate: it pairs, as the second
+    touch of the pattern, with the most recent similar-depth extremum far
+    enough before it. Each candidate then scans forward through the bars on
+    its own: no shared cursor, so one candidate's late resolution can never
+    consume the history -- or the already-resolved episode -- of another.
+    Every episode that confirmed or invalidated within the given bars is
+    emitted, immutable under any longer replay (both pairings and
+    resolutions read only bars at or before their own indices, so a prefix
+    rerun reproduces them byte-for-byte); of the candidates still unresolved
+    at the tail, only the most recent is surfaced as the single provisional
+    ``forming`` read.
+    """
+
     extrema = _local_extrema(bars, use_high=use_high)
     signals: list[PatternShapeSignal] = []
-    cursor = 0
     forming_candidate: tuple[int, int, float, float] | None = None
-    index = 0
-    while index < len(extrema):
-        first = extrema[index]
-        if first < cursor:
-            index += 1
-            continue
+    for position, second in enumerate(extrema):
         matched: tuple[int, int, float, float] | None = None
-        for probe in range(index + 1, len(extrema)):
-            second = extrema[probe]
+        for probe in range(position - 1, -1, -1):
+            first = extrema[probe]
             if second - first < 3 or first + 1 >= second:
                 continue
             first_extreme = getattr(bars[first], "high" if use_high else "low")
@@ -514,7 +539,6 @@ def _scan_double_pattern(
             matched = (first, second, first_extreme, second_extreme)
             break
         if matched is None:
-            index += 1
             continue
         first, second, first_extreme, second_extreme = matched
         between = bars[first + 1 : second]
@@ -527,12 +551,8 @@ def _scan_double_pattern(
                     bars, kind, first, second, neckline, status, event_index, second_extreme
                 )
             )
-            cursor = event_index + 1
-            forming_candidate = None
-            index += 1
             continue
         forming_candidate = (first, second, neckline, second_extreme)
-        index += 1
     if forming_candidate is not None:
         first, second, neckline, second_extreme = forming_candidate
         signals.append(
@@ -691,15 +711,17 @@ def _scan_head_and_shoulders(
     shoulder_tolerance: float,
     head_clearance: float,
 ) -> list[PatternShapeSignal]:
+    """Each shoulder/head/shoulder triple resolves independently -- see
+    ``_scan_double_pattern`` for why no scan may share a cursor: a triple's
+    late resolution must never erase another triple's already-resolved
+    episode from a longer replay."""
+
     peaks = _local_extrema(bars, use_high=use_high)
     signals: list[PatternShapeSignal] = []
-    cursor = 0
     forming_candidate: tuple[int, int, int, float, float] | None = None
-    index = 0
-    while index <= len(peaks) - 3:
+    for index in range(len(peaks) - 2):
         left, head, right = peaks[index], peaks[index + 1], peaks[index + 2]
-        if left < cursor or left + 1 >= head or head + 1 >= right:
-            index += 1
+        if left + 1 >= head or head + 1 >= right:
             continue
         left_extreme = getattr(bars[left], "high" if use_high else "low")
         head_extreme = getattr(bars[head], "high" if use_high else "low")
@@ -714,7 +736,6 @@ def _scan_head_and_shoulders(
             else head_extreme <= min(left_extreme, right_extreme) / head_clearance
         )
         if not (shoulders_close and head_clear):
-            index += 1
             continue
         if use_high:
             left_trough = min(row.low for row in bars[left + 1 : head])
@@ -732,12 +753,8 @@ def _scan_head_and_shoulders(
                     bars, kind, left, head, right, neckline, status, event_index, head_extreme
                 )
             )
-            cursor = event_index + 1
-            forming_candidate = None
-            index += 1
             continue
         forming_candidate = (left, head, right, neckline, head_extreme)
-        index += 1
     if forming_candidate is not None:
         left, head, right, neckline, head_extreme = forming_candidate
         signals.append(
@@ -836,50 +853,94 @@ def detect_ma5_pullback_pattern(
     closes = [row.close for row in completed]
     ma5 = moving_average_series(closes, 5)
 
-    touch_index: int | None = None
+    # Episodic scan: the first qualifying touch opens an episode; the episode
+    # then resolves forward on its own (confirm or invalidation), and once
+    # resolved it is emitted immutably -- a later qualifying touch starts a
+    # NEW episode instead of re-anchoring (and thereby erasing) the resolved
+    # one, which is what keeps every replay consistent with history. While an
+    # episode is still open, a further qualifying touch re-anchors that
+    # still-provisional episode to the most recent touch (the v1 "most recent
+    # qualifying touch" reading, now scoped to the open episode only). A touch
+    # bar can never itself be a resolution bar: touching requires a down close
+    # near the average, confirming requires an up close, and invalidating
+    # requires a close far below it.
+    signals: list[PatternShapeSignal] = []
+    open_touch: int | None = None
     for index in range(3, len(completed)):
-        if ma5[index] is None or ma5[index - 3] is None:
+        if ma5[index] is None:
             continue
-        if ma5[index] <= ma5[index - 3]:  # type: ignore[operator]
+        if open_touch is not None:
+            bounced = closes[index] > closes[index - 1]
+            holding_above = closes[index] >= ma5[index]  # type: ignore[operator]
+            rising_now = (
+                ma5[index - 3] is not None and ma5[index] > ma5[index - 3]  # type: ignore[operator]
+            )
+            if bounced and holding_above and rising_now:
+                signals.append(
+                    _build_ma5_signal(
+                        completed,
+                        ma5,
+                        open_touch,
+                        PatternShapeStatus.CONFIRMED,
+                        index,
+                        break_tolerance,
+                    )
+                )
+                open_touch = None
+                continue
+            if closes[index] < ma5[index] * (1 - break_tolerance):  # type: ignore[operator]
+                signals.append(
+                    _build_ma5_signal(
+                        completed,
+                        ma5,
+                        open_touch,
+                        PatternShapeStatus.INVALIDATED,
+                        index,
+                        break_tolerance,
+                    )
+                )
+                open_touch = None
+                continue
+        if ma5[index - 3] is None or ma5[index] <= ma5[index - 3]:  # type: ignore[operator]
             continue
         close = closes[index]
         near = abs(close - ma5[index]) / ma5[index] <= near_tolerance  # type: ignore[operator]
         pulling_back = close < closes[index - 1]
         if near and pulling_back:
-            touch_index = index
-
-    if touch_index is None:
-        return PatternShapeDetection(
-            detector="ma5_pullback",
-            minimum_window=_MA5_PULLBACK_MIN_WINDOW,
-            sample_size=len(completed),
-            quality_status="live",
-            missing_reason=None,
-            signals=(),
+            open_touch = index
+    if open_touch is not None:
+        signals.append(
+            _build_ma5_signal(
+                completed,
+                ma5,
+                open_touch,
+                PatternShapeStatus.FORMING,
+                len(completed) - 1,
+                break_tolerance,
+            )
         )
 
-    status = PatternShapeStatus.FORMING
-    event_index = len(completed) - 1
-    for probe in range(touch_index + 1, len(completed)):
-        if ma5[probe] is None:
-            continue
-        bounced = closes[probe] > closes[probe - 1]
-        holding_above = closes[probe] >= ma5[probe]  # type: ignore[operator]
-        rising_now = (
-            probe >= 3 and ma5[probe - 3] is not None and ma5[probe] > ma5[probe - 3]  # type: ignore[operator]
-        )
-        if bounced and holding_above and rising_now:
-            status, event_index = PatternShapeStatus.CONFIRMED, probe
-            break
-        if closes[probe] < ma5[probe] * (1 - break_tolerance):  # type: ignore[operator]
-            status, event_index = PatternShapeStatus.INVALIDATED, probe
-            break
+    return PatternShapeDetection(
+        detector="ma5_pullback",
+        minimum_window=_MA5_PULLBACK_MIN_WINDOW,
+        sample_size=len(completed),
+        quality_status="live",
+        missing_reason=None,
+        signals=tuple(signals),
+    )
 
-    touch_ma5 = ma5[touch_index]
-    assert touch_ma5 is not None
+
+def _build_ma5_signal(
+    completed: Sequence[OHLCVBar],
+    ma5: Sequence[float | None],
+    touch_index: int,
+    status: PatternShapeStatus,
+    event_index: int,
+    break_tolerance: float,
+) -> PatternShapeSignal:
     if status is PatternShapeStatus.FORMING:
         invalidation = (
-            f"收盘跌破五日线 {touch_ma5 * (1 - break_tolerance):.2f}"
+            f"收盘跌破五日线 {ma5[touch_index] * (1 - break_tolerance):.2f}"  # type: ignore[operator]
             f"（跌破容忍度 {break_tolerance:.0%}）视为企稳失败"
         )
     elif status is PatternShapeStatus.CONFIRMED:
@@ -898,27 +959,18 @@ def detect_ma5_pullback_pattern(
     summary, detail = _reading_copy(PatternShapeKind.MA5_PULLBACK, status)
     bars_ref_indices = sorted({touch_index, event_index})
     bars_ref = tuple(_bar_ref(completed, index) for index in bars_ref_indices)
-    return PatternShapeDetection(
-        detector="ma5_pullback",
-        minimum_window=_MA5_PULLBACK_MIN_WINDOW,
-        sample_size=len(completed),
-        quality_status="live",
-        missing_reason=None,
-        signals=(
-            PatternShapeSignal(
-                kind=PatternShapeKind.MA5_PULLBACK,
-                name=_KIND_NAME_ZH[PatternShapeKind.MA5_PULLBACK],
-                status=status,
-                direction=Direction.BULLISH,
-                bars=bars_ref,
-                anchor=_bar_ref(completed, touch_index),
-                event_index=event_index,
-                invalidation=invalidation,
-                explanation=explanation,
-                reading_summary=summary,
-                reading_detail=detail,
-            ),
-        ),
+    return PatternShapeSignal(
+        kind=PatternShapeKind.MA5_PULLBACK,
+        name=_KIND_NAME_ZH[PatternShapeKind.MA5_PULLBACK],
+        status=status,
+        direction=Direction.BULLISH,
+        bars=bars_ref,
+        anchor=_bar_ref(completed, touch_index),
+        event_index=event_index,
+        invalidation=invalidation,
+        explanation=explanation,
+        reading_summary=summary,
+        reading_detail=detail,
     )
 
 
