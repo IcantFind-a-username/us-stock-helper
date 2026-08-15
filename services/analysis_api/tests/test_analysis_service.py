@@ -18,10 +18,15 @@ from us_stock_helper_core import OHLCVBar
 AS_OF = datetime(2026, 7, 25, 16, tzinfo=UTC)
 
 
-def bars(count: int = 40, *, flat: bool = False) -> tuple[OHLCVBar, ...]:
+def bars(
+    count: int = 40,
+    *,
+    flat: bool = False,
+    newest_available_at: datetime = AS_OF,
+) -> tuple[OHLCVBar, ...]:
     rows = []
     for index in range(count):
-        closed_at = AS_OF - timedelta(days=count - 1 - index)
+        closed_at = newest_available_at - timedelta(days=count - 1 - index)
         price = 100.0 if flat else 100.0 + index * 0.5
         rows.append(
             OHLCVBar(
@@ -340,6 +345,39 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "live")
         self.assertEqual(result["interval"], "day")
         self.assertIsInstance(result["score"]["value"], float)
+
+    def test_a_short_horizon_decision_on_yesterdays_close_is_not_stale_gated(
+        self,
+    ) -> None:
+        # This is the shape live data actually takes: every horizon is fed
+        # completed daily bars, and mid-session the newest one is yesterday's
+        # close (~22h old). A freshness gate budgeted for intraday cadence
+        # stale-gated this every request outside the 20 minutes after a
+        # session's close.
+        provider = Provider(
+            rows=bars(newest_available_at=AS_OF - timedelta(hours=22))
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertNotIn("stale_data", result["score"]["blockedBy"])
+        self.assertTrue(result["score"]["actionable"])
+        self.assertNotEqual(result["riskPlan"]["action"], "avoid")
+
+    def test_a_short_horizon_decision_on_a_many_day_old_close_is_still_stale_gated(
+        self,
+    ) -> None:
+        # The wider daily-cadence budget must not stop catching a feed that
+        # has genuinely stopped publishing.
+        provider = Provider(
+            rows=bars(newest_available_at=AS_OF - timedelta(days=10))
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertIn("stale_data", result["score"]["blockedBy"])
+        self.assertFalse(result["score"]["actionable"])
+        self.assertEqual(result["riskPlan"]["action"], "avoid")
 
 
 if __name__ == "__main__":

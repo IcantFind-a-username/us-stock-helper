@@ -36,6 +36,40 @@ ADVISER_SCORE_CAP = 3.0
 # be a claim about a reading nobody took.
 _SMALLEST_PATTERN_WINDOW = 3
 
+# How long a completed bar remains "the current picture" before a decision
+# must refuse to act on it. Budgeted against the interval the bars were
+# actually sampled on, not the horizon asking about them: a horizon is a
+# claim about the future, not about how often the exchange publishes a new
+# candle. An intraday bar goes stale within a small multiple of its own
+# length; a daily bar is only replaced once a session, and the previous
+# session can be a weekend or a short holiday run away, so its budget has to
+# span that gap rather than the bar's own 24-hour length.
+_INTRADAY_BAR_DURATIONS: dict[str, timedelta] = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "60m": timedelta(hours=1),
+}
+_INTRADAY_STALE_MULTIPLE = 3
+_DAILY_INTERVALS = {"day", "week"}
+# Covers a holiday-extended weekend (Friday close to Tuesday reopen) with
+# margin, without disguising a feed that has genuinely stopped reporting.
+_DAILY_STALE_BUDGET = timedelta(days=5)
+# No interval could be attributed to the bars at all: fail toward the
+# tightest budget rather than assume a cadence nobody confirmed.
+_UNKNOWN_INTERVAL_STALE_BUDGET = timedelta(minutes=20)
+
+
+def data_freshness_budget(interval: str | None) -> timedelta:
+    """How old the freshest bar of ``interval`` may be before it is stale."""
+    duration = _INTRADAY_BAR_DURATIONS.get(interval) if interval else None
+    if duration is not None:
+        return duration * _INTRADAY_STALE_MULTIPLE
+    if interval in _DAILY_INTERVALS:
+        return _DAILY_STALE_BUDGET
+    return _UNKNOWN_INTERVAL_STALE_BUDGET
+
 
 class HardGate(str, Enum):
     STALE_DATA = "stale_data"
@@ -64,6 +98,12 @@ class FeatureSet:
     adviser_factor: float
     evidence_confidence: float
     latest_market_data_at: datetime | None
+    # The interval the bars behind latest_market_data_at were sampled on
+    # ("day", "5m", ...). The staleness gate budgets freshness against this,
+    # not against the horizon: a horizon is a question about the future, not
+    # a claim about how often the exchange publishes a new candle. None means
+    # no bars could be attributed to a single known interval.
+    data_interval: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.as_of, "as_of")
@@ -128,6 +168,7 @@ def extract_horizon_features(
     if len(series) > 1:
         raise ValueError("feature extraction requires a single symbol and interval")
     symbol = next(iter(series))[0] if series else None
+    data_interval = next(iter(series))[1] if series else None
     selected_evidence = tuple(
         record
         for record in select_evidence_as_of(evidence, context.as_of)
@@ -242,6 +283,7 @@ def extract_horizon_features(
             (row.available_at for row in selected_bars),
             default=None,
         ),
+        data_interval=data_interval,
     )
 
 
@@ -320,11 +362,7 @@ def score_horizon(
     gates = list(hard_gates)
     if features.evidence_confidence < 0.35:
         gates.append(HardGate.INSUFFICIENT_EVIDENCE)
-    maximum_age = {
-        Horizon.SHORT: timedelta(minutes=20),
-        Horizon.SWING: timedelta(days=5),
-        Horizon.LONG: timedelta(days=10),
-    }[features.horizon]
+    maximum_age = data_freshness_budget(features.data_interval)
     latest_market_data_at = features.latest_market_data_at
     if (
         latest_market_data_at is None

@@ -58,6 +58,7 @@ from .scoring import (
     FeatureSet,
     HardGate,
     ScoreResult,
+    data_freshness_budget,
     extract_horizon_features,
     score_horizon,
 )
@@ -116,6 +117,7 @@ __all__ = [
     "build_participation_bars",
     "build_risk_plan",
     "build_scenario_forecast",
+    "data_freshness_budget",
     "detect_double_bottom",
     "detect_head_and_shoulders",
     "detect_ma5_pullback",

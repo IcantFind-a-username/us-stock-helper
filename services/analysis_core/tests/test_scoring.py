@@ -214,6 +214,59 @@ class ExplainableScoreTests(unittest.TestCase):
         self.assertFalse(stale.actionable)
         self.assertIn(HardGate.STALE_DATA, stale.blocked_by)
 
+    def test_a_daily_bar_from_yesterdays_close_is_not_stale_on_any_horizon(
+        self,
+    ) -> None:
+        # A daily candle is only replaced once a session, and a session can
+        # be a weekend away. Budgeting it at an intraday tightness stale-gates
+        # every request made between one close and the next, which for the
+        # SHORT horizon is essentially all of a trading day.
+        for horizon in (Horizon.SHORT, Horizon.SWING, Horizon.LONG):
+            with self.subTest(horizon=horizon):
+                result = score_horizon(
+                    replace(
+                        manual_features(horizon=horizon),
+                        data_interval="day",
+                        latest_market_data_at=AS_OF - timedelta(hours=22),
+                    )
+                )
+
+                self.assertNotIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_daily_bar_many_days_old_is_still_stale(self) -> None:
+        # The budget widening for daily cadence must not become a licence to
+        # call a genuinely stopped feed fresh.
+        result = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SHORT),
+                data_interval="day",
+                latest_market_data_at=AS_OF - timedelta(days=10),
+            )
+        )
+
+        self.assertIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_an_intraday_bar_keeps_a_tight_freshness_budget(self) -> None:
+        # Intraday data must not inherit the daily cadence's slack: a 5-minute
+        # bar that is 21 minutes old is genuinely stale for a SHORT decision.
+        fresh = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SHORT),
+                data_interval="5m",
+                latest_market_data_at=AS_OF - timedelta(minutes=10),
+            )
+        )
+        stale = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SHORT),
+                data_interval="5m",
+                latest_market_data_at=AS_OF - timedelta(minutes=21),
+            )
+        )
+
+        self.assertNotIn(HardGate.STALE_DATA, fresh.blocked_by)
+        self.assertIn(HardGate.STALE_DATA, stale.blocked_by)
+
     def test_adviser_is_bounded_to_three_points_and_does_not_replace_facts(self) -> None:
         negative_adviser = score_horizon(
             manual_features(adviser_factor=-1.0)

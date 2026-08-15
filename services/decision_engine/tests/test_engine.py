@@ -42,6 +42,32 @@ def bars() -> tuple[OHLCVBar, ...]:
     return tuple(rows)
 
 
+def daily_bars(*, newest_available_at: datetime) -> tuple[OHLCVBar, ...]:
+    # Production feeds every horizon completed daily candles (see
+    # analysis_api's AnalysisService.interval). A daily bar's available_at is
+    # a session close, not the request instant, so this models the shape live
+    # data actually takes instead of the always-zero-age fixture in bars().
+    rows = []
+    for index in range(40):
+        closed_at = newest_available_at - timedelta(days=(39 - index))
+        price = 100 + index * 0.5
+        rows.append(
+            OHLCVBar(
+                symbol="NVDA",
+                interval="day",
+                opened_at=closed_at - timedelta(hours=6),
+                closed_at=closed_at,
+                available_at=closed_at,
+                open=price - 0.2,
+                high=price + 0.5,
+                low=price - 0.5,
+                close=price,
+                volume=1_000_000,
+            )
+        )
+    return tuple(rows)
+
+
 def event(
     event_id: str,
     *,
@@ -258,6 +284,46 @@ class DecisionEngineTests(unittest.TestCase):
             replace(
                 inputs((filing,)),
                 current_price_available_at=AS_OF - timedelta(minutes=21),
+            )
+        )
+
+        self.assertIn(HardGate.STALE_DATA, output.adjusted_score.blocked_by)
+        self.assertEqual(output.risk_plan.action, AnalyticalAction.AVOID)
+
+    def test_a_daily_bar_from_yesterdays_close_does_not_stale_gate_short_horizon(
+        self,
+    ) -> None:
+        # Reproduces the production shape: SHORT horizon fed daily candles,
+        # queried mid-session so the newest completed bar is yesterday's
+        # close, roughly 22 hours old. A 20-minute intraday budget applied to
+        # this data stale-gates every SHORT decision outside a 20-minute
+        # window after the close.
+        filing = event("filing", status=ClaimStatus.VERIFIED)
+        newest_close = AS_OF - timedelta(hours=22)
+
+        output = DecisionEngine().evaluate(
+            replace(
+                inputs((filing,)),
+                bars=daily_bars(newest_available_at=newest_close),
+                current_price_available_at=newest_close,
+            )
+        )
+
+        self.assertNotIn(HardGate.STALE_DATA, output.adjusted_score.blocked_by)
+
+    def test_a_daily_bar_many_days_old_still_stale_gates_short_horizon(
+        self,
+    ) -> None:
+        # Widening the budget for the daily cadence must not stop catching a
+        # feed that has genuinely gone quiet.
+        filing = event("filing", status=ClaimStatus.VERIFIED)
+        newest_close = AS_OF - timedelta(days=10)
+
+        output = DecisionEngine().evaluate(
+            replace(
+                inputs((filing,)),
+                bars=daily_bars(newest_available_at=newest_close),
+                current_price_available_at=newest_close,
             )
         )
 

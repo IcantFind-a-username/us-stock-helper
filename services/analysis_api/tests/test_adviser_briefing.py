@@ -100,9 +100,16 @@ class FakeClient:
 
 
 def stale_bars() -> tuple[OHLCVBar, ...]:
-    """Candles that stopped arriving long enough ago to trip the stale gate."""
+    """Candles that stopped arriving long enough ago to trip the stale gate.
 
-    lag = timedelta(minutes=45)
+    These are daily bars, so the gate is budgeted against a daily-bar
+    cadence (a session close can be a holiday weekend away, not just
+    intraday-tight): the lag has to clear that wider, honest budget, not the
+    45 minutes that only tripped the gate back when it was mistakenly
+    budgeted for intraday data.
+    """
+
+    lag = timedelta(days=10)
     return tuple(
         replace(
             row,

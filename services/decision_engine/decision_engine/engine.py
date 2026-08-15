@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Iterable
 
 from adviser_layer.council import (
@@ -34,6 +34,7 @@ from us_stock_helper_core import (
     ShortBorrowSnapshot,
     build_risk_plan,
     build_scenario_forecast,
+    data_freshness_budget,
     extract_horizon_features,
     score_horizon,
 )
@@ -158,11 +159,15 @@ class DecisionEngine:
             fundamentals=inputs.fundamentals,
         )
         effective_gates = list(inputs.hard_gates)
-        price_max_age = {
-            Horizon.SHORT: timedelta(minutes=20),
-            Horizon.SWING: timedelta(days=5),
-            Horizon.LONG: timedelta(days=10),
-        }[inputs.horizon]
+        # Budgeted against the interval the price snapshot's own bars were
+        # sampled on, not the horizon: a horizon is a claim about the future,
+        # not about how often the exchange publishes a new candle. Every
+        # horizon is fed the same daily bars in production, so gating SHORT
+        # at an intraday tightness stale-gated it for all but a 20-minute
+        # window after each session's close.
+        price_max_age = data_freshness_budget(
+            inputs.bars[-1].interval if inputs.bars else None
+        )
         if (
             inputs.as_of - inputs.current_price_available_at
             > price_max_age
