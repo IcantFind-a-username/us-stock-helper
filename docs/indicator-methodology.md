@@ -17,9 +17,11 @@ are out of scope. A transparent alternative must be labeled as an alternative.
 `services/analysis_core/us_stock_helper_core` is the canonical home for every
 indicator. `patterns.td_setup` carries the per-bar counts, each completed run
 and its bar 8/9 perfection under `td-setup-close-4-v2`; `trend.dragon_trend`
-carries the transparent trend system under `dragon-trend-ema-atr-volume-v1`.
-An earlier standalone prototype of both lives in the repository history on
-`main` (commit `4170859`) and is not maintained.
+carries the transparent trend system under `dragon-trend-ema-atr-volume-v1`;
+`patterns_shapes.py` (distinct from `patterns.py`) carries the chart-shape
+detectors — 顶分型/底分型/W底/双头/头肩顶/头肩底/回踩五日线企稳 — under
+`patterns-shapes-v1`. An earlier standalone prototype of the first two lives
+in the repository history on `main` (commit `4170859`) and is not maintained.
 
 Every published series here stays `None` through warm-up rather than showing an
 early guess, and a published value never changes when later bars arrive. That
@@ -55,6 +57,68 @@ repository is an independent, fully disclosed trend system:
 
 Its parameters will be optimized only through walk-forward validation. It is
 not represented as the formula of any specific paid vendor product.
+
+### Pattern shapes / 形态检测 (`patterns_shapes.py`, `patterns-shapes-v1`)
+
+Distinct from `patterns.td_setup` above: this module only detects classic
+candlestick *shapes*, each on completed bars only, each with an explicit
+`forming` / `confirmed` / `invalidated` status and a machine-checkable
+invalidation condition. It never claims a historical hit rate; every served
+reading carries the fixed disclosure "历史胜率待回测" until a phase-2
+walk-forward backtest attaches one.
+
+**顶分型 / 底分型 (three-bar fractal top/bottom).** For bar `i` (`1 <=
+i <= n-2`): a 顶分型 fires when `high[i] > high[i-1]` and `high[i] >
+high[i+1]`; a 底分型 fires when `low[i] < low[i-1]` and `low[i] <
+low[i+1]`. Confirmed the instant the third bar closes — there is no partial
+fractal to call "forming". Minimum window: 3 bars.
+
+**W底 / 双头 (double bottom/top with neckline).** Two local extrema (troughs
+for W底, peaks for 双头) at least three bars apart, within 4% of each other's
+depth/height. The neckline is the highest high (W底) or lowest low (双头)
+between them. Scanning forward bar-by-bar from the second extremum: the
+first close to break the neckline in the pattern's favor confirms it; the
+first close to break back past the second extremum *before* the neckline
+breaks invalidates it. Neither happening yet within the given bars reads as
+`forming`. Minimum window: 7 bars.
+
+**头肩顶 / 头肩底 (head and shoulders with neckline).** Three extrema
+(left shoulder, head, right shoulder) where the shoulders are within 8% of
+each other and the head clears both by at least 3%. The neckline is the
+average of the two troughs (头肩顶) or peaks (头肩底) flanking the head.
+Same forward scan as W底/双头: neckline break confirms, a close reclaiming
+the head's own extreme first invalidates. Minimum window: 8 bars.
+
+**回踩五日线企稳（回眸一笑）.** A colloquial retail pattern with no textbook
+definition, so this rule *is* the spec (v1):
+
+1. MA5 must be rising at the touch bar (`MA5[t] > MA5[t-3]`).
+2. A touch bar: close within 1.5% of that day's MA5, and below the prior
+   bar's close (the pullback).
+3. Confirmation ("回眸一笑"): the first later bar whose close is above the
+   prior close, at or above that day's MA5, with MA5 still rising.
+4. Invalidation: a close before confirmation falling below `MA5 × (1 -
+   2%)`.
+5. Neither happening yet reads as `forming`.
+
+Minimum window: 8 bars (the earliest index at which both `MA5[t]` and
+`MA5[t-3]` exist).
+
+**No-lookahead guarantee.** Every detector only ever reads bars up to its own
+`event_index`; a `confirmed`/`invalidated` signal, once emitted for a given
+bar sequence, is reproduced byte-for-byte by a later call over a longer
+sequence that still contains that same prefix (see the PIT tests in
+`services/analysis_core/tests/test_patterns_shapes.py`). Below its own
+minimum window, a detector reports typed-unavailable
+(`quality_status="unavailable"` with a `missing_reason`) rather than a
+measured zero — the same lesson recorded in `docs/roadmap-to-delivery.md`
+§四点七 about the pattern factor claiming "measured 0" for a window no
+detector had actually read.
+
+`scoring.py`'s `pattern` factor and the market-gateway snapshot's
+`indicators.patternShapes` entry both read the same `detect_pattern_shapes`
+output — only `confirmed` signals vote in the score, so the served hint and
+the decision score can never disagree about what "confirmed" means.
 
 ## Required gates before a signal reaches the live alert channel
 
