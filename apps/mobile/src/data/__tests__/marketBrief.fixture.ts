@@ -87,8 +87,10 @@ export function marketBriefFixture(
 export function marketBriefUnavailableFixture(
   overrides: Partial<MarketBrief> = {},
 ): MarketBrief {
+  // "无法连接" mirrors collector.py's `_reason()` (2026-08-15 served-copy
+  // sweep); "HTTP 503" stays technical, same as a version id or a timestamp.
   const reason =
-    "本次未能读取任何情报源：sec-current-8-k（HTTP 503）、fred-releases（unreachable）";
+    "本次未能读取任何情报源：sec-current-8-k（HTTP 503）、fred-releases（无法连接）";
   const driverCoverage: MarketBriefDriverCoverage[] = ALL_DRIVER_CATEGORIES.map(
     (category) => ({
       category,
@@ -107,7 +109,7 @@ export function marketBriefUnavailableFixture(
     sentiment: null,
     driverCoverage,
     citations: [],
-    sourceGaps: ["sec-current-8-k（HTTP 503）", "fred-releases（unreachable）"],
+    sourceGaps: ["sec-current-8-k（HTTP 503）", "fred-releases（无法连接）"],
     notes: [],
     ...overrides,
   };

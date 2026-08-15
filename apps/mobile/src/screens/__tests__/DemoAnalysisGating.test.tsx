@@ -303,7 +303,7 @@ describe("Dashboard 屏幕的市场简报", () => {
     expect(
       view.getByTestId("market-brief-unavailable-reason"),
     ).toHaveTextContent(
-      "本次未能读取任何情报源：sec-current-8-k（HTTP 503）、fred-releases（unreachable）",
+      "本次未能读取任何情报源：sec-current-8-k（HTTP 503）、fred-releases（无法连接）",
     );
     expect(view.queryByTestId("market-brief-card")).toBeNull();
     expect(view.queryByText("谨慎偏多")).toBeNull();
