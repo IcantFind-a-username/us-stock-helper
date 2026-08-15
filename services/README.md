@@ -32,13 +32,15 @@ PYTHONPATH=services/analysis_core \
   python3 -m unittest discover -s services/analysis_core/tests -v
 PYTHONPATH=services/information_layer \
   python3 -m unittest discover -s services/information_layer/tests -v
-PYTHONPATH=services/adviser_layer \
+PYTHONPATH=services/adviser_layer:services/analysis_core \
   python3 -m unittest discover -s services/adviser_layer/tests -v
 PYTHONPATH=services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine \
   python3 -m unittest discover -s services/decision_engine/tests -v
 PYTHONPATH=services/market_gateway/src:services/analysis_core \
   python3 -m unittest discover -s services/market_gateway/tests -v
-PYTHONPATH=services/analysis_api/src:services/analysis_api/tests:services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine \
+# analysis_api spawns a subprocess whose cwd differs, so its PYTHONPATH must
+# be absolute; it also imports market_gateway, adviser_llm, and device_auth.
+PYTHONPATH=$PWD/services/analysis_api/src:$PWD/services/analysis_api/tests:$PWD/services/analysis_core:$PWD/services/information_layer:$PWD/services/adviser_layer:$PWD/services/decision_engine:$PWD/services/market_gateway/src:$PWD/services/adviser_llm/src:$PWD/services/device_auth/src \
   python3 -m unittest discover -s services/analysis_api/tests -v
 ```
 

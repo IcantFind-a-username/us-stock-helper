@@ -205,6 +205,8 @@ should say so at startup instead of reporting an empty market per request.
 ## Run tests
 
 ```bash
-PYTHONPATH=services/analysis_api/src:services/analysis_api/tests:services/analysis_core:services/information_layer:services/adviser_layer:services/decision_engine \
+# Absolute paths are required: one test spawns a subprocess with a different
+# working directory, and relative PYTHONPATH entries stop resolving there.
+PYTHONPATH=$PWD/services/analysis_api/src:$PWD/services/analysis_api/tests:$PWD/services/analysis_core:$PWD/services/information_layer:$PWD/services/adviser_layer:$PWD/services/decision_engine:$PWD/services/market_gateway/src:$PWD/services/adviser_llm/src:$PWD/services/device_auth/src \
   python3 -m unittest discover -s services/analysis_api/tests -v
 ```
