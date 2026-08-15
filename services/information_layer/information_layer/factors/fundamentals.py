@@ -78,10 +78,16 @@ _MAXIMUM_QUARTER_DAYS = 100
 # How far from exactly a year earlier a comparison quarter may sit. A
 # 52/53-week calendar shifts period ends by up to a week each year.
 _YEAR_OVER_YEAR_TOLERANCE_DAYS = 20
-# Past this, the newest quarter on file describes a company that has stopped
-# reporting rather than one that has just not reported yet: a 10-Q is due
-# within 45 days of quarter end, so even a late filer is inside 200 days.
-_STALE_AFTER_DAYS = 200
+# A 10-Q is due within 45 days of its own quarter end, so a bound of "45 days
+# past the newest quarter" looks safe — except fiscal Q4 never gets its own
+# quarterly duration: the 10-K carries only the full-year span, which
+# _parse_fact rejects as not a quarter. So after a Q3 10-Q, the next
+# quarterly datum is next year's Q1 - a full extra quarter away - before that
+# quarter's own 45-day filing deadline even starts running. Budgeting for two
+# quarters at this module's own maximum quarter length plus that deadline
+# covers the structural gap every calendar-year filer goes through each
+# spring, while still catching a filer that has genuinely gone quiet.
+_STALE_AFTER_DAYS = 2 * _MAXIMUM_QUARTER_DAYS + 45
 
 # Scales convert a percentage into the [-1, 1] the scorer expects. They are
 # the modelling choice in this module and are versioned with it: 20% revenue
@@ -239,9 +245,13 @@ class SecXbrlFundamentalsFactor:
                 as_of,
                 FactorUnavailable.STALE_BEYOND_WINDOW,
                 f"The newest quarter on file ended {current_end.isoformat()}, "
-                f"more than {_STALE_AFTER_DAYS} days before the cutoff, so it "
-                "describes a company that has stopped reporting rather than "
-                "one that has not reported yet.",
+                f"more than {_STALE_AFTER_DAYS} days before the cutoff. That "
+                "bound already covers the structural gap a fiscal Q4 leaves "
+                "(no quarterly filing covers Q4 itself, so the wait between a "
+                "Q3 10-Q and the next quarterly data point is a full extra "
+                "quarter), so this describes a company that has stopped "
+                "reporting rather than one still inside its normal filing "
+                "calendar.",
             )
         prior_end = _year_earlier(current_end, known_ends)
         if prior_end is None:
@@ -537,20 +547,53 @@ def _factor_input(name: str, fact: _Fact) -> FactorInput:
     )
 
 
+def _span_days(fact: _Fact) -> int:
+    return (fact.end - fact.start).days
+
+
+def _comparability_note(current: _Fact, prior: _Fact) -> str:
+    """State it when a ratio was computed per-day rather than raw.
+
+    A 52/53-week fiscal calendar shifts a quarter's own length by up to a
+    week, and an extra week of revenue reads as organic growth if the two
+    periods are ratioed as filed. Normalizing to a daily rate before ratioing
+    removes that artifact silently unless the reader is told the periods
+    being compared were not the same length.
+    """
+
+    current_span = _span_days(current)
+    prior_span = _span_days(prior)
+    if current_span == prior_span:
+        return ""
+    return (
+        f" (normalized to a daily rate: the compared quarters span "
+        f"{current_span} and {prior_span} days)"
+    )
+
+
 def _revenue_growth(
     revenue: Mapping[date, _Fact], current_end: date, prior_end: date
 ) -> _SubSignal | None:
     current = revenue.get(current_end)
     prior = revenue.get(prior_end)
-    if current is None or prior is None or prior.value <= 0:
+    if current is None or prior is None:
+        return None
+    # Ratioed as filed, an extra week in one period is counted twice: once as
+    # more dollars and again as a faster growth rate. Ratioing the per-day
+    # rate instead cancels a span difference and is a no-op when the two
+    # periods already span the same number of days.
+    current_rate = current.value / _span_days(current)
+    prior_rate = prior.value / _span_days(prior)
+    if prior_rate <= 0:
         # A non-positive base makes a growth ratio meaningless rather than
         # extreme, and an extreme number here would dominate the average.
         return None
-    growth = current.value / prior.value - 1.0
+    growth = current_rate / prior_rate - 1.0
     return _SubSignal(
         name="revenue_growth",
         value=clamp_unit(growth / _REVENUE_GROWTH_SCALE),
-        detail=f"revenue {growth:+.1%} year over year",
+        detail=f"revenue {growth:+.1%} year over year"
+        + _comparability_note(current, prior),
         inputs=(
             _factor_input("revenue_current", current),
             _factor_input("revenue_prior", prior),
@@ -598,11 +641,17 @@ def _earnings_growth(
     prior = eps.get(prior_end)
     if current is None or prior is None:
         return None
-    if prior.value > 0:
-        growth = current.value / prior.value - 1.0
+    # Diluted EPS is a period flow like revenue, so the same extra-week
+    # artifact applies: ratio the per-day rate, not the value as filed.
+    current_rate = current.value / _span_days(current)
+    prior_rate = prior.value / _span_days(prior)
+    if prior_rate > 0:
+        growth = current_rate / prior_rate - 1.0
         value = clamp_unit(growth / _EPS_GROWTH_SCALE)
-        detail = f"diluted EPS {growth:+.1%} year over year"
-    elif current.value > 0:
+        detail = f"diluted EPS {growth:+.1%} year over year" + _comparability_note(
+            current, prior
+        )
+    elif current_rate > 0:
         # Crossing from a loss into a profit is real information, but it has
         # no percentage: any denominator here would be invented.
         value = 1.0

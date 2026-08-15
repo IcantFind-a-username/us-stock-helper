@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from information_layer.factors import FactorUnavailable
@@ -306,7 +306,13 @@ class RealFilerShapeTests(unittest.TestCase):
         )
 
         self.assertIsNone(reading.unavailable_reason)
-        self.assertAlmostEqual(reading.value or 0.0, 0.427400, places=6)
+        # Coca-Cola's week-aligned fiscal calendar makes the current quarter
+        # (2026-01-01..2026-04-03) 92 days and the year-earlier one
+        # (2025-01-01..2025-03-28) 86 days. Growth is normalized to a daily
+        # rate before being ratioed, so this is no longer the raw
+        # 12472/11129-1 comparison (which would overstate the signal with six
+        # days of revenue counted as if they were organic growth).
+        self.assertAlmostEqual(reading.value or 0.0, 0.219948, places=6)
         self.assertEqual(
             inputs_by_name(reading)["revenue_current"].observed_at.date(),
             date(2026, 4, 3),
@@ -491,6 +497,45 @@ class FundamentalsDegradationTests(unittest.TestCase):
             reading.unavailable_reason, FactorUnavailable.STALE_BEYOND_WINDOW
         )
 
+    def test_a_calendar_filers_q4_gap_is_not_reported_as_stopped_reporting(
+        self,
+    ) -> None:
+        # Coca-Cola's Q3 ends 2025-09-26. Q4 never appears as its own
+        # quarterly duration (the 10-K carries only the full-year span,
+        # which _parse_fact rejects), so the next quarterly datum is next
+        # year's Q1 10-Q, filed 2026-04-30 - a structural ~216 day gap every
+        # calendar-year filer goes through every spring while filing exactly
+        # on schedule. A 200-day window called this "stopped reporting".
+        for as_of in (
+            datetime(2026, 4, 20, tzinfo=timezone.utc),
+            datetime(2026, 4, 30, tzinfo=timezone.utc),
+        ):
+            with self.subTest(as_of=as_of):
+                reading = factor(CompanyFactsTransport()).reading(
+                    cik=COCA_COLA_CIK, as_of=as_of
+                )
+
+                self.assertIsNone(reading.unavailable_reason)
+                self.assertIsNotNone(reading.value)
+
+    def test_a_gap_beyond_the_widened_calendar_aware_bound_is_still_stale(
+        self,
+    ) -> None:
+        # The fixture's newest Coca-Cola quarter ends 2026-04-03 with no
+        # later quarter on file. By 2027-01-01 (273 days later) that is well
+        # past even a Q4-gap-adjusted bound: widening the window to cover the
+        # structural gap must not turn it into a licence to call a company
+        # that has genuinely stopped filing "current".
+        reading = factor(CompanyFactsTransport()).reading(
+            cik=COCA_COLA_CIK,
+            as_of=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+
+        self.assertIsNone(reading.value)
+        self.assertEqual(
+            reading.unavailable_reason, FactorUnavailable.STALE_BEYOND_WINDOW
+        )
+
     def test_a_quarter_with_no_year_earlier_comparison_is_not_a_growth_rate(
         self,
     ) -> None:
@@ -508,6 +553,164 @@ class FundamentalsDegradationTests(unittest.TestCase):
         self.assertEqual(
             reading.unavailable_reason, FactorUnavailable.INSUFFICIENT_HISTORY
         )
+
+
+def _quarter_row(
+    *, start: str, end: str, value: float, filed: str, accn: str
+) -> dict[str, object]:
+    return {
+        "start": start,
+        "end": end,
+        "val": value,
+        "filed": filed,
+        "accn": accn,
+        "fy": 2026,
+        "fp": "Q1",
+        "form": "10-Q",
+    }
+
+
+def _single_tag_payload(tag: str, unit: str, rows: list[dict[str, object]]) -> bytes:
+    return json.dumps(
+        {
+            "cik": 9999999,
+            "entityName": "Synthetic Test Co",
+            "facts": {"us-gaap": {tag: {"units": {unit: rows}}}},
+        }
+    ).encode()
+
+
+class StaleWindowBoundaryTests(unittest.TestCase):
+    """Pins the exact calendar-aware bound rather than only its rough shape.
+
+    A single quarterly fact with nothing before or after it, so the gap being
+    measured is controlled to the day: the newest quarter's own end date, with
+    no other data to shift what "current" means.
+    """
+
+    _END = date(2024, 12, 31)  # a 91-day quarter starting 2024-10-01
+
+    def _reading_at_gap(self, days: int):
+        rows = [
+            _quarter_row(
+                start="2024-10-01",
+                end=self._END.isoformat(),
+                value=1_000_000.0,
+                filed="2025-01-15",
+                accn="0000000000-25-000001",
+            )
+        ]
+        as_of = datetime(
+            self._END.year, self._END.month, self._END.day, tzinfo=timezone.utc
+        ) + timedelta(days=days)
+        return factor(
+            CompanyFactsTransport(_single_tag_payload("Revenues", "USD", rows))
+        ).reading(cik="0009999999", as_of=as_of)
+
+    def test_two_quarters_and_the_45_day_10q_deadline_is_still_current(
+        self,
+    ) -> None:
+        # The structural Q3 -> Q1 gap is one quarter that never gets its own
+        # quarterly tag (Q4, folded into the 10-K) plus the following
+        # quarter's own length, plus that quarter's 45-day filing deadline:
+        # two quarters at this module's own maximum quarter length (100 days
+        # each) plus 45 days is 245 days. One day inside that must not be
+        # reported as a company that stopped filing.
+        reading = self._reading_at_gap(244)
+
+        self.assertNotEqual(
+            reading.unavailable_reason, FactorUnavailable.STALE_BEYOND_WINDOW
+        )
+
+    def test_past_the_calendar_aware_bound_is_reported_stale(self) -> None:
+        reading = self._reading_at_gap(246)
+
+        self.assertIsNone(reading.value)
+        self.assertEqual(
+            reading.unavailable_reason, FactorUnavailable.STALE_BEYOND_WINDOW
+        )
+
+
+class UnequalQuarterLengthComparabilityTests(unittest.TestCase):
+    """A 52/53-week fiscal calendar shifts a quarter's own length by days.
+
+    An extra week of revenue is real revenue, but it is not organic growth,
+    and ratioing two differently-scoped periods reports it as if it were.
+    """
+
+    # 91-day current quarter vs an 85-day year-earlier quarter: exactly the
+    # KO-style calendar shift the finding reproduced, sized so the expected
+    # normalized value can be hand-computed rather than merely observed.
+    _CURRENT = _quarter_row(
+        start="2026-01-01",
+        end="2026-04-02",
+        value=1000.0,
+        filed="2026-04-20",
+        accn="0000000000-26-000001",
+    )
+    _PRIOR = _quarter_row(
+        start="2025-01-01",
+        end="2025-03-27",
+        value=900.0,
+        filed="2025-04-20",
+        accn="0000000000-25-000001",
+    )
+    _AS_OF = datetime(2026, 5, 1, tzinfo=timezone.utc)
+
+    def test_revenue_growth_is_normalized_to_a_daily_rate_not_ratioed_raw(
+        self,
+    ) -> None:
+        # Raw ratio: 1000/900 - 1 = +11.11% (scaled: 0.55556). Per-day rate:
+        # (1000/91) / (900/85) - 1 = +3.79% (scaled: 0.18925). The six extra
+        # days of revenue must not be counted twice: once as more dollars and
+        # again as a faster growth rate.
+        reading = factor(
+            CompanyFactsTransport(
+                _single_tag_payload("Revenues", "USD", [self._CURRENT, self._PRIOR])
+            )
+        ).reading(cik="0009999999", as_of=self._AS_OF)
+
+        self.assertIsNotNone(reading.value)
+        self.assertAlmostEqual(reading.value or 0.0, 0.189255, places=5)
+        self.assertNotAlmostEqual(reading.value or 0.0, 0.555556, places=3)
+        self.assertIn("91", reading.detail)
+        self.assertIn("85", reading.detail)
+
+    def test_earnings_growth_is_also_normalized_to_a_daily_rate(self) -> None:
+        current = dict(self._CURRENT)
+        prior = dict(self._PRIOR)
+        reading = factor(
+            CompanyFactsTransport(
+                _single_tag_payload(
+                    "EarningsPerShareDiluted", "USD/shares", [current, prior]
+                )
+            )
+        ).reading(cik="0009999999", as_of=self._AS_OF)
+
+        self.assertIsNotNone(reading.value)
+        # Same 1000-vs-900-over-91-vs-85-days shape as the revenue case,
+        # scaled by the (wider) EPS-growth scale instead.
+        self.assertAlmostEqual(reading.value or 0.0, 0.126170, places=5)
+
+    def test_equal_length_quarters_are_unaffected_by_the_normalization(
+        self,
+    ) -> None:
+        # The fix must be a no-op when there is nothing to correct: two
+        # 91-day quarters produce the same ratio normalized or not.
+        current = dict(self._CURRENT)
+        prior = dict(self._PRIOR, start="2025-01-02", end="2025-04-03", val=900.0)
+        # 2025-01-02 -> 2025-04-03 is also 91 days.
+        self.assertEqual(
+            (date(2025, 4, 3) - date(2025, 1, 2)).days, 91
+        )
+
+        reading = factor(
+            CompanyFactsTransport(
+                _single_tag_payload("Revenues", "USD", [current, prior])
+            )
+        ).reading(cik="0009999999", as_of=self._AS_OF)
+
+        self.assertAlmostEqual(reading.value or 0.0, 0.555556, places=5)
 
 
 if __name__ == "__main__":
