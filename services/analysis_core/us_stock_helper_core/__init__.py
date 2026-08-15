@@ -88,10 +88,13 @@ from .scoring import (
 )
 from .temporal import select_bars_as_of, select_evidence_as_of
 from .volatility import (
+    RANGE_VOLATILITY_VERSION,
     VOLATILITY_VERSION,
     VolatilityEstimate,
     bars_per_year,
     estimate_annualized_volatility,
+    estimate_garman_klass_volatility,
+    estimate_parkinson_volatility,
 )
 from .trend import (
     DRAGON_TREND_VERSION,
@@ -130,6 +133,7 @@ __all__ = [
     "PatternKind",
     "PatternSignal",
     "PercentAboveMAResult",
+    "RANGE_VOLATILITY_VERSION",
     "RVOL_VERSION",
     "RelativeStrengthRanking",
     "RelativeVolumeResult",
@@ -162,6 +166,8 @@ __all__ = [
     "dragon_trend",
     "ema_series",
     "estimate_annualized_volatility",
+    "estimate_garman_klass_volatility",
+    "estimate_parkinson_volatility",
     "extract_horizon_features",
     "freeze_evidence_packet",
     "macd",
