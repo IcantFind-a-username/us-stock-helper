@@ -78,6 +78,31 @@ class FakeBars:
         return ()
 
 
+class ServedBars:
+    """Enough completed daily candles for a decision to be served."""
+
+    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
+        rows = []
+        for index in range(40):
+            closed_at = AS_OF - timedelta(days=39 - index)
+            price = 100.0 + index * 0.5
+            rows.append(
+                OHLCVBar(
+                    symbol=symbol,
+                    interval=interval,
+                    opened_at=closed_at - timedelta(days=1),
+                    closed_at=closed_at,
+                    available_at=closed_at,
+                    open=price,
+                    high=price + 0.5,
+                    low=price - 0.5,
+                    close=price,
+                    volume=1_000_000.0,
+                )
+            )
+        return tuple(rows)
+
+
 class FakeFactors:
     def __init__(self) -> None:
         self.queries: list[tuple[str, datetime]] = []
@@ -94,10 +119,11 @@ class EvidenceProviderTests(unittest.TestCase):
     ) -> None:
         collector = FakeCollector()
 
-        events = FeedEvidenceProvider(collector).evidence_for("NVDA")
+        result = FeedEvidenceProvider(collector).read_evidence("NVDA")
 
         self.assertEqual(collector.requests, [("NVDA",)])
-        self.assertEqual([item.event_id for item in events], ["e1"])
+        self.assertEqual([item.event_id for item in result.events], ["e1"])
+        self.assertEqual(result.gaps, ())
 
     def test_an_unreadable_source_reaches_the_caller_instead_of_an_empty_answer(
         self,
@@ -107,7 +133,7 @@ class EvidenceProviderTests(unittest.TestCase):
         )
 
         with self.assertRaises(EvidenceUnavailable):
-            FeedEvidenceProvider(collector).evidence_for("NVDA")
+            FeedEvidenceProvider(collector).read_evidence("NVDA")
 
 
 class CompositeProviderTests(unittest.TestCase):
@@ -122,13 +148,83 @@ class CompositeProviderTests(unittest.TestCase):
         )
 
         provider.bars_for("NVDA", "5m")
-        provider.evidence_for("NVDA")
+        provider.read_evidence("NVDA")
         answer = provider.factors_for("NVDA", AS_OF)
 
         self.assertEqual(bars.queries, [("NVDA", "5m")])
         self.assertEqual(collector.requests, [("NVDA",)])
         self.assertIs(answer, factors.answer)
         self.assertEqual(factors.queries, [("NVDA", AS_OF)])
+
+
+class RequestScopedGapTests(unittest.TestCase):
+    """A request's gap disclosure must survive a concurrent clean sweep.
+
+    The provider is one shared instance behind a threading server. A request
+    whose sweep was partial spends real time in factor reads and engine
+    evaluation before its notes are assembled; when the gaps lived on the
+    provider, a clean sweep for another symbol landing in that window erased
+    them, and the partial read was served as a complete one — the exact
+    mistake the gap notes exist to prevent.
+    """
+
+    @staticmethod
+    def sweep(provider: object, symbol: str) -> object:
+        # Mirrors the service's own bridging: prefer the request-scoped read,
+        # fall back to the legacy provider-state shape.
+        read = getattr(provider, "read_evidence", None)
+        if callable(read):
+            return read(symbol)
+        return provider.evidence_for(symbol)
+
+    def test_a_concurrent_clean_sweep_cannot_erase_a_gap_disclosure(
+        self,
+    ) -> None:
+        from us_stock_helper_analysis_api.service import AnalysisService
+
+        flaky = FakeCollector(
+            failures=(SourceFailure("sec-current-8-k", "unreachable"),)
+        )
+        shared = FeedEvidenceProvider(flaky)
+        run_sweep = self.sweep
+
+        class ConcurrentSweepFactors:
+            def snapshot(self, *, symbol: str, as_of: datetime) -> object:
+                # Request B lands while request A is inside its factor read;
+                # the source has recovered by then, so B's sweep is clean.
+                flaky.failures = ()
+                run_sweep(shared, "TSLA")
+                raise RuntimeError("factors are not what this test reads")
+
+        provider = CompositeAnalysisProvider(
+            bars=ServedBars(),
+            evidence=shared,
+            factors=ConcurrentSweepFactors(),
+        )
+
+        payload = AnalysisService(provider, clock=lambda: AS_OF).decision(
+            "NVDA", "short"
+        )
+
+        self.assertTrue(
+            any("sec-current-8-k" in note for note in payload["notes"]),
+            "request A's partial sweep was served as a complete one: "
+            f"{payload['notes']}",
+        )
+
+    def test_the_gaps_travel_with_the_read_not_with_the_provider(self) -> None:
+        collector = FakeCollector(
+            failures=(SourceFailure("sec-current-8-k", "HTTP 503"),)
+        )
+        provider = FeedEvidenceProvider(collector)
+
+        partial = provider.read_evidence("NVDA")
+        collector.failures = ()
+        clean = provider.read_evidence("NVDA")
+
+        self.assertEqual(partial.gaps, ("sec-current-8-k（HTTP 503）",))
+        self.assertEqual(clean.gaps, ())
+        self.assertEqual([item.event_id for item in partial.events], ["e1"])
 
 
 class ProviderConfigTests(unittest.TestCase):

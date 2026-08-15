@@ -54,9 +54,16 @@ _PREFERENCES = {value.value: value for value in RiskPreference}
 
 
 class AnalysisProvider(Protocol):
-    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]: ...
+    """Candles are required; evidence arrives through one of two shapes.
 
-    def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]: ...
+    Preferred: read_evidence(symbol) returning an object carrying request-
+    scoped .events and .gaps. Providers written before partial reads existed
+    — including the fakes several test modules inject — expose
+    evidence_for(symbol) instead, optionally with a provider-level
+    evidence_gaps(); _read_evidence bridges both.
+    """
+
+    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,16 +79,28 @@ class AnalysisService:
     # route exactly as before and report only the adviser as unavailable.
     adviser_factory: Callable[[], AdviserSource] = provider_from_environment
 
-    def _evidence_gaps(self) -> tuple[str, ...]:
-        """Which sources the last read could not reach, if the provider says.
+    def _read_evidence(
+        self,
+        symbol: str,
+    ) -> tuple[tuple[EvidenceEvent, ...], tuple[str, ...]]:
+        """One request's evidence, with the sources that read could not reach.
 
+        The gaps travel with the call: the provider is one shared instance
+        behind a threading server, and reading them back from provider state
+        later let a concurrent clean sweep erase another request's disclosure.
         Providers written before partial reads existed — including the fakes
-        several test modules inject — have nothing to report, and a decision
-        with no gaps to name is the ordinary case rather than an error.
+        several test modules inject — still answer through evidence_for, with
+        anything their optional provider-level evidence_gaps() reports carried
+        along as before.
         """
 
+        read = getattr(self.provider, "read_evidence", None)
+        if callable(read):
+            result = read(symbol)
+            return tuple(result.events), tuple(result.gaps)
+        events = tuple(self.provider.evidence_for(symbol))
         report = getattr(self.provider, "evidence_gaps", None)
-        return tuple(report()) if callable(report) else ()
+        return events, (tuple(report()) if callable(report) else ())
 
     def _factor_snapshot(
         self,
@@ -148,7 +167,7 @@ class AnalysisService:
         # during the request fell after the cutoff and was silently filed as
         # future — breaking news was invisible to precisely the request that
         # fetched it, served as a measured-looking neutral.
-        evidence = self.provider.evidence_for(normalized)
+        evidence, gaps = self._read_evidence(normalized)
         as_of = self.clock()
         factors, factor_failure = self._factor_snapshot(normalized, as_of)
         output = DecisionEngine().evaluate(
@@ -222,8 +241,8 @@ class AnalysisService:
         # A source that could not be read is stated rather than absorbed. The
         # decision is still served — one slow publisher used to fail every
         # symbol at once — but a reader must never mistake a partial sweep of
-        # the news for a complete one.
-        gaps = self._evidence_gaps()
+        # the news for a complete one. The gaps were captured with the fetch
+        # itself, so a neighbouring request's sweep cannot rewrite them.
         if gaps:
             notes.append(
                 f"本次未能读取 {len(gaps)} 个情报源，证据可能不完整：" + "、".join(gaps)
