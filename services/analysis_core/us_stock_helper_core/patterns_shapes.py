@@ -289,10 +289,28 @@ class PatternShapeSignal:
     reading_detail: str
     reading_honesty: str = "历史胜率待回测"
     algorithm_version: str = PATTERNS_SHAPES_VERSION
+    # Machine-readable twin of the served ``invalidation`` sentence: the
+    # price level whose strict breach against the signal's direction (a
+    # close strictly below it for a bullish signal, strictly above it for a
+    # bearish one -- 跌破/升破 are strict) voids the signal. Confirmed
+    # signals carry it so downstream consumers (the 形态 score factor) can
+    # check "still in force" without re-deriving necklines; forming signals
+    # carry the level whose breach fails the candidate. ``None`` when the
+    # boundary is not a fixed level (回踩五日线 tracks each day's own MA5)
+    # or the signal is already invalidated.
+    invalidation_level: float | None = None
 
     def __post_init__(self) -> None:
         if self.algorithm_version != PATTERNS_SHAPES_VERSION:
             raise ValueError("unsupported patterns-shapes algorithm version")
+        if (
+            self.status is PatternShapeStatus.CONFIRMED
+            and self.kind is not PatternShapeKind.MA5_PULLBACK
+            and self.invalidation_level is None
+        ):
+            raise ValueError(
+                "a confirmed signal requires its machine-readable invalidation level"
+            )
         if not self.bars:
             raise ValueError("a pattern signal requires at least one structural bar")
         indices = [b.index for b in self.bars]
@@ -440,6 +458,7 @@ def _build_fractal_signal(
         explanation=explanation,
         reading_summary=summary,
         reading_detail=detail,
+        invalidation_level=extreme,
     )
 
 
@@ -630,6 +649,12 @@ def _build_double_signal(
     bars_ref = (_bar_ref(bars, first), _bar_ref(bars, second), _bar_ref(bars, event_index))
     if bars_ref[2].index == bars_ref[1].index:
         bars_ref = bars_ref[:2]
+    if status is PatternShapeStatus.FORMING:
+        invalidation_level: float | None = second_extreme
+    elif status is PatternShapeStatus.CONFIRMED:
+        invalidation_level = neckline
+    else:
+        invalidation_level = None
     return PatternShapeSignal(
         kind=kind,
         name=_KIND_NAME_ZH[kind],
@@ -642,6 +667,7 @@ def _build_double_signal(
         explanation=explanation,
         reading_summary=summary,
         reading_detail=detail,
+        invalidation_level=invalidation_level,
     )
 
 
@@ -814,6 +840,12 @@ def _build_hs_signal(
     )
     if bars_ref[3].index == bars_ref[2].index:
         bars_ref = bars_ref[:3]
+    if status is PatternShapeStatus.FORMING:
+        invalidation_level: float | None = head_extreme
+    elif status is PatternShapeStatus.CONFIRMED:
+        invalidation_level = neckline
+    else:
+        invalidation_level = None
     return PatternShapeSignal(
         kind=kind,
         name=_KIND_NAME_ZH[kind],
@@ -826,6 +858,7 @@ def _build_hs_signal(
         explanation=explanation,
         reading_summary=summary,
         reading_detail=detail,
+        invalidation_level=invalidation_level,
     )
 
 

@@ -127,7 +127,8 @@ function unavailableFactor(name: string, explanation: string) {
 const FACTOR_EXPLANATIONS: Record<string, string> = {
   technical_trend: "按周期对应的回看窗口，用已收盘K线计算涨跌幅。",
   momentum: "RSI 与 MACD 动量，只用已收盘K线计算。",
-  pattern: "只计入收盘确认的形态证据；未确认的形态贡献为零。",
+  pattern:
+    "只计入收盘确认、且失效条件尚未触发的形态证据：确认后一旦收盘越过失效价位（如W底跌回颈线下方），该形态即停止计分；多个形态并存时取幅度最大者，幅度相同取最新。未确认的形态贡献为零。",
   market_sentiment: "按当时可见的市场情绪，结合引用的新闻证据。",
   macro: "按当时可见的宏观经济背景，作为软因子处理。",
   geopolitics: "按当时可见的地缘政治背景，作为软因子处理。",
@@ -148,7 +149,7 @@ function availableDecisionPayload() {
       value: 68.4,
       direction: "bullish",
       actionable: true,
-      methodVersion: "explainable-horizon-score-v1",
+      methodVersion: "explainable-horizon-score-v2",
       factorCoverage: 0.7,
       unavailableFactors: [
         "fundamentals",

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Iterable, Sequence
 
-from .indicators import macd, rsi
+from .indicators import macd, moving_average_series, rsi
 from .models import (
     Direction,
     EvidenceRecord,
@@ -16,7 +16,12 @@ from .models import (
     require_utc,
 )
 from .patterns import magic_nine
-from .patterns_shapes import PatternShapeKind, PatternShapeStatus, detect_pattern_shapes
+from .patterns_shapes import (
+    PatternShapeKind,
+    PatternShapeSignal,
+    PatternShapeStatus,
+    detect_pattern_shapes,
+)
 from .temporal import select_bars_as_of, select_evidence_as_of
 
 
@@ -33,8 +38,9 @@ _SMALLEST_PATTERN_WINDOW = 3
 
 # Score magnitude per confirmed shape kind (sign follows the signal's own
 # direction) -- mirrors patterns_shapes.py's own confirmed/invalidated
-# distinction: only a confirmed shape votes, matching the "只计入收盘确认的
-# 形态证据" explanation below.
+# distinction: only a confirmed shape votes, and (explainable-horizon-score-v2)
+# only while its invalidation condition has not been met at the latest close,
+# matching the 形态 factor explanation below.
 _PATTERN_SHAPE_MAGNITUDE: dict[PatternShapeKind, float] = {
     PatternShapeKind.FRACTAL_TOP: 0.3,
     PatternShapeKind.FRACTAL_BOTTOM: 0.3,
@@ -164,7 +170,12 @@ class ScoreResult:
     blocked_by: tuple[HardGate, ...]
     unavailable_factors: tuple[str, ...] = ()
     factor_coverage: float = 1.0
-    method_version: str = "explainable-horizon-score-v1"
+    # v2 (2026-08-16): the 形态 factor now counts a confirmed shape only
+    # while it is still in force at the latest close, and breaks equal-
+    # magnitude ties toward the most recent signal. The semantics change is
+    # disclosed here and in the served pattern explanation, not slipped
+    # under a stable version id.
+    method_version: str = "explainable-horizon-score-v2"
 
 
 def extract_horizon_features(
@@ -220,34 +231,55 @@ def extract_horizon_features(
         sum(momentum_parts) / len(momentum_parts) if momentum_parts else None
     )
 
-    pattern_values: list[float] = []
+    # Each vote is (recency, value): recency orders equal-magnitude votes so
+    # the most recent read wins the tie, restoring the pre-rewrite "latest
+    # signal decides" semantics instead of letting list order pick.
+    pattern_votes: list[tuple[int, float]] = []
     sequential = magic_nine(closes)
     if sequential is not None:
-        pattern_values.append(
-            (1.0 if sequential.direction == Direction.BULLISH else -1.0)
-            * sequential.count
-            / 9.0
-            * 0.5
+        pattern_votes.append(
+            (
+                # A running count has no single event bar; order it below
+                # every dated shape signal.
+                -1,
+                (1.0 if sequential.direction == Direction.BULLISH else -1.0)
+                * sequential.count
+                / 9.0
+                * 0.5,
+            )
         )
     # detect_pattern_shapes runs 顶分型/底分型/W底/双头/头肩顶/头肩底/回踩五日线
     # over the same completed bars the chart-hint card serves; only a
     # confirmed shape votes here, so the score and the served hint can never
-    # disagree about what "confirmed" means.
+    # disagree about what "confirmed" means -- and (explainable-horizon-
+    # score-v2) only while the shape is still in force: once its own
+    # invalidation condition has happened at the latest close (a W底 whose
+    # neckline is lost, a 回眸一笑 whose five-day average is broken again),
+    # its vote stops instead of persisting forever in the window.
     for detection in detect_pattern_shapes(selected_bars):
         for signal in detection.signals:
             if signal.status is not PatternShapeStatus.CONFIRMED:
                 continue
+            if not _confirmed_shape_in_force(signal, closes):
+                continue
             sign = 1.0 if signal.direction == Direction.BULLISH else -1.0
-            pattern_values.append(sign * _PATTERN_SHAPE_MAGNITUDE[signal.kind])
+            pattern_votes.append(
+                (signal.event_index, sign * _PATTERN_SHAPE_MAGNITUDE[signal.kind])
+            )
     if len(selected_bars) < _SMALLEST_PATTERN_WINDOW:
         # Too few bars for any detector to have looked. Claiming a measured
         # zero here would report "looked and found nothing" for a window that
         # was never looked at.
         pattern = None
+    elif pattern_votes:
+        # The largest in-force reading wins; equal magnitudes go to the most
+        # recent one.
+        pattern = max(pattern_votes, key=lambda vote: (abs(vote[1]), vote[0]))[1]
     else:
-        # No confirmed pattern is a genuine reading of zero: the detectors ran
-        # and found nothing. It stays 0.0, unlike a factor nothing could read.
-        pattern = max(pattern_values, key=abs) if pattern_values else 0.0
+        # No in-force confirmed pattern is a genuine reading of zero: the
+        # detectors ran and nothing currently stands. It stays 0.0, unlike a
+        # factor nothing could read.
+        pattern = 0.0
 
     confidence_total = sum(record.confidence for record in selected_evidence)
     # Only sources something actually read contribute an opinion. Unread ones
@@ -297,6 +329,42 @@ def extract_horizon_features(
     )
 
 
+def _confirmed_shape_in_force(
+    signal: PatternShapeSignal, closes: Sequence[float]
+) -> bool:
+    """True while the confirmed signal's invalidation has not happened.
+
+    Per pattern kind, checked against the latest close only (the same close
+    the reader sees):
+
+    - Fixed-level kinds (分型 extreme, W底/双头/头肩 neckline) carry their
+      boundary as ``invalidation_level``. 跌破/升破 are strict breaks: a
+      bullish signal dies on a close strictly below its level, a bearish one
+      on a close strictly above it; a close exactly on the level has not met
+      the condition and the signal still votes.
+    - 回踩五日线 (confirmed 回眸一笑) has a dynamic boundary -- its served
+      invalidation is 收盘再次跌破五日线，或五日线转跌 -- so it holds while
+      the latest close is not below the latest bar's own MA5 and the MA5 has
+      not turned down against its value three bars earlier.
+    """
+
+    latest_close = closes[-1]
+    if signal.kind is PatternShapeKind.MA5_PULLBACK:
+        ma5 = moving_average_series(closes, 5)
+        if len(ma5) < 4:
+            return False
+        ma5_now, ma5_then = ma5[-1], ma5[-4]
+        if ma5_now is None or ma5_then is None:
+            return False
+        return latest_close >= ma5_now and ma5_now >= ma5_then
+    level = signal.invalidation_level
+    if level is None:  # pragma: no cover - construction guard makes this dead
+        return False
+    if signal.direction == Direction.BULLISH:
+        return not latest_close < level
+    return not latest_close > level
+
+
 def score_horizon(
     features: FeatureSet, hard_gates: Iterable[HardGate] = ()
 ) -> ScoreResult:
@@ -308,7 +376,11 @@ def score_horizon(
     explanations = {
         "technical_trend": "按周期对应的回看窗口，用已收盘K线计算涨跌幅。",
         "momentum": "RSI 与 MACD 动量，只用已收盘K线计算。",
-        "pattern": "只计入收盘确认的形态证据；未确认的形态贡献为零。",
+        "pattern": (
+            "只计入收盘确认、且失效条件尚未触发的形态证据：确认后一旦收盘越过失效价位"
+            "（如W底跌回颈线下方），该形态即停止计分；多个形态并存时取幅度最大者，"
+            "幅度相同取最新。未确认的形态贡献为零。"
+        ),
         "market_sentiment": "按当时可见的市场情绪，结合引用的新闻证据。",
         "macro": "按当时可见的宏观经济背景，作为软因子处理。",
         "geopolitics": "按当时可见的地缘政治背景，作为软因子处理。",

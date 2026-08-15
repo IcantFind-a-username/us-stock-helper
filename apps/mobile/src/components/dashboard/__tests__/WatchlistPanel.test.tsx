@@ -28,7 +28,7 @@ function score(value: number, overrides: Partial<DecisionScore> = {}): DecisionS
     value,
     direction: "bullish",
     actionable: true,
-    methodVersion: "explainable-horizon-score-v1",
+    methodVersion: "explainable-horizon-score-v2",
     factorCoverage: 0.7,
     unavailableFactors: ["macro"],
     blockedBy: [],
