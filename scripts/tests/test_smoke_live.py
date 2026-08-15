@@ -800,6 +800,60 @@ class PhoneGatewayTests(unittest.TestCase):
             self.run_with_phone(sent)
         self.assertEqual(caught.exception.stage, "decision")
 
+    def watchlist_of(self, sent: FakeTransport, *codes: str) -> None:
+        sent.answers[("GET", "http://gateway/watchlist")] = {
+            "schemaVersion": "1",
+            "source": "moomoo",
+            "session": "healthy",
+            "items": [{"code": code} for code in codes],
+        }
+
+    def test_all_watchlist_without_a_phone_gateway_still_says_not_checked(self) -> None:
+        # --all-watchlist must not make the unchecked leg quieter: this is the
+        # exact "NOT CHECKED" disclosure the single-symbol path already prints,
+        # and every batch run loses it the same way if it is gated off.
+        sent = transport()
+        self.watchlist_of(sent, "US.NVDA")
+        lines: list[str] = []
+        operator = Operator()
+        SMOKE.run_smoke(
+            SMOKE.SmokeConfig(
+                gateway_url="http://gateway",
+                analysis_url="http://analysis",
+                interval="5m",
+                all_watchlist=True,
+            ),
+            request=sent,
+            issue_pairing_code=operator.issue,
+            revoke_device=operator.revoke,
+            log=lines.append,
+        )
+        self.assertTrue(any("NOT CHECKED" in line for line in lines))
+
+    def test_all_watchlist_with_an_explicit_phone_gateway_still_checks_it(self) -> None:
+        # An operator who explicitly passes --phone-gateway-url alongside
+        # --all-watchlist must get that leg checked, not silently ignored.
+        sent = self.phone_transport()
+        self.watchlist_of(sent, "US.NVDA")
+        operator = Operator()
+        SMOKE.run_smoke(
+            SMOKE.SmokeConfig(
+                gateway_url="http://gateway",
+                analysis_url="http://analysis",
+                interval="5m",
+                all_watchlist=True,
+                phone_gateway_url="http://phone-gateway",
+                phone_gateway_token="gateway-token",
+            ),
+            request=sent,
+            issue_pairing_code=operator.issue,
+            revoke_device=operator.revoke,
+            log=lambda line: None,
+        )
+        self.assertIn(
+            "phone_gateway_health", [call["stage"] for call in sent.calls]
+        )
+
 
 class CompoundFailureTests(unittest.TestCase):
     """When several stages fail at once, the cause has to outrank the symptom."""
@@ -1771,6 +1825,34 @@ class BatchLifecycleAndReportTests(unittest.TestCase):
                     operator=operator,
                 )
 
+        self.assertEqual(operator.revoked, ["dev-1"])
+
+    def test_a_report_write_failure_does_not_bury_a_real_stage_failure(self) -> None:
+        # A report the caller cannot write must not outrank the reason the
+        # run actually failed: the operator has to be pointed at the quota
+        # exhaustion _blame exists to surface, not sent chasing a
+        # report_write red herring while it travels along in also_failed.
+        sent = BatchTransport(
+            ["US.NVDA"],
+            fail_stage="decision",
+            failure=SMOKE.StageFailure(
+                "decision", "refused", http_status=429, server_code="QUOTA_EXCEEDED"
+            ),
+        )
+        operator = Operator()
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            report_directory = Path(directory) / "report-target"
+            report_directory.mkdir()
+            with self.assertRaises(SMOKE.StageFailure) as caught:
+                self.run_batch(
+                    sent,
+                    config=batch_config(report_path=report_directory),
+                    operator=operator,
+                )
+
+        self.assertEqual(caught.exception.stage, "decision")
+        self.assertEqual(caught.exception.server_code, "QUOTA_EXCEEDED")
+        self.assertIn("report_write", caught.exception.render())
         self.assertEqual(operator.revoked, ["dev-1"])
 
     def test_report_is_private_ordered_and_contains_only_allowlisted_facts(self) -> None:

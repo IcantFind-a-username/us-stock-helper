@@ -1457,29 +1457,41 @@ def run_smoke(
                 }
             )
 
-        if not config.all_watchlist:
-            _check_phone_gateway(
-                config,
-                phone_gateway,
-                request,
-                log,
-                failures,
-            )
+        # Runs unconditionally, watchlist mode included: the origin the phone
+        # actually reads is unrelated to how many symbols this run covers, and
+        # an operator who passed --phone-gateway-url alongside --all-watchlist
+        # must get that leg checked rather than silently dropped. Left unset,
+        # _check_phone_gateway still speaks up with its own NOT CHECKED line.
+        _check_phone_gateway(
+            config,
+            phone_gateway,
+            request,
+            log,
+            failures,
+        )
 
         if report_path is not None:
-            _write_report(
-                report_path,
-                {
-                    "schemaVersion": "1",
-                    "snapshotVersion": config.snapshot_version,
-                    "interval": config.interval,
-                    "count": config.count,
-                    "horizon": config.horizon,
-                    "sourceCount": len(symbols),
-                    "items": report_items,
-                },
-            )
-            log(f"  report entries: {len(report_items)}")
+            try:
+                _write_report(
+                    report_path,
+                    {
+                        "schemaVersion": "1",
+                        "snapshotVersion": config.snapshot_version,
+                        "interval": config.interval,
+                        "count": config.count,
+                        "horizon": config.horizon,
+                        "sourceCount": len(symbols),
+                        "items": report_items,
+                    },
+                )
+            except StageFailure as error:
+                # Joins the collected failures rather than being raised on the
+                # spot: report_write sits outside _BLAME_ORDER, so a stage
+                # nearer the data still wins the verdict and this rides along
+                # in also_failed instead of erasing it.
+                failures.append(error)
+            else:
+                log(f"  report entries: {len(report_items)}")
 
         if failures:
             raise _blame(failures)
