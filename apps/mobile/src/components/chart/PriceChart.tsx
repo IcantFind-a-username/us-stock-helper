@@ -24,6 +24,7 @@ import {
   focusRatioForX,
   panChartWindow,
   reanchorChartWindow,
+  recentPatternSignalsPerKind,
   resolveChartWidth,
   zoomChartWindow,
   type ChartOverlaySeries,
@@ -57,6 +58,16 @@ type PriceChartProps = {
   patternShapes?: PatternShapeSignal[];
   showPatternShapes?: boolean;
 };
+
+/**
+ * Chart markers are anchors, not the historical detection log -- that log is
+ * PatternHintsCard's job, in full. A detector that fires on almost every
+ * third bar (fractals) can otherwise paint the whole visible history with
+ * repeated glyphs, which is exactly what overwhelmed the canvas before this
+ * bound existed. Kept in line with how Magic Nine's own bounded marker set
+ * behaves: never the full run, only a handful of the most recent instances.
+ */
+const RECENT_MARKERS_PER_KIND = 3;
 
 /** One glyph per pattern kind -- short enough to sit off the price text, same idea as Magic Nine's own count label. */
 const PATTERN_MARKER_GLYPH: Record<PatternShapeSignal["kind"], string> = {
@@ -443,7 +454,11 @@ export const PriceChart = memo(function PriceChart({
   // spot on a shared bar, and never sit on top of the price text they mark.
   const patternMarkers = useMemo<MagicNineMarker[]>(() => {
     if (!showPatternShapes) return [];
-    return patternShapes.flatMap((signal, index) => {
+    const recentShapes = recentPatternSignalsPerKind(
+      patternShapes,
+      RECENT_MARKERS_PER_KIND,
+    );
+    return recentShapes.flatMap((signal, index) => {
       const candle = geometry.candles.find(
         (entry) => entry.sourceIndex === signal.anchorIndex,
       );

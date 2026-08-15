@@ -752,6 +752,80 @@ it("hides pattern markers with the showPatternShapes toggle", async () => {
   expect(view.queryByTestId("pattern-shape-marker", hidden)).toBeNull();
 });
 
+it("bounds each pattern kind's chart markers to its most recent few, not the full fractal history", async () => {
+  const candles = Array.from({ length: 9 }, (_, index) => ({
+    ...snapshot.candles[0]!,
+    timestamp: `2026-07-25T15:${String(5 + index * 5).padStart(2, "0")}:00.000Z`,
+    availableAt: `2026-07-25T15:${String(5 + index * 5).padStart(2, "0")}:01.000Z`,
+    close: 132 + index,
+  }));
+  const fractalAt = (anchorIndex: number) => ({
+    kind: "fractal_bottom" as const,
+    name: "底分型",
+    status: "confirmed" as const,
+    direction: "bullish" as const,
+    bars: [{ index: anchorIndex, closedAt: candles[anchorIndex]!.timestamp }],
+    anchorIndex,
+    eventIndex: anchorIndex,
+    invalidation: "收盘价跌破分型低点 90.00",
+    explanation: "中间K线的最低价同时低于左右两根K线。",
+    reading: {
+      summary: "底分型。",
+      detail: "第三根K线收盘后才能确认。",
+      honesty: "历史胜率待回测",
+    },
+    methodVersion: "patterns-shapes-v1" as const,
+  });
+
+  const view = await render(
+    <PriceChart
+      patternShapes={[
+        fractalAt(0),
+        fractalAt(1),
+        fractalAt(2),
+        fractalAt(3),
+        fractalAt(4),
+        fractalAt(5),
+        fractalAt(6),
+        {
+          kind: "double_bottom",
+          name: "W底",
+          status: "confirmed",
+          direction: "bullish",
+          bars: [{ index: 7, closedAt: candles[7]!.timestamp }],
+          anchorIndex: 7,
+          eventIndex: 7,
+          invalidation: "收盘跌破颈线 104.00",
+          explanation: "两个低点幅度接近；颈线 104.00。",
+          reading: {
+            summary: "W底已确认。",
+            detail: "两个相近的低点之间夹着一个反弹高点。",
+            honesty: "历史胜率待回测",
+          },
+          methodVersion: "patterns-shapes-v1",
+        },
+      ]}
+      stock={{ ...snapshot, candles, participationBars: [] }}
+    />,
+  );
+
+  const labels = view
+    .getAllByTestId("pattern-shape-marker-label", hidden)
+    .map(
+      (node) =>
+        (node.props.children as { props: { children: string } }).props
+          .children,
+    );
+
+  // Seven fractal_bottom instances fired, but only the most recent ones still
+  // get a glyph -- the rest of that kind's history is dropped from the
+  // canvas (PatternHintsCard, not the chart, is where the full log lives).
+  expect(labels.filter((label) => label === "分").length).toBeLessThan(7);
+  expect(labels.filter((label) => label === "分").length).toBeGreaterThan(0);
+  // A kind with only one instance is never dropped by the same bound.
+  expect(labels.filter((label) => label === "W")).toHaveLength(1);
+});
+
 it("draws every published TD count across a complete run", async () => {
   const candles = Array.from({ length: 9 }, (_, index) => ({
     ...snapshot.candles[0]!,

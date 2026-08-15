@@ -2,6 +2,7 @@ import type {
   Candle,
   ForecastSnapshot,
   ParticipationBar,
+  PatternShapeSignal,
 } from "./models";
 
 export type CandleGeometry = {
@@ -1098,4 +1099,41 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
     priceMax,
     priceTicks,
   };
+}
+
+/**
+ * Chart markers a reader can still glance at once: each 形态 kind (fractals
+ * especially, which the detector fires on almost every third bar by
+ * construction) keeps only its `limit` most recent instances, ranked by
+ * `eventIndex` -- the bar index a signal's status became true at, in the
+ * same completed-candle numbering every detector shares, so it sorts
+ * unambiguously within a kind. This mirrors how Magic Nine's own bounded
+ * (non-series) marker set never draws more than the developing sequence
+ * plus its last completed one -- a handful of recent anchors, not the full
+ * historical detection log. That log stays complete and undropped in
+ * PatternHintsCard; this only bounds what gets drawn on the canvas.
+ *
+ * Order is otherwise left as given, so a caller that zips this back against
+ * its own index-keyed data sees a stable, input-relative ordering.
+ */
+export function recentPatternSignalsPerKind(
+  signals: PatternShapeSignal[],
+  limit: number,
+): PatternShapeSignal[] {
+  const byKind = new Map<PatternShapeSignal["kind"], PatternShapeSignal[]>();
+  for (const signal of signals) {
+    const group = byKind.get(signal.kind);
+    if (group) group.push(signal);
+    else byKind.set(signal.kind, [signal]);
+  }
+
+  const kept = new Set<PatternShapeSignal>();
+  for (const group of byKind.values()) {
+    const mostRecent = [...group]
+      .sort((a, b) => b.eventIndex - a.eventIndex)
+      .slice(0, Math.max(limit, 0));
+    for (const signal of mostRecent) kept.add(signal);
+  }
+
+  return signals.filter((signal) => kept.has(signal));
 }

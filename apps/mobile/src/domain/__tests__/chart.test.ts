@@ -4,12 +4,14 @@ import type {
   Candle,
   ForecastSnapshot,
   ParticipationBar,
+  PatternShapeSignal,
 } from "@/domain/models";
 
 import {
   alignTouchXToViewBox,
   buildChartGeometry,
   findNearestByX,
+  recentPatternSignalsPerKind,
   resolveChartWidth,
   type ChartGeometryInput,
 } from "../chart";
@@ -921,4 +923,50 @@ it("stacks only the panels asked for and leaves room for the time axis", () => {
     stacked.panels.participation!.bottom,
   );
   expect(stacked.panels.axisY).toBeLessThanOrEqual(420);
+});
+
+function fractalMarkerSignal(eventIndex: number): PatternShapeSignal {
+  return {
+    kind: "fractal_bottom",
+    name: "底分型",
+    status: "confirmed",
+    direction: "bullish",
+    bars: [{ index: eventIndex, closedAt: "2026-07-25T15:50:00.000Z" }],
+    anchorIndex: eventIndex,
+    eventIndex,
+    invalidation: "收盘价跌破分型低点 90.00",
+    explanation: "中间K线的最低价同时低于左右两根K线。",
+    reading: {
+      summary: "底分型。",
+      detail: "第三根K线收盘后才能确认。",
+      honesty: "历史胜率待回测",
+    },
+    methodVersion: "patterns-shapes-v1",
+  };
+}
+
+it("keeps only each pattern kind's most recent N signals for chart markers", () => {
+  const manyFractals = Array.from({ length: 10 }, (_, index) =>
+    fractalMarkerSignal(index + 1),
+  );
+  const loneDoubleBottom: PatternShapeSignal = {
+    ...fractalMarkerSignal(3),
+    kind: "double_bottom",
+    name: "W底",
+  };
+
+  const kept = recentPatternSignalsPerKind(
+    [...manyFractals, loneDoubleBottom],
+    3,
+  );
+
+  const fractalsKept = kept.filter((signal) => signal.kind === "fractal_bottom");
+  expect(fractalsKept).toHaveLength(3);
+  // The three highest eventIndex values survive -- the most recent ones.
+  expect(fractalsKept.map((signal) => signal.eventIndex).sort((a, b) => a - b)).toEqual([
+    8, 9, 10,
+  ]);
+  // A kind with fewer instances than the limit is untouched.
+  expect(kept).toContainEqual(loneDoubleBottom);
+  expect(kept).toHaveLength(4);
 });
