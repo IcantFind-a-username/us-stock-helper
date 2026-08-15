@@ -52,10 +52,15 @@ _INTRADAY_BAR_DURATIONS: dict[str, timedelta] = {
     "60m": timedelta(hours=1),
 }
 _INTRADAY_STALE_MULTIPLE = 3
-_DAILY_INTERVALS = {"day", "week"}
 # Covers a holiday-extended weekend (Friday close to Tuesday reopen) with
 # margin, without disguising a feed that has genuinely stopped reporting.
 _DAILY_STALE_BUDGET = timedelta(days=5)
+# A weekly bar is only replaced once a week, so its age legitimately climbs
+# toward -- but stays under -- 7 days for most of the cycle; sharing the
+# 5-day daily budget stale-gated every request made in the back half of the
+# week. Budgeted past a full 7-day cycle with margin for a holiday-shifted
+# close, while staying well short of a feed that has genuinely stopped.
+_WEEKLY_STALE_BUDGET = timedelta(days=9)
 # No interval could be attributed to the bars at all: fail toward the
 # tightest budget rather than assume a cadence nobody confirmed.
 _UNKNOWN_INTERVAL_STALE_BUDGET = timedelta(minutes=20)
@@ -66,7 +71,9 @@ def data_freshness_budget(interval: str | None) -> timedelta:
     duration = _INTRADAY_BAR_DURATIONS.get(interval) if interval else None
     if duration is not None:
         return duration * _INTRADAY_STALE_MULTIPLE
-    if interval in _DAILY_INTERVALS:
+    if interval == "week":
+        return _WEEKLY_STALE_BUDGET
+    if interval == "day":
         return _DAILY_STALE_BUDGET
     return _UNKNOWN_INTERVAL_STALE_BUDGET
 

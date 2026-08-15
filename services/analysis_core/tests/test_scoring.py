@@ -16,6 +16,7 @@ from us_stock_helper_core.models import (
 from us_stock_helper_core.scoring import (
     FeatureSet,
     HardGate,
+    data_freshness_budget,
     extract_horizon_features,
     score_horizon,
 )
@@ -245,6 +246,54 @@ class ExplainableScoreTests(unittest.TestCase):
         )
 
         self.assertIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_completed_weekly_bar_is_not_stale_mid_cycle(self) -> None:
+        # A weekly bar only closes once a week, so its age climbs toward
+        # (but stays under) 7 days for most of the cycle before the next
+        # close resets it. "week" shared the 5-day daily budget, so every
+        # request made in the back half of the week was wrongly stale-gated.
+        for age in (timedelta(days=6), timedelta(days=6, hours=23)):
+            with self.subTest(age=age):
+                result = score_horizon(
+                    replace(
+                        manual_features(horizon=Horizon.SWING),
+                        data_interval="week",
+                        latest_market_data_at=AS_OF - age,
+                    )
+                )
+
+                self.assertNotIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_holiday_extended_week_is_still_not_stale(self) -> None:
+        # A holiday can push the next weekly close a day or two later than
+        # the ordinary 7-day cadence without the feed having stopped.
+        result = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SWING),
+                data_interval="week",
+                latest_market_data_at=AS_OF - timedelta(days=8, hours=12),
+            )
+        )
+
+        self.assertNotIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_weekly_bar_many_weeks_old_is_still_stale(self) -> None:
+        # The widened weekly budget must not become a licence to call a
+        # genuinely stopped feed fresh.
+        result = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SWING),
+                data_interval="week",
+                latest_market_data_at=AS_OF - timedelta(days=21),
+            )
+        )
+
+        self.assertIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_the_weekly_budget_is_its_own_bound_not_the_daily_one(self) -> None:
+        self.assertGreater(
+            data_freshness_budget("week"), data_freshness_budget("day")
+        )
 
     def test_an_intraday_bar_keeps_a_tight_freshness_budget(self) -> None:
         # Intraday data must not inherit the daily cadence's slack: a 5-minute
