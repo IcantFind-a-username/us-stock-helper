@@ -20,6 +20,7 @@ import { StockHeader } from "@/components/stock/StockHeader";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
 import { Disclosure } from "@/components/ui/Disclosure";
 import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
+import { PlainReadingCard } from "@/components/ui/PlainReadingCard";
 import { Screen } from "@/components/ui/Screen";
 import {
   toDemoChartSnapshot,
@@ -29,6 +30,7 @@ import {
 } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { readMagicNine } from "@/i18n/plainLanguage";
 import { serviceTextLabel, snapshotSourceLabel } from "@/i18n/serverVocabulary";
 import { useAppState } from "@/state/AppStateProvider";
 import {
@@ -396,6 +398,13 @@ export function StockDetailScreen() {
           </View>
         ) : null}
       </View>
+
+      {visibleTools.magicNine ? (
+        <PlainReadingCard
+          {...readMagicNine(stock.magicNine, stock.magicNine.lastCompleted)}
+          testID="plain-reading-card-magic-nine"
+        />
+      ) : null}
 
       {visibleTools.participation ? (
         <ParticipationCard bars={stock.participationBars} />

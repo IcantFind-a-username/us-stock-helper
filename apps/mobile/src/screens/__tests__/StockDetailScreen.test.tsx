@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   act,
@@ -6,6 +6,7 @@ import {
   render,
   userEvent,
   waitFor,
+  within,
 } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
@@ -710,6 +711,89 @@ it("keeps a finished nine visible after the count restarts", async () => {
       /九转 2 · 尚未完成 · 最近完成 看跌九转 · 完美 · 1 根前/,
     ),
   );
+});
+
+// 2026-08-15 Task 7: the chart badge ("九转 看涨 2/9") stays jargon; its full
+// plain-language reading lives beside it, one tap away.
+describe("the Magic Nine plain-language reading", () => {
+  it("shows the badge's plain-language headline for the current in-progress count", async () => {
+    const view = await renderDetail();
+
+    // Fixture default: direction bullish, count 2, not completed -- the
+    // "early" bucket, matching Franz's own worked example (just bullish
+    // instead of bearish).
+    await waitFor(() =>
+      expect(
+        view.getByText(
+          "上涨方向的九转刚数到 2——离『警惕反转』的 9 还早，当前只是记录趋势的持续性。",
+        ),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("reveals the explanation and numbers layers on tap", async () => {
+    const view = await renderDetail();
+    await waitFor(() => expect(view.getByText("九转 看涨 2/9")).toBeTruthy());
+
+    const card = view.getByTestId("plain-reading-card-magic-nine");
+    await userEvent.setup().press(within(card).getByRole("button"));
+
+    expect(within(card).getByTestId("plain-reading-explanation")).toHaveTextContent(
+      /TD Setup/,
+    );
+    expect(within(card).getByTestId("plain-reading-numbers")).toHaveTextContent(
+      /2\/9/,
+    );
+  });
+
+  it("reads the unavailable state too, not just the live one", async () => {
+    const view = await renderDetail({
+      repository: repositoryWithSnapshot(async () => unavailableMagicSnapshot()),
+    });
+
+    await waitFor(() =>
+      expect(
+        view.getByText("神奇九转暂不可用：这次没有足够的K线数据来计数。"),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("carries the most recently completed run as a supplementary note", async () => {
+    const payload = stockSnapshotFixture();
+    payload.indicators.magicNine.lastCompleted = {
+      direction: "bearish",
+      confirmedAtIndex: 0,
+      perfected: true,
+      barsSince: 1,
+    };
+    const snapshot = decodeStockSnapshotEnvelope(payload, {
+      now: new Date("2026-07-25T16:00:00.000Z"),
+    });
+
+    const view = await renderDetail({
+      repository: repositoryWithSnapshot(async () => snapshot),
+    });
+    await waitFor(() => expect(view.getByText("九转 看涨 2/9")).toBeTruthy());
+
+    const card = view.getByTestId("plain-reading-card-magic-nine");
+    await userEvent.setup().press(within(card).getByRole("button"));
+
+    expect(within(card).getByTestId("plain-reading-note")).toHaveTextContent(
+      /最近一次数满 9 的九转方向是下跌，并且通过了『完美』确认/,
+    );
+  });
+
+  it("hides with the 神奇九转 tool toggle, same as the badge it explains", async () => {
+    const view = await renderDetail();
+    await waitFor(() => expect(view.getByText("九转 看涨 2/9")).toBeTruthy());
+    expect(view.getByTestId("plain-reading-card-magic-nine")).toBeTruthy();
+
+    await userEvent.setup().press(
+      view.getByRole("button", { name: "神奇九转，已显示" }),
+    );
+
+    expect(view.queryByTestId("plain-reading-card-magic-nine")).toBeNull();
+  });
 });
 
 it("preserves the original timestamp when cached live data becomes stale", async () => {
