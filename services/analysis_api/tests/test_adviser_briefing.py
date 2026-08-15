@@ -549,12 +549,13 @@ class AdviserAdjustmentContractTests(unittest.TestCase):
 
         self.assertIsNone(result["adviserCouncil"]["value"])
         self.assertIsNone(result["adviserAdjustment"])
-        self.assertTrue(
-            any(
-                "adviserAdjustment" in note or "adjustment" in note.lower()
-                for note in result["notes"]
-            ),
-            msg=result["notes"],
+        # Pinned in Chinese, consistent with the served-vocabulary
+        # conventions and the note.py section of the adviser-adjustment
+        # contract: this note reaches a Chinese UI on every default-mode
+        # response, so English boilerplate here diluted the notes channel.
+        self.assertIn(
+            "本次没有召开顾问委员会，顾问调整为空，而非测得的零。",
+            result["notes"],
         )
 
     def test_council_unavailable_reports_null_not_a_fake_zero(self) -> None:

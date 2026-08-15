@@ -283,8 +283,7 @@ class AnalysisService:
         if council_value is None:
             adviser_adjustment: float | None = None
             notes.append(
-                "No adviser council ran for this response, so "
-                "adviserAdjustment is null rather than a measured zero."
+                "本次没有召开顾问委员会，顾问调整为空，而非测得的零。"
             )
         else:
             adviser_adjustment = council_value["scoreAdjustment"]
