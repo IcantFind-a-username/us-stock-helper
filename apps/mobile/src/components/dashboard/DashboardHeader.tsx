@@ -1,7 +1,8 @@
 import { SymbolView } from "expo-symbols";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import type { DataHealth } from "@/domain/models";
+import { MARKET_SESSION_LABELS } from "@/components/dashboard/MarketBriefCard";
+import type { DataHealth, MarketBrief } from "@/domain/models";
 import { shanghaiGreeting } from "@/domain/greeting";
 import { colors, radius, spacing } from "@/theme/tokens";
 
@@ -25,6 +26,12 @@ type DashboardHeaderProps = {
   now: Date;
   onSearch(): void;
   onAlerts(): void;
+  /**
+   * The decoded market brief, real-mode only. `null` while it has not
+   * loaded (or could not) -- the session/data-health line simply does not
+   * render rather than guessing at a value the server never sent.
+   */
+  realBrief?: MarketBrief | null;
 };
 
 export function DashboardHeader({
@@ -35,17 +42,30 @@ export function DashboardHeader({
   now,
   onSearch,
   onAlerts,
+  realBrief = null,
 }: DashboardHeaderProps) {
+  const realSessionLine =
+    realBrief && realBrief.status === "available" && realBrief.dataHealth
+      ? `${MARKET_SESSION_LABELS[realBrief.marketSession]} · ${
+          healthLabels[realBrief.dataHealth]
+        } · 更新 ${realBrief.decisionCutoff.slice(11, 16)}`
+      : null;
+
   return (
     <View testID="dashboard-header" style={styles.header}>
       <View style={styles.copy}>
-        {/* The session line and the demo label both come from the fixture, so
-            outside demo mode they would announce an invented data-health
-            verdict and timestamp over real quotes. */}
+        {/* The demo session line comes from the fixture, so outside demo mode
+            it would announce an invented data-health verdict and timestamp
+            over real quotes. Real mode's own line is driven by the brief
+            instead, and only appears once one has actually loaded. */}
         {demoMode ? (
           <Text style={styles.session}>
             {marketSession} · {healthLabels[health]} · 更新{" "}
             {updatedAt.slice(11, 16)}
+          </Text>
+        ) : realSessionLine ? (
+          <Text style={styles.session} testID="dashboard-header-real-session">
+            {realSessionLine}
           </Text>
         ) : null}
         <Text style={styles.greeting}>{shanghaiGreeting(now, "Franz")}</Text>

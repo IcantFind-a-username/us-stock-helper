@@ -290,15 +290,28 @@ it("renders verified moomoo watchlist rows without fixture fallback", async () =
     view.queryByRole("button", { name: /NVDA 行情详情.*143\.80/ }),
   ).toBeNull();
   expect(view.queryByText("演示数据 · 非实时")).toBeNull();
-  expect(view.getByText("市场分析尚未接入真实数据")).toBeTruthy();
+  // No analysis source is configured in this test environment, so the brief
+  // never loads either -- it must say so honestly, not fall back to the old
+  // blanket fixture placeholder.
+  expect(view.getByTestId("market-brief-unavailable")).toBeTruthy();
+  expect(view.getByText(/市场简报不可用 · 未配置/)).toBeTruthy();
+  expect(view.queryByText("市场分析尚未接入真实数据")).toBeNull();
   expect(view.queryByText("谨慎偏多")).toBeNull();
   expect(view.queryByTestId("priority-alert-card")).toBeNull();
   expect(view.queryByTestId("candidate-list")).toBeNull();
-  // The header consumed the same fixture: it announced a fixture data-health
-  // verdict and a fixture timestamp while labelling real quotes as demo data.
+  expect(
+    view.getByTestId("dashboard-priority-alert-not-connected"),
+  ).toBeTruthy();
+  expect(
+    view.getByTestId("dashboard-candidate-list-not-connected"),
+  ).toBeTruthy();
+  // The header used to consume the demo fixture: it announced a fixture
+  // data-health verdict and a fixture timestamp while labelling real quotes
+  // as demo data. Now it only ever speaks from a brief that actually loaded.
   expect(view.queryByText(/数据新鲜|数据冲突|数据不足/)).toBeNull();
   expect(view.queryByText(/更新 10:30/)).toBeNull();
   expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
+  expect(view.queryByTestId("dashboard-header-real-session")).toBeNull();
 });
 
 it("keeps verified rows and their original time when a refresh becomes stale", async () => {
@@ -348,7 +361,8 @@ it("shows one actionable unavailable state with the error category", async () =>
   expect(view.getByRole("button", { name: "重试行情" })).toBeTruthy();
   expect(view.queryByTestId("watchlist-list")).toBeNull();
   expect(view.queryByTestId("watchlist-quote")).toBeNull();
-  expect(view.getByText("市场分析尚未接入真实数据")).toBeTruthy();
+  expect(view.getByTestId("market-brief-unavailable")).toBeTruthy();
+  expect(view.queryByText("市场分析尚未接入真实数据")).toBeNull();
   expect(view.queryByText("谨慎偏多")).toBeNull();
 });
 

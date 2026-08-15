@@ -3,6 +3,14 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { DataHealth } from "@/domain/models";
 import { colors, radius, spacing } from "@/theme/tokens";
 
+/**
+ * Wired into the Dashboard's real-mode market brief (Task 5 of
+ * `2026-08-15-demo-parity-market-brief-and-council.md`). It carries no demo
+ * marker: the health and session values it renders come straight off a
+ * served brief, and a component that shows over real data must never print
+ * "演示" over it.
+ */
+
 const healthCopy: Record<DataHealth, { label: string; detail: string; color: string; backgroundColor: string }> = {
   fresh: { label: "数据新鲜", detail: "已按最近可用数据更新", color: colors.green, backgroundColor: colors.greenSoft },
   stale: { label: "数据可能延迟", detail: "请先确认时效再判断", color: colors.amber, backgroundColor: colors.amberSoft },
@@ -29,7 +37,6 @@ export function DataHealthBanner({ health, marketSession, evidenceTitle, citatio
           <Text style={styles.detail}>{copy.detail}</Text>
         </View>
         <View style={styles.sessionCopy}>
-          <Text style={styles.marker}>演示</Text>
           <Text style={styles.session}>{marketSession}</Text>
         </View>
       </View>
@@ -52,7 +59,6 @@ const styles = StyleSheet.create({
   label: { fontSize: 13, fontWeight: "700" },
   detail: { color: colors.muted, fontSize: 12, marginTop: spacing.xs },
   sessionCopy: { alignItems: "flex-end", flexShrink: 1 },
-  marker: { color: colors.amber, fontSize: 11, fontWeight: "800" },
   session: { color: colors.ink, fontSize: 12, fontWeight: "600", textAlign: "right" },
   evidenceButton: { alignItems: "center", backgroundColor: colors.card, borderRadius: radius.sm, justifyContent: "center", minHeight: 44, paddingHorizontal: spacing.md },
   evidenceText: { color: colors.blue, fontSize: 13, fontWeight: "800" },

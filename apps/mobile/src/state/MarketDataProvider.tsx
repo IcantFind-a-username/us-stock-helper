@@ -32,6 +32,7 @@ import type {
   DemoChartSnapshot,
   Horizon,
   LiveStockSnapshot,
+  MarketBrief,
   WatchlistQuote,
 } from "@/domain/models";
 import type { CandleInterval } from "@/data/marketGateway";
@@ -481,6 +482,41 @@ export function useDecision(
     demoData: null,
     load: async (signal) => {
       const data = await analysis.getDecision(normalizedSymbol, horizon, signal);
+      return { data, verifiedAt: data.decisionCutoff };
+    },
+  });
+}
+
+/**
+ * The Dashboard's real-mode market hero.
+ *
+ * Unlike `useAdviserDecision`, a normal dashboard load is allowed to fetch
+ * this on mount: `GET /market-brief` never triggers a model call, so there is
+ * no per-tap cost gate to protect here the way there is for the adviser
+ * layer. Demo mode never fetches it -- `useLiveResource` short-circuits on
+ * `demoMode` before any request goes out -- and `demoData` stays `null` on
+ * purpose, so a brief can never survive a mode switch and read as demo
+ * content, nor can a stale fixture stand in for it.
+ */
+export function useMarketBrief(): MarketDataState<MarketBrief> {
+  const { analysis } = useMarketDataContext();
+  return useLiveResource<MarketBrief>({
+    resourceKey: "market-brief",
+    cachedData: null,
+    demoData: null,
+    load: async (signal) => {
+      if (!analysis.getMarketBrief) {
+        // Only reachable when the configured analysis source predates this
+        // route (an older test fake, or the unconfigured fallback this
+        // provider builds when no service address is set) -- a real fact
+        // about this build, told the same way any other unconfigured
+        // dependency is.
+        throw new MarketDataError(
+          "configuration",
+          "this analysis source does not serve a market brief",
+        );
+      }
+      const data = await analysis.getMarketBrief(signal);
       return { data, verifiedAt: data.decisionCutoff };
     },
   });
