@@ -9,7 +9,7 @@ import {
 } from "@/security/deviceCredentialStore";
 import type { SecureStoreBackend } from "@/security/secureStore";
 import { DeviceSessionProvider } from "@/state/DeviceSessionProvider";
-import { layout, spacing } from "@/theme/tokens";
+import { layout } from "@/theme/tokens";
 
 import { DeviceSessionGate } from "../DeviceSessionGate";
 
