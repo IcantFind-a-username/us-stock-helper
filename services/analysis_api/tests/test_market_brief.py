@@ -38,8 +38,14 @@ from us_stock_helper_analysis_api.http_app import (
     AnalysisServerConfig,
     build_server,
 )
-from us_stock_helper_analysis_api.market_brief import MarketBriefService
+from us_stock_helper_analysis_api.market_brief import (
+    MarketBriefService,
+    MarketBriefUniverse,
+    MarketBriefUniverseConfig,
+)
 from us_stock_helper_analysis_api.service import AnalysisService
+from us_stock_helper_core import OHLCVBar
+from us_stock_helper_core import relative_strength_ranking as core_relative_strength_ranking
 from us_stock_helper_device_auth import DeviceAuthService, DeviceStore
 
 from test_analysis_service import AS_OF, Provider, _all_keys, evidence, service
@@ -619,6 +625,457 @@ class DeviceGateOrderingTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Breadth / sector-RS: driverCoverage['breadth'] and ['sector'] sourced from
+# us_stock_helper_core's breadth-v1 and sector-rs-v1 engines over a
+# configurable daily-bar universe read from the market gateway.
+# ---------------------------------------------------------------------------
+
+
+def _daily_bars(
+    symbol: str, closes: list[float], *, end: datetime
+) -> tuple[OHLCVBar, ...]:
+    bars = []
+    for index, price in enumerate(closes):
+        closed_at = end - timedelta(days=len(closes) - 1 - index)
+        bars.append(
+            OHLCVBar(
+                symbol=symbol,
+                interval="day",
+                opened_at=closed_at - timedelta(days=1),
+                closed_at=closed_at,
+                available_at=closed_at,
+                open=price,
+                high=price + 0.5,
+                low=price - 0.5,
+                close=price,
+                volume=1_000_000.0,
+            )
+        )
+    return tuple(bars)
+
+
+def _breadth_bars(symbol: str, *, last_close: float) -> tuple[OHLCVBar, ...]:
+    """49 flat bars at 100 then one final bar — a hand-checkable MA50 read.
+
+    MA50 = (49 * 100 + last_close) / 50, so a last_close of 110 sits above it
+    and one of 90 sits below it; nothing here depends on the breadth engine's
+    own arithmetic being trusted blind, only on a single division anyone can
+    redo by hand.
+    """
+
+    return _daily_bars(symbol, [100.0] * 49 + [last_close], end=AS_OF)
+
+
+def _sector_bars(symbol: str, *, last_close: float) -> tuple[OHLCVBar, ...]:
+    """21 flat bars at 100 then one final bar — the shortest EMA(21) warm-up."""
+
+    return _daily_bars(symbol, [100.0] * 21 + [last_close], end=AS_OF)
+
+
+class UniverseProvider(Provider):
+    """A `Provider` that also answers `bars_for` for an arbitrary universe
+    and optionally a watchlist — the two things `MarketBriefService` reads
+    beyond the evidence path the base `Provider` already covers.
+
+    `bars_for` never falls back to the base class's fixed NVDA rows: a symbol
+    outside the configured `universe` answers with an honest empty series (or
+    raises, for `raises`), exactly the two "unfetchable" shapes the gateway
+    boundary itself can produce.
+    """
+
+    def __init__(
+        self,
+        universe: dict[str, tuple[OHLCVBar, ...]] | None = None,
+        *,
+        watchlist: tuple[str, ...] | None = None,
+        watchlist_error: bool = False,
+        raises: tuple[str, ...] = (),
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._universe = universe or {}
+        self._watchlist = watchlist
+        self._watchlist_error = watchlist_error
+        self._raises = set(raises)
+        self.universe_requests: list[str] = []
+
+    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
+        self.universe_requests.append(symbol)
+        if symbol in self._raises:
+            raise RuntimeError(f"{symbol} gateway failure")
+        return self._universe.get(symbol, ())
+
+    def watchlist_symbols(self) -> tuple[str, ...]:
+        if self._watchlist_error:
+            raise RuntimeError("watchlist unreachable")
+        if self._watchlist is None:
+            raise AttributeError("watchlist not configured")
+        return self._watchlist
+
+
+def _brief_with_universe(
+    provider: UniverseProvider, config: MarketBriefUniverseConfig
+) -> dict:
+    return MarketBriefService(
+        service(provider), MarketBriefUniverse(config=config)
+    ).market_brief()
+
+
+def _driver(result: dict, category: str) -> dict:
+    return next(item for item in result["driverCoverage"] if item["category"] == category)
+
+
+class BreadthDriverTests(unittest.TestCase):
+    def test_an_explicit_universe_serves_an_exact_hand_checked_reading(self) -> None:
+        # 3 of 5 above their own MA50 -> 60%, self-checkable by hand: MA50 of
+        # [100]*49 + [110] is 100.2 (< 110, "above"); of [100]*49 + [90] is
+        # 99.8 (> 90, "below").
+        universe = {
+            "AAA": _breadth_bars("AAA", last_close=110.0),
+            "BBB": _breadth_bars("BBB", last_close=110.0),
+            "CCC": _breadth_bars("CCC", last_close=110.0),
+            "DDD": _breadth_bars("DDD", last_close=90.0),
+            "EEE": _breadth_bars("EEE", last_close=90.0),
+        }
+        config = MarketBriefUniverseConfig(
+            breadth_symbols=("AAA", "BBB", "CCC", "DDD", "EEE")
+        )
+        provider = UniverseProvider(universe, stamped=True)
+
+        result = _brief_with_universe(provider, config)
+
+        entry = _driver(result, "breadth")
+        self.assertTrue(entry["available"])
+        self.assertIsNone(entry["missingReason"])
+        self.assertIn("自选广度（5 只）", entry["conclusion"])
+        self.assertIn("60%", entry["conclusion"])
+        self.assertAlmostEqual(entry["actionScore"], 0.2, places=6)
+
+    def test_the_scope_label_is_pinned_to_watchlist_wording_never_market_wide(
+        self,
+    ) -> None:
+        # The plan's own red line: watchlist/自选-scoped breadth may never be
+        # labelled 市场广度 as if it covered the whole market.
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        result = _brief_with_universe(UniverseProvider(universe, stamped=True), config)
+
+        entry = _driver(result, "breadth")
+        self.assertTrue(entry["conclusion"].startswith("自选广度（"))
+        self.assertNotIn("市场广度", entry["conclusion"])
+
+    def test_no_configuration_and_no_watchlist_stays_unavailable(self) -> None:
+        result = _brief_with_universe(
+            UniverseProvider(stamped=True), MarketBriefUniverseConfig()
+        )
+
+        entry = _driver(result, "breadth")
+        self.assertFalse(entry["available"])
+        self.assertIsNone(entry["conclusion"])
+        self.assertIsNone(entry["actionScore"])
+        self.assertIn("自选广度尚未配置", entry["missingReason"])
+
+    def test_the_watchlist_is_the_default_universe_when_nothing_is_configured(
+        self,
+    ) -> None:
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        provider = UniverseProvider(universe, watchlist=tuple(universe), stamped=True)
+
+        result = _brief_with_universe(provider, MarketBriefUniverseConfig())
+
+        entry = _driver(result, "breadth")
+        self.assertTrue(entry["available"])
+        self.assertIn("自选广度（5 只）", entry["conclusion"])
+
+    def test_a_watchlist_the_gateway_cannot_serve_leaves_breadth_unavailable(
+        self,
+    ) -> None:
+        result = _brief_with_universe(
+            UniverseProvider(watchlist_error=True, stamped=True),
+            MarketBriefUniverseConfig(),
+        )
+
+        entry = _driver(result, "breadth")
+        self.assertFalse(entry["available"])
+        self.assertTrue(entry["missingReason"])
+
+    def test_a_wholly_unfetchable_universe_is_typed_unavailable(self) -> None:
+        config = MarketBriefUniverseConfig(
+            breadth_symbols=("AAA", "BBB", "CCC", "DDD", "EEE")
+        )
+        provider = UniverseProvider(raises=("AAA", "BBB", "CCC", "DDD", "EEE"), stamped=True)
+
+        result = _brief_with_universe(provider, config)
+
+        entry = _driver(result, "breadth")
+        self.assertFalse(entry["available"])
+        self.assertIsNone(entry["conclusion"])
+        self.assertIsNone(entry["actionScore"])
+        self.assertTrue(entry["missingReason"])
+
+    def test_a_partially_fetched_universe_is_served_with_an_honest_note(
+        self,
+    ) -> None:
+        # 6 configured, 1 unfetchable, 5 remain -- still enough to meet
+        # breadth-v1's own 5-symbol minimum, so the reading is served with a
+        # note naming exactly what was dropped rather than silently smaller.
+        universe = {
+            "AAA": _breadth_bars("AAA", last_close=110.0),
+            "BBB": _breadth_bars("BBB", last_close=110.0),
+            "CCC": _breadth_bars("CCC", last_close=110.0),
+            "DDD": _breadth_bars("DDD", last_close=90.0),
+            "EEE": _breadth_bars("EEE", last_close=90.0),
+        }
+        config = MarketBriefUniverseConfig(
+            breadth_symbols=("AAA", "BBB", "CCC", "DDD", "EEE", "FFF")
+        )
+        provider = UniverseProvider(universe, raises=("FFF",), stamped=True)
+
+        result = _brief_with_universe(provider, config)
+
+        entry = _driver(result, "breadth")
+        self.assertTrue(entry["available"])
+        self.assertIn("自选广度（6 只）", entry["conclusion"])
+        self.assertTrue(
+            any("FFF" in note and "自选广度" in note for note in result["notes"]),
+            result["notes"],
+        )
+
+    def test_computed_at_is_the_decision_cutoff_on_a_fresh_compute(self) -> None:
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        result = _brief_with_universe(UniverseProvider(universe, stamped=True), config)
+
+        entry = _driver(result, "breadth")
+        self.assertEqual(entry["computedAt"], result["decisionCutoff"])
+
+
+class SectorDriverTests(unittest.TestCase):
+    def test_a_configured_universe_ranks_the_leading_sector(self) -> None:
+        benchmark = _sector_bars("SPY", last_close=100.0)
+        xlk = _sector_bars("XLK", last_close=110.0)
+        xle = _sector_bars("XLE", last_close=95.0)
+        sectors = {"SPY": benchmark, "XLK": xlk, "XLE": xle}
+        config = MarketBriefUniverseConfig(
+            sector_symbols=("XLK", "XLE"), sector_benchmark="SPY"
+        )
+        provider = UniverseProvider(sectors, stamped=True)
+
+        result = _brief_with_universe(provider, config)
+
+        entry = _driver(result, "sector")
+        self.assertTrue(entry["available"])
+        self.assertIsNone(entry["missingReason"])
+        self.assertIn("XLK", entry["conclusion"])
+        self.assertIn("SPY", entry["conclusion"])
+
+        # Cross-checked directly against the same core engine this service
+        # wires through, rather than a hand-derived EMA value.
+        expected = core_relative_strength_ranking(
+            {"XLK": xlk, "XLE": xle}, benchmark, AS_OF, lookbacks=(21,)
+        )
+        leader = min(
+            (item for item in expected.results if item.quality_status == "live"),
+            key=lambda item: item.rank,
+        )
+        self.assertEqual(leader.symbol, "XLK")
+        self.assertAlmostEqual(entry["actionScore"], leader.excess_return, places=6)
+
+    def test_not_configured_stays_unavailable(self) -> None:
+        result = _brief_with_universe(
+            UniverseProvider(stamped=True), MarketBriefUniverseConfig()
+        )
+
+        entry = _driver(result, "sector")
+        self.assertFalse(entry["available"])
+        self.assertIn("尚未配置", entry["missingReason"])
+
+    def test_an_unfetchable_benchmark_is_typed_unavailable_naming_it(self) -> None:
+        sectors = {
+            "XLK": _sector_bars("XLK", last_close=110.0),
+            "XLE": _sector_bars("XLE", last_close=95.0),
+        }
+        config = MarketBriefUniverseConfig(
+            sector_symbols=("XLK", "XLE"), sector_benchmark="SPY"
+        )
+        provider = UniverseProvider(sectors, raises=("SPY",), stamped=True)
+
+        result = _brief_with_universe(provider, config)
+
+        entry = _driver(result, "sector")
+        self.assertFalse(entry["available"])
+        self.assertIsNone(entry["conclusion"])
+        self.assertIn("SPY", entry["missingReason"])
+
+    def test_a_partially_fetched_sector_universe_still_ranks_with_a_note(
+        self,
+    ) -> None:
+        # 3 ETFs configured, 1 unfetchable, 2 remain -- still meets
+        # sector-rs-v1's own 2-symbol minimum for a ranking.
+        benchmark = _sector_bars("SPY", last_close=100.0)
+        sectors = {
+            "SPY": benchmark,
+            "XLK": _sector_bars("XLK", last_close=110.0),
+            "XLE": _sector_bars("XLE", last_close=95.0),
+        }
+        config = MarketBriefUniverseConfig(
+            sector_symbols=("XLK", "XLE", "XLF"), sector_benchmark="SPY"
+        )
+        provider = UniverseProvider(sectors, raises=("XLF",), stamped=True)
+
+        result = _brief_with_universe(provider, config)
+
+        entry = _driver(result, "sector")
+        self.assertTrue(entry["available"])
+        self.assertTrue(
+            any("XLF" in note and "板块强弱" in note for note in result["notes"]),
+            result["notes"],
+        )
+
+
+class UniverseConfigEnvironmentTests(unittest.TestCase):
+    def test_nothing_set_leaves_every_universe_unconfigured(self) -> None:
+        config = MarketBriefUniverseConfig.from_environment({})
+
+        self.assertIsNone(config.breadth_symbols)
+        self.assertEqual(config.sector_symbols, ())
+        self.assertIsNone(config.sector_benchmark)
+
+    def test_a_comma_separated_breadth_universe_is_parsed_and_normalized(
+        self,
+    ) -> None:
+        config = MarketBriefUniverseConfig.from_environment(
+            {"ANALYSIS_API_BREADTH_UNIVERSE": " nvda, tsla,nvda ,aapl "}
+        )
+
+        self.assertEqual(config.breadth_symbols, ("NVDA", "TSLA", "AAPL"))
+
+    def test_a_blank_breadth_universe_is_refused_rather_than_defaulted(self) -> None:
+        with self.assertRaises(ValueError):
+            MarketBriefUniverseConfig.from_environment(
+                {"ANALYSIS_API_BREADTH_UNIVERSE": "  , , "}
+            )
+
+    def test_an_oversized_breadth_universe_is_refused(self) -> None:
+        many = ",".join(f"SYM{i}" for i in range(61))
+        with self.assertRaises(ValueError):
+            MarketBriefUniverseConfig.from_environment(
+                {"ANALYSIS_API_BREADTH_UNIVERSE": many}
+            )
+
+    def test_sector_symbols_and_benchmark_must_both_be_set_or_neither(self) -> None:
+        with self.assertRaises(ValueError):
+            MarketBriefUniverseConfig.from_environment(
+                {"ANALYSIS_API_SECTOR_RS_SYMBOLS": "XLK,XLE"}
+            )
+        with self.assertRaises(ValueError):
+            MarketBriefUniverseConfig.from_environment(
+                {"ANALYSIS_API_SECTOR_RS_BENCHMARK": "SPY"}
+            )
+
+    def test_a_matched_sector_configuration_is_accepted(self) -> None:
+        config = MarketBriefUniverseConfig.from_environment(
+            {
+                "ANALYSIS_API_SECTOR_RS_SYMBOLS": "xlk, xle",
+                "ANALYSIS_API_SECTOR_RS_BENCHMARK": "spy",
+            }
+        )
+
+        self.assertEqual(config.sector_symbols, ("XLK", "XLE"))
+        self.assertEqual(config.sector_benchmark, "SPY")
+
+
+class UniverseCacheTests(unittest.TestCase):
+    def test_two_briefs_the_same_trading_date_perform_one_universe_fetch(
+        self,
+    ) -> None:
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        provider = UniverseProvider(universe, stamped=True)
+        shared_service = service(provider)
+        shared_universe = MarketBriefUniverse(config=config)
+
+        first = MarketBriefService(shared_service, shared_universe).market_brief()
+        second = MarketBriefService(shared_service, shared_universe).market_brief()
+
+        self.assertEqual(len(provider.universe_requests), 5)
+        self.assertEqual(
+            _driver(first, "breadth")["computedAt"],
+            _driver(second, "breadth")["computedAt"],
+        )
+
+    def test_a_cache_hit_still_carries_its_original_computed_at(self) -> None:
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+        provider = UniverseProvider(universe, stamped=True)
+        shared_service = service(provider)
+        shared_universe = MarketBriefUniverse(config=config)
+
+        first = MarketBriefService(shared_service, shared_universe).market_brief()
+        second = MarketBriefService(shared_service, shared_universe).market_brief()
+
+        # Both requests share one clock (AS_OF), so this also proves the
+        # second call never recomputed: a recompute would still equal the
+        # first's computedAt only by coincidence of a frozen clock, but the
+        # fetch-count assertion above is what actually pins "no refetch".
+        self.assertEqual(_driver(first, "breadth")["computedAt"], first["decisionCutoff"])
+        self.assertEqual(_driver(second, "breadth")["computedAt"], first["decisionCutoff"])
+
+
+class DataHealthInterplayTests(unittest.TestCase):
+    def test_breadth_and_sector_availability_never_soften_insufficient_data_health(
+        self,
+    ) -> None:
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+
+        class NoEvidenceProvider(UniverseProvider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                return ()
+
+        result = _brief_with_universe(NoEvidenceProvider(universe), config)
+
+        self.assertEqual(result["dataHealth"], "insufficient")
+        self.assertTrue(_driver(result, "breadth")["available"])
+
+    def test_breadth_and_sector_availability_never_soften_conflict_data_health(
+        self,
+    ) -> None:
+        universe = {
+            name: _breadth_bars(name, last_close=110.0)
+            for name in ("AAA", "BBB", "CCC", "DDD", "EEE")
+        }
+        config = MarketBriefUniverseConfig(breadth_symbols=tuple(universe))
+
+        class ConflictingProvider(UniverseProvider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                return _conflicting_evidence()
+
+        result = _brief_with_universe(ConflictingProvider(universe), config)
+
+        self.assertEqual(result["dataHealth"], "conflict")
+        self.assertTrue(_driver(result, "breadth")["available"])
 
 
 if __name__ == "__main__":
