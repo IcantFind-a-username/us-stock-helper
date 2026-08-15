@@ -233,6 +233,42 @@ function decodeForecast(value: unknown): DecisionForecast | null {
   };
 }
 
+/**
+ * Null passes through unchanged; anything else must be exactly a two-element
+ * array of finite numbers, ordered low to high. There is no coercion path: a
+ * shape that does not already satisfy this is refused, not patched into one
+ * that does.
+ */
+function decodeOrderedRange(value: unknown, key: string): [number, number] | null {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.length !== 2) {
+    throw new DecisionValidationError(`${key} must be null or a two-element array`);
+  }
+  const [low, high] = value;
+  if (
+    typeof low !== "number" ||
+    !Number.isFinite(low) ||
+    typeof high !== "number" ||
+    !Number.isFinite(high)
+  ) {
+    throw new DecisionValidationError(`${key} must contain two finite numbers`);
+  }
+  if (low > high) {
+    throw new DecisionValidationError(`${key} bounds must be ordered low to high`);
+  }
+  return [low, high];
+}
+
+/** Null passes through unchanged; anything else must be a finite number. */
+function decodeOptionalFiniteNumber(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new DecisionValidationError(`${key} must be null or a finite number`);
+  }
+  return value;
+}
+
 function decodeRiskPlan(value: unknown): DecisionRiskPlan | null {
   if (value === null || value === undefined) return null;
   if (!isRecord(value)) {
@@ -248,14 +284,9 @@ function decodeRiskPlan(value: unknown): DecisionRiskPlan | null {
   return {
     action: action as DecisionRiskPlan["action"],
     direction: requireString(value, "direction"),
-    entryRange: Array.isArray(value.entryRange)
-      ? (value.entryRange.map(Number) as [number, number])
-      : null,
-    invalidationPrice:
-      typeof value.invalidationPrice === "number" ? value.invalidationPrice : null,
-    targetRange: Array.isArray(value.targetRange)
-      ? (value.targetRange.map(Number) as [number, number])
-      : null,
+    entryRange: decodeOrderedRange(value.entryRange, "entryRange"),
+    invalidationPrice: decodeOptionalFiniteNumber(value, "invalidationPrice"),
+    targetRange: decodeOrderedRange(value.targetRange, "targetRange"),
     maxPositionPercent: requireFiniteNumber(value, "maxPositionPercent"),
     leverage: requireFiniteNumber(value, "leverage"),
     warnings: value.warnings.map(String),

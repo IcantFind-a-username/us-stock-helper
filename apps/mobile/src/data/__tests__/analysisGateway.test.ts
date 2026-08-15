@@ -104,11 +104,44 @@ describe("decision envelope validation", () => {
     ["a citation without a source link", (value: ReturnType<typeof decisionFixture>) => {
       value.citations[0]!.url = "";
     }],
+    ["a risk plan entry range with a non-numeric member", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).entryRange = ["12.5", "abc"];
+    }],
+    ["a risk plan entry range with only one bound", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).entryRange = [118.3];
+    }],
+    ["a risk plan entry range with reversed bounds", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).entryRange = [125, 118];
+    }],
+    ["a risk plan target range with a non-numeric member", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).targetRange = ["122", "abc"];
+    }],
+    ["a risk plan target range with only one bound", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).targetRange = [122.0];
+    }],
+    ["a risk plan invalidation price that is NaN", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).invalidationPrice = NaN;
+    }],
+    ["a risk plan invalidation price that is infinite", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).invalidationPrice = Infinity;
+    }],
+    ["a risk plan invalidation price that is a numeric string", (value: ReturnType<typeof decisionFixture>) => {
+      (value.riskPlan as Record<string, unknown>).invalidationPrice = "114.7";
+    }],
   ])("rejects %s", (_label, mutate) => {
     const value = decisionFixture();
     mutate(value);
 
     expect(() => decodeDecisionEnvelope(value, { now })).toThrow();
+  });
+
+  it("accepts a risk plan whose ranges collapse to a single price", () => {
+    const value = decisionFixture();
+    (value.riskPlan as Record<string, unknown>).entryRange = [119.0, 119.0];
+
+    const decision = decodeDecisionEnvelope(value, { now });
+
+    expect(decision.riskPlan?.entryRange).toEqual([119.0, 119.0]);
   });
 
   it("rejects a payload carrying anything that could place an order", () => {
