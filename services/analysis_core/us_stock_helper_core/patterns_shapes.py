@@ -89,6 +89,7 @@ from typing import Sequence
 
 from .indicators import moving_average_series
 from .models import Direction, OHLCVBar, require_utc
+from .plain_language import BANNED_VERBS
 
 
 PATTERNS_SHAPES_VERSION = "patterns-shapes-v1"
@@ -330,6 +331,25 @@ class PatternShapeSignal:
             raise ValueError("reading_honesty must carry the fixed backtest disclosure")
         if not self.reading_summary.strip() or not self.reading_detail.strip():
             raise ValueError("reading_summary and reading_detail are required")
+        # 白话不喊单, enforced at construction like plain_language.PlainReading:
+        # the invalidation and explanation strings are f-string-built per
+        # signal (not drawn from the reviewed copy table), so every served
+        # text field is swept here rather than trusting a copy test to cover
+        # strings it never sees.
+        for field_name in (
+            "reading_summary",
+            "reading_detail",
+            "reading_honesty",
+            "invalidation",
+            "explanation",
+        ):
+            text = getattr(self, field_name)
+            for verb in BANNED_VERBS:
+                if verb in text:
+                    raise ValueError(
+                        f"pattern signal {field_name} must never contain "
+                        f"{verb!r}: {text!r}"
+                    )
 
 
 @dataclass(frozen=True, slots=True)

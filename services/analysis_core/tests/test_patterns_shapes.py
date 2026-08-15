@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import unittest
 
@@ -644,6 +645,47 @@ class DetectPatternShapesTests(unittest.TestCase):
         # is honestly "forming" -- it must not have leaked the future close.
         self.assertEqual(prefix_forming[0].status, PatternShapeStatus.FORMING)
         self.assertEqual(len(full_confirmed), 1)
+
+
+class SignalBannedVerbGuardTests(unittest.TestCase):
+    """白话不喊单 at construction time, mirroring plain_language.PlainReading.
+
+    The copy-table sweep only covers PATTERN_SHAPE_READING_COPY; the
+    invalidation and explanation strings are f-string-built per signal, so a
+    banned action verb reaching any served text field must refuse to
+    construct rather than depend on a test happening to sweep that string.
+    """
+
+    def _confirmed_signal(self):
+        detection = detect_double_extreme_patterns(
+            bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 109.0, 99.0, 108.0)])
+        )
+        return detection.signals[0]
+
+    def test_a_banned_verb_in_any_served_text_field_is_rejected(self) -> None:
+        signal = self._confirmed_signal()
+        for field_name in (
+            "reading_summary",
+            "reading_detail",
+            "reading_honesty",
+            "invalidation",
+            "explanation",
+        ):
+            for verb in _BANNED_VERBS:
+                with self.subTest(field=field_name, verb=verb):
+                    with self.assertRaises(ValueError):
+                        replace(signal, **{field_name: f"形态确认后{verb}"})
+
+    def test_the_guard_names_the_field_and_the_verb(self) -> None:
+        signal = self._confirmed_signal()
+
+        with self.assertRaisesRegex(ValueError, "invalidation.*买入"):
+            replace(signal, invalidation="跌破颈线 104.00 前买入无效")
+
+    def test_the_real_detectors_still_construct_their_signals(self) -> None:
+        # The guard must reject injected instructions, not the reviewed copy
+        # the detectors actually build.
+        self.assertEqual(self._confirmed_signal().status, PatternShapeStatus.CONFIRMED)
 
 
 class ReadingCopyCompletenessTests(unittest.TestCase):
