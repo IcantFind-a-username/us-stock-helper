@@ -207,6 +207,31 @@ it("treats a row the caller never asked about as pending, not as scoreless", asy
   expect(view.getByText("读取中")).toBeTruthy();
 });
 
+it("marks a hard-gated score as not actionable instead of showing it as clean", async () => {
+  const view = await renderPanel({
+    quotes: [{ ...quote(0), symbol: "GATED" }],
+    decisions: {
+      GATED: {
+        status: "scored",
+        score: score(74, { actionable: false, blockedBy: ["unverified_rumor"] }),
+        error: null,
+        notes: [],
+      },
+    },
+  });
+
+  // The number can stay — DecisionCard keeps it too — but nothing about this
+  // row may read like an ordinary confident score: the direction/coverage
+  // line and its green "strong" tone are exactly what a clean score gets.
+  expect(view.getByText("不可行动 · 未证实传闻")).toBeTruthy();
+  expect(view.queryByText("偏多 · 覆盖 70%")).toBeNull();
+  const scoreNode = view.getByTestId("watchlist-score-GATED");
+  expect(StyleSheet.flatten(scoreNode.props.style).color).not.toBe("#20BF79");
+  expect(
+    view.getByLabelText(/查看 GATED 行情详情.*不可行动 · 未证实传闻$/),
+  ).toBeTruthy();
+});
+
 it("carries the direction of a bearish score into the row", async () => {
   const view = await renderPanel({
     quotes: [{ ...quote(0), symbol: "BEAR" }],

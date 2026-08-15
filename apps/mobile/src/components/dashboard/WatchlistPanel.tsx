@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View, type TextStyle } from "react-native"
 import { DashboardSectionHeader } from "@/components/dashboard/DashboardSectionHeader";
 import type { WatchlistQuote } from "@/domain/models";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { gateLabel } from "@/i18n/serverVocabulary";
 import type { WatchlistDecisionState } from "@/state/MarketDataProvider";
 import { colors, radius, spacing } from "@/theme/tokens";
 
@@ -87,6 +88,21 @@ function scoreCell(state: WatchlistDecisionState | undefined): ScoreCell {
       meta: "未给出评分",
       spoken: "分析未给出评分",
       tone: styles.scoreMissing,
+    };
+  }
+  if (!state.score.actionable) {
+    // The engine computed a number but refused to act on it. Showing it with
+    // the same direction/coverage line and green "strong" tone as a clean
+    // score is the exact defect DecisionCard's blocked banner exists to
+    // avoid on the stock screen — the watchlist row must read as gated too.
+    const value = Math.round(state.score.value);
+    const gates = state.score.blockedBy;
+    const meta = gates.length ? `不可行动 · ${gates.map(gateLabel).join("、")}` : "不可行动";
+    return {
+      value: String(value),
+      meta,
+      spoken: `评分 ${value} · ${meta}`,
+      tone: styles.scoreBlocked,
     };
   }
   const value = Math.round(state.score.value);
@@ -228,6 +244,7 @@ const styles = StyleSheet.create({
   scoreWeak: { color: colors.red },
   scorePending: { color: colors.muted },
   scoreMissing: { color: colors.muted },
+  scoreBlocked: { color: colors.amber },
   up: { color: colors.green },
   down: { color: colors.red },
   flat: { color: colors.muted },

@@ -472,7 +472,7 @@ export function StockDetailScreen() {
           </Text>
           {adviserDecision.error ? (
             <Text style={styles.adviserButtonError}>
-              本次未生成：{adviserDecision.error.message}
+              本次未生成：{describeMarketError(adviserDecision.error.category).label}
             </Text>
           ) : null}
         </Pressable>

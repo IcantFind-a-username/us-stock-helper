@@ -419,6 +419,33 @@ it("calls Claude only after a single-stock button press", async () => {
   expect(view.getByText(/4900 tokens/)).toBeTruthy();
 });
 
+it("shows the mapped Chinese error copy when the adviser button call fails", async () => {
+  const analysis = analysisWith(async (symbol, _horizon, _signal, options) => {
+    if (options?.adviser === "news") {
+      throw new AnalysisRequestError("timeout", "analysis request timed out");
+    }
+    return liveDecision();
+  });
+  const view = await renderDetail({ analysis });
+
+  await waitFor(() =>
+    expect(
+      view.getByRole("button", { name: "为 NVDA 生成一次 Claude 新闻解读" }),
+    ).toBeTruthy(),
+  );
+  await userEvent.setup().press(
+    view.getByRole("button", { name: "为 NVDA 生成一次 Claude 新闻解读" }),
+  );
+
+  // The reader has no use for the transport-layer English message; the
+  // mapped Chinese copy exists precisely so every other failure surface on
+  // this screen does not have to print the wire text raw.
+  await waitFor(() =>
+    expect(view.getByText("本次未生成：超时")).toBeTruthy(),
+  );
+  expect(view.queryByText(/analysis request timed out/)).toBeNull();
+});
+
 it("hides and restores every participation chart surface with one tool", async () => {
   const view = await renderDetail();
   await waitFor(() => expect(view.getByText("主力代理")).toBeTruthy());
