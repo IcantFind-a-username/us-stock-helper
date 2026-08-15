@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
 from information_layer.feeds import (
+    CacheValidators,
     FeedConfig,
     GenericFeedAdapter,
     HttpResponse,
@@ -111,6 +113,125 @@ class PollIntervalTests(unittest.TestCase):
 
         self.assertEqual(transport.calls, 2)
         self.assertFalse(second.throttled)
+
+
+class _HookedState:
+    """Stands in for the coordinator's private `_AdapterState` so the very
+    first read of `last_polled_at` can be paused deterministically. A second
+    real thread is then driven up to (or into) its own reservation attempt
+    before the paused caller resumes with the value it already captured --
+    reproducing the exact check-then-set interleaving that lets two threads
+    both see a stale `last_polled_at` and both reach the network.
+    """
+
+    def __init__(self, *, on_first_read) -> None:
+        self.validators = CacheValidators()
+        self.consecutive_failures = 0
+        self.published: dict[str, object] = {}
+        self._last_polled_at: datetime | None = None
+        self._on_first_read = on_first_read
+        self._fired = False
+
+    @property
+    def last_polled_at(self) -> datetime | None:
+        value = self._last_polled_at
+        if not self._fired:
+            self._fired = True
+            self._on_first_read()
+        return value
+
+    @last_polled_at.setter
+    def last_polled_at(self, value: datetime | None) -> None:
+        self._last_polled_at = value
+
+
+class ConcurrentPollTests(unittest.TestCase):
+    """Reproduces coordinator.py:130-144: two ThreadingHTTPServer requests
+    for the same adapter can both pass the throttle check before either
+    writes `last_polled_at`, double-polling and bypassing
+    minimum_poll_interval_seconds (an SEC rate-limit exposure).
+    """
+
+    def test_two_concurrent_first_polls_do_not_both_reach_the_network(self) -> None:
+        transport = FakeTransport(response(), response())
+        coordinator = PollingCoordinator(clock=lambda: NOW)
+        feed = adapter(transport)
+
+        reader_arrived = threading.Event()
+        writer_done = threading.Event()
+
+        def on_first_read() -> None:
+            reader_arrived.set()
+            writer_done.wait(timeout=1.0)
+
+        coordinator._states["wire"] = _HookedState(on_first_read=on_first_read)
+
+        def call_a() -> None:
+            coordinator.poll(feed, since=NOW - timedelta(hours=1), until=NOW)
+
+        def call_b() -> None:
+            reader_arrived.wait(timeout=5)
+            coordinator.poll(feed, since=NOW - timedelta(hours=1), until=NOW)
+            writer_done.set()
+
+        thread_a = threading.Thread(target=call_a)
+        thread_b = threading.Thread(target=call_b)
+        thread_a.start()
+        thread_b.start()
+        thread_a.join(timeout=5)
+        thread_b.join(timeout=5)
+
+        self.assertEqual(
+            transport.calls,
+            1,
+            "two concurrent first polls both reached the network, "
+            "bypassing minimum_poll_interval_seconds",
+        )
+
+
+class ReservationReleaseTests(unittest.TestCase):
+    """Decides and pins the release semantics for a reservation whose poll
+    then fails: the failed attempt still reserves the interval (a retry
+    inside it is throttled, matching what a successful attempt would have
+    done), but that reservation is a timestamp, not a stuck flag, so it
+    never blocks polling permanently -- the next interval goes through.
+    """
+
+    def test_a_failed_poll_still_reserves_the_interval_but_not_forever(self) -> None:
+        class ExplodingTransport:
+            """Fails once, as a real connection blip would, then recovers --
+            isolating "does a failure release the reservation" from "does
+            the source stay reachable"."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def request(self, request: object) -> HttpResponse:
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError("connection refused")
+                return response()
+
+        transport = ExplodingTransport()
+        clock = iter([NOW, NOW + timedelta(seconds=10), NOW + timedelta(seconds=61)])
+        coordinator = PollingCoordinator(clock=lambda: next(clock))
+        feed = adapter(transport)
+
+        with self.assertRaises(OSError):
+            coordinator.poll(feed, since=NOW - timedelta(hours=1), until=NOW)
+
+        # The failed attempt still reserved this moment: a retry inside the
+        # interval is throttled exactly as a successful attempt would have
+        # been, not free to hammer the source immediately after a failure.
+        second = coordinator.poll(feed, since=NOW - timedelta(hours=1), until=NOW)
+        self.assertTrue(second.throttled)
+        self.assertEqual(transport.calls, 1)
+
+        # Once the interval has actually passed, polling resumes normally --
+        # the reservation from the failed attempt does not block forever.
+        third = coordinator.poll(feed, since=NOW - timedelta(hours=1), until=NOW)
+        self.assertFalse(third.throttled)
+        self.assertEqual(transport.calls, 2)
 
 
 class CoordinatorStateTests(unittest.TestCase):

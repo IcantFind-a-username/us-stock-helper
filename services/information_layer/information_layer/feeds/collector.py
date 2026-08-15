@@ -18,6 +18,7 @@ allowed to make.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Sequence
@@ -106,6 +107,13 @@ class EvidenceCollector:
         self._stale_after = stale_after_seconds
         self._retention = timedelta(seconds=retention_seconds)
         self._store: dict[str, EvidenceEvent] = {}
+        # Guards every read (evidence()'s iteration) and write (_poll_sources's
+        # insert, _evict's delete) of _store, so a ThreadingHTTPServer request
+        # walking the store cannot have it mutated out from under it by
+        # another request's concurrent poll. Never held across adapter I/O --
+        # _poll_sources acquires it only around the dict mutation itself, well
+        # after the network call (via the coordinator) has already returned.
+        self._lock = threading.RLock()
 
     @property
     def adapters(self) -> tuple[GenericFeedAdapter, ...]:
@@ -154,8 +162,9 @@ class EvidenceCollector:
                     )
                 )
                 continue
-            for item in result.events:
-                self._store[item.event_id] = item
+            with self._lock:
+                for item in result.events:
+                    self._store[item.event_id] = item
         self._evict(now)
         return tuple(failures)
 
@@ -168,11 +177,12 @@ class EvidenceCollector:
 
         as_of = self._clock()
         focus = {symbol.strip().upper() for symbol in symbols if symbol.strip()}
-        selected = [
-            item
-            for item in self._store.values()
-            if not focus or _is_in_scope(item, focus)
-        ]
+        with self._lock:
+            selected = [
+                item
+                for item in self._store.values()
+                if not focus or _is_in_scope(item, focus)
+            ]
         selected.sort(key=lambda item: item.event_id)
         # One poll stamps every entry it returned with the same availability,
         # so the publisher's own publication time is the only thing left that
@@ -229,9 +239,10 @@ class EvidenceCollector:
 
     def _evict(self, now: datetime) -> None:
         horizon = now - self._retention
-        for event_id, item in list(self._store.items()):
-            if item.available_at < horizon:
-                del self._store[event_id]
+        with self._lock:
+            for event_id, item in list(self._store.items()):
+                if item.available_at < horizon:
+                    del self._store[event_id]
 
 
 def _is_in_scope(event: EvidenceEvent, focus: set[str]) -> bool:

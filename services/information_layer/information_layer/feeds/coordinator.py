@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -44,6 +45,11 @@ class PollingCoordinator:
     ) -> None:
         self._states: dict[str, _AdapterState] = {}
         self._clock = clock
+        # Guards the throttle check-and-reserve and the post-poll commit, so
+        # two ThreadingHTTPServer requests racing on the same adapter cannot
+        # both read a stale last_polled_at and both reach the network. Never
+        # held across adapter.poll() itself -- that is the network call.
+        self._lock = threading.Lock()
 
     @classmethod
     def from_snapshot(
@@ -127,57 +133,86 @@ class PollingCoordinator:
         since: datetime,
         until: datetime,
     ) -> FeedPollResult:
-        state = self._states.setdefault(adapter.adapter_id, _AdapterState())
-        now = self._clock()
-        interval = adapter.config.minimum_poll_interval_seconds
-        if state.last_polled_at is not None:
-            elapsed = (now - state.last_polled_at).total_seconds()
-            if elapsed < interval:
-                # Report the skip rather than an empty success: "we did not
-                # ask" must not read as "nothing happened".
-                return FeedPollResult(
-                    events=(),
-                    metadata=_skipped_metadata(now),
-                    throttled=True,
-                    retry_after_seconds=interval - elapsed,
-                )
-        state.last_polled_at = now
+        # Check-and-reserve happens as one atomic step under the lock: two
+        # requests racing on the same adapter can no longer both read a
+        # last_polled_at set before either of them and both decide "we may
+        # poll". Whichever gets the lock first reserves the moment; the
+        # other is throttled by the same check every solo caller already
+        # went through. A poll reserved here and never committed (the
+        # network call below raises, or times out) still keeps the
+        # reservation -- exactly as a successful poll always has -- so a
+        # failure narrows the next attempt to the ordinary interval instead
+        # of leaving nothing recorded and inviting an immediate retry storm.
+        # It is a timestamp, not a flag that needs an explicit release, so
+        # it can never block polling forever: once the interval has
+        # genuinely passed, the next call reserves cleanly regardless of
+        # how the previous one ended.
+        with self._lock:
+            state = self._states.setdefault(adapter.adapter_id, _AdapterState())
+            now = self._clock()
+            interval = adapter.config.minimum_poll_interval_seconds
+            if state.last_polled_at is not None:
+                elapsed = (now - state.last_polled_at).total_seconds()
+                if elapsed < interval:
+                    # Report the skip rather than an empty success: "we did
+                    # not ask" must not read as "nothing happened".
+                    return FeedPollResult(
+                        events=(),
+                        metadata=_skipped_metadata(now),
+                        throttled=True,
+                        retry_after_seconds=interval - elapsed,
+                    )
+            state.last_polled_at = now
+            validators = state.validators
+            consecutive_failures = state.consecutive_failures
+
+        # The network call runs outside the lock: it can take seconds, and
+        # holding the lock across it would stall every other adapter's
+        # throttle check and commit behind one slow publisher.
         batch = adapter.poll(
             since=since,
             until=until,
-            validators=state.validators,
-            consecutive_failures=state.consecutive_failures,
+            validators=validators,
+            consecutive_failures=consecutive_failures,
         )
-        if _is_retryable(batch.metadata.status_code):
-            state.consecutive_failures += 1
-            return FeedPollResult(events=(), metadata=batch.metadata)
 
-        state.consecutive_failures = 0
-        state.validators = CacheValidators(
-            etag=batch.metadata.etag or state.validators.etag,
-            last_modified=(
-                batch.metadata.last_modified or state.validators.last_modified
-            ),
-        )
-        published: list[EvidenceEvent] = []
-        for item in batch.events:
-            previous = state.published.get(item.claim_key)
-            if previous is not None and previous.content_hash == item.content_hash:
-                continue
-            if previous is not None:
-                item = replace(
-                    item,
-                    revision_of=previous.event_id,
-                    revision_number=previous.revision_number + 1,
-                    revised_at=item.available_at,
-                )
-            state.published[item.claim_key] = _PublishedRecord(
-                content_hash=item.content_hash,
-                event_id=item.event_id,
-                revision_number=item.revision_number,
+        # Commit is its own atomic step. Reservation already serialized who
+        # is allowed to poll this adapter during this interval, so at most
+        # one caller ever reaches this point per interval window -- the lock
+        # here protects readers of `published`/`validators` (a snapshot(),
+        # say) from observing a partial write, not from a second committer.
+        with self._lock:
+            state = self._states[adapter.adapter_id]
+            if _is_retryable(batch.metadata.status_code):
+                state.consecutive_failures += 1
+                return FeedPollResult(events=(), metadata=batch.metadata)
+
+            state.consecutive_failures = 0
+            state.validators = CacheValidators(
+                etag=batch.metadata.etag or state.validators.etag,
+                last_modified=(
+                    batch.metadata.last_modified or state.validators.last_modified
+                ),
             )
-            published.append(item)
-        return FeedPollResult(events=tuple(published), metadata=batch.metadata)
+            published: list[EvidenceEvent] = []
+            for item in batch.events:
+                previous = state.published.get(item.claim_key)
+                if previous is not None and previous.content_hash == item.content_hash:
+                    continue
+                if previous is not None:
+                    item = replace(
+                        item,
+                        revision_of=previous.event_id,
+                        revision_number=previous.revision_number + 1,
+                        revised_at=item.available_at,
+                    )
+                state.published[item.claim_key] = _PublishedRecord(
+                    content_hash=item.content_hash,
+                    event_id=item.event_id,
+                    revision_number=item.revision_number,
+                )
+                published.append(item)
+            return FeedPollResult(events=tuple(published), metadata=batch.metadata)
 
 
 def _skipped_metadata(now: datetime) -> FeedPollMetadata:
