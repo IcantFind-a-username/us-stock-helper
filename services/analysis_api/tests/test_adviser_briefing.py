@@ -510,6 +510,11 @@ class HardGateTests(unittest.TestCase):
         self.assertEqual(council["adjustedScore"], council["baselineScore"])
         self.assertFalse(council["actionable"])
         self.assertTrue(council["blockedBy"])
+        # A gated council still ran, so its (zeroed) adjustment folds through
+        # as a measured 0.0 -- not null, and not some stale value left over
+        # from a council that never spoke.
+        self.assertEqual(result["adviserAdjustment"], 0.0)
+        self.assertEqual(result["score"]["value"], result["baselineScore"]["value"])
 
     def test_an_ungated_council_stays_inside_the_published_cap(self) -> None:
         from us_stock_helper_core import ADVISER_SCORE_CAP
@@ -529,6 +534,76 @@ class HardGateTests(unittest.TestCase):
         self.assertEqual(
             council["objectiveDirection"], result["score"]["direction"]
         )
+
+
+class AdviserAdjustmentContractTests(unittest.TestCase):
+    """The top-level adviserAdjustment is the one adjustment authority.
+
+    It must never be a fake measured 0.0 for a council that never ran, and it
+    must never silently disagree with the council block sitting right next to
+    it in the same response.
+    """
+
+    def test_council_off_reports_null_not_a_fake_zero(self) -> None:
+        result = service().decision("NVDA", "short")
+
+        self.assertIsNone(result["adviserCouncil"]["value"])
+        self.assertIsNone(result["adviserAdjustment"])
+        self.assertTrue(
+            any(
+                "adviserAdjustment" in note or "adjustment" in note.lower()
+                for note in result["notes"]
+            ),
+            msg=result["notes"],
+        )
+
+    def test_council_unavailable_reports_null_not_a_fake_zero(self) -> None:
+        from us_stock_helper_analysis_api.adviser_provider import LlmAdviserProvider
+
+        result = service(
+            LlmAdviserProvider(environ={}, sleep=lambda _seconds: None)
+        ).decision("NVDA", "short", adviser=True)
+
+        self.assertEqual(result["adviserCouncil"]["status"], "unavailable")
+        self.assertIsNone(result["adviserCouncil"]["value"])
+        self.assertIsNone(result["adviserAdjustment"])
+
+    def test_news_only_mode_never_convenes_a_council_and_reports_null(self) -> None:
+        adviser = provider_with(
+            parse=[FakeMessage(news_answer())],
+            stream=[],
+        )
+
+        result = service(adviser).decision("NVDA", "short", adviser="news")
+
+        self.assertEqual(result["adviserCouncil"]["status"], "not-requested")
+        self.assertIsNone(result["adviserAdjustment"])
+
+    def test_an_available_council_is_the_sole_adjustment_authority(self) -> None:
+        from us_stock_helper_core import ADVISER_SCORE_CAP
+
+        adviser = provider_with(
+            parse=[FakeMessage(news_answer())],
+            stream=[FakeMessage(council_answer(stance="bullish"))],
+        )
+
+        result = service(adviser).decision("NVDA", "short", adviser=True)
+
+        council = result["adviserCouncil"]["value"]
+        # One bullish, high-confidence opinion pushes the full published cap.
+        self.assertEqual(council["scoreAdjustment"], ADVISER_SCORE_CAP)
+        self.assertIsNotNone(result["adviserAdjustment"])
+        self.assertLessEqual(abs(result["adviserAdjustment"]), ADVISER_SCORE_CAP)
+        # Exactly one adjustment authority: the top-level fields describe the
+        # same computation the council block does, not a second, disagreeing
+        # one.
+        self.assertEqual(result["adviserAdjustment"], council["scoreAdjustment"])
+        self.assertEqual(result["score"]["value"], council["adjustedScore"])
+        self.assertEqual(
+            result["score"]["value"],
+            result["baselineScore"]["value"] + result["adviserAdjustment"],
+        )
+        self.assertNotEqual(result["score"]["value"], result["baselineScore"]["value"])
 
 
 class HttpSwitchTests(unittest.TestCase):

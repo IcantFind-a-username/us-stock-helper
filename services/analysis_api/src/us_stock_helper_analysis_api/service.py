@@ -19,6 +19,7 @@ from information_layer import Citation, EvidenceEvent
 from information_layer.factors import FactorSnapshot
 from information_layer.feeds import FRESHNESS_ATTRIBUTE, STALE_ATTRIBUTE
 from us_stock_helper_core import (
+    ADVISER_SCORE_CAP,
     Horizon,
     OHLCVBar,
     RiskPreference,
@@ -268,6 +269,30 @@ class AnalysisService:
         )
         notes.extend(briefing.notes)
 
+        # One adjustment authority: engine.evaluate is never handed adviser
+        # opinions (see the comment above), so output.adviser_adjustment is
+        # always 0.0 and is not what moved anything. The council's own
+        # verdict — already voided by any hard gate and clamped to
+        # ±ADVISER_SCORE_CAP inside apply_hard_gate — is the real adjustment
+        # when a council ran at all. A council that never ran (not
+        # requested, unreachable, or convened only for news) has no
+        # adjustment to report; 0.0 would be a measured neutral for a
+        # judgement nobody made.
+        served_score = _score(output.adjusted_score)
+        council_value = briefing.council.get("value")
+        if council_value is None:
+            adviser_adjustment: float | None = None
+            notes.append(
+                "No adviser council ran for this response, so "
+                "adviserAdjustment is null rather than a measured zero."
+            )
+        else:
+            adviser_adjustment = council_value["scoreAdjustment"]
+            assert abs(adviser_adjustment) <= ADVISER_SCORE_CAP, (
+                "council scoreAdjustment exceeded the published cap"
+            )
+            served_score["value"] = council_value["adjustedScore"]
+
         return {
             "schemaVersion": SCHEMA_VERSION,
             "status": "live",
@@ -275,9 +300,9 @@ class AnalysisService:
             "horizon": horizon,
             "interval": self.interval,
             "decisionCutoff": _iso(as_of),
-            "score": _score(output.adjusted_score),
+            "score": served_score,
             "baselineScore": _score(output.baseline_score),
-            "adviserAdjustment": output.adviser_adjustment,
+            "adviserAdjustment": adviser_adjustment,
             "forecast": _forecast(output.forecast),
             "riskPlan": _risk_plan(output.risk_plan),
             "sentiment": {
@@ -313,7 +338,9 @@ class AnalysisService:
             "decisionCutoff": _iso(as_of),
             "score": None,
             "baselineScore": None,
-            "adviserAdjustment": 0.0,
+            # No decision was reached at all, so there is no council to have
+            # run and no baseline for it to have moved.
+            "adviserAdjustment": None,
             "forecast": None,
             "riskPlan": None,
             "sentiment": None,
