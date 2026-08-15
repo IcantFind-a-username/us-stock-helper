@@ -23,13 +23,16 @@ const idleRepository = {
 } as unknown as MarketRepository;
 
 
+let mockRouteSymbol = "NVDA";
+
 jest.mock("expo-router", () => ({
-  useLocalSearchParams: () => ({ symbol: "NVDA" }),
+  useLocalSearchParams: () => ({ symbol: mockRouteSymbol }),
   useRouter: () => ({ back: jest.fn() }),
 }));
 
 beforeEach(async () => {
   await AsyncStorage.clear();
+  mockRouteSymbol = "NVDA";
 });
 
 /**
@@ -123,6 +126,25 @@ it("keeps the objective layer frozen while selecting deterministic long and shor
   expect(view.queryByText(/提交订单|自动交易|一键下单/)).toBeNull();
 });
 
+it("demo mode with a symbol outside the fixture set shows a graceful not-available state instead of throwing", async () => {
+  mockRouteSymbol = "SOFI";
+
+  const view = await render(
+    <Wrapper>
+      <MarketDataProvider development initialDemoMode repository={idleRepository}>
+        <AdvisersScreen />
+      </MarketDataProvider>
+    </Wrapper>,
+  );
+
+  await waitFor(() =>
+    expect(view.getByTestId("adviser-demo-fixture-missing")).toBeTruthy(),
+  );
+  expect(view.getByText("演示模式仅包含 NVDA")).toBeTruthy();
+  expect(view.queryByTestId("adviser-council")).toBeNull();
+  expect(view.queryByTestId("trade-plan-card")).toBeNull();
+});
+
 function renderRealMode(analysis: AnalysisSource) {
   return render(
     <Wrapper>
@@ -148,6 +170,19 @@ it("real mode shows an explicit invoke flow before anything is requested, not th
   // Nothing about the demo's named-investor grid or its fixture score leaks
   // into real mode.
   expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
+  expect(calls).toHaveLength(0);
+});
+
+it("real mode with a symbol absent from the demo fixtures renders without throwing", async () => {
+  mockRouteSymbol = "SOFI";
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council")).toBeTruthy());
+  expect(view.getByTestId("adviser-council-not-requested")).toBeTruthy();
+  expect(view.getByText("SOFI · 顾问会诊")).toBeTruthy();
+  expect(view.getByText(/本周期满编 7 席/)).toBeTruthy();
+  expect(view.queryByTestId("adviser-demo-fixture-missing")).toBeNull();
   expect(calls).toHaveLength(0);
 });
 

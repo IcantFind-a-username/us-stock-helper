@@ -77,6 +77,24 @@ function buildCouncilAnalysisSource(deviceToken: string | null): AnalysisSource 
   }
 }
 
+/**
+ * Demo-mode-only fixture bundle for a symbol/horizon. Real mode never calls
+ * this -- the fixture repository only ships sample data for a handful of
+ * symbols (NVDA, TSLA, PLTR), and a symbol outside that set must fall back to
+ * a graceful state here rather than crash the screen.
+ */
+function loadDemoFixtures(symbol: string, horizon: Horizon) {
+  try {
+    return {
+      stock: fixtureRepository.getStock(symbol, horizon),
+      advisers: fixtureRepository.getAdvisers(symbol, horizon),
+      plans: fixtureRepository.getTradePlans(symbol, horizon),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function AdvisersScreen({
   analysis: analysisOverride,
 }: { analysis?: AnalysisSource | undefined } = {}) {
@@ -92,56 +110,12 @@ export function AdvisersScreen({
     [analysisOverride, deviceToken],
   );
   const council = useAdviserCouncil(councilAnalysis, symbol, horizon);
-  const stock = fixtureRepository.getStock(symbol, horizon);
-  const advisers = fixtureRepository.getAdvisers(symbol, horizon);
-  const plans = fixtureRepository.getTradePlans(symbol, horizon);
   const [side, setSide] = useState<PlanSide>("long");
   const [preference, setPreference] = useState<RiskPreference>("balanced");
   const [showAll, setShowAll] = useState(false);
   const [researchRequested, setResearchRequested] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showPlanEvidence, setShowPlanEvidence] = useState(false);
-  const selectedPlan = selectTradePlan(plans, side, preference, horizon);
-  const activeAdvisers = advisers.filter(({ active }) => active);
-  const bullishCount = activeAdvisers.filter(({ direction }) => direction === "bullish").length;
-  const bearishCount = activeAdvisers.filter(({ direction }) => direction === "bearish").length;
-  const neutralCount = activeAdvisers.length - bullishCount - bearishCount;
-  const adviserAdjustment = Math.max(
-    -ADVISER_SCORE_CAP,
-    Math.min(
-      ADVISER_SCORE_CAP,
-      activeAdvisers.reduce(
-        (sum, adviser) =>
-          sum +
-          (adviser.direction === "bullish"
-            ? adviser.confidence
-            : adviser.direction === "bearish"
-              ? -adviser.confidence
-              : 0),
-        0,
-      ) /
-        Math.max(activeAdvisers.length, 1) *
-        10,
-    ),
-  );
-  const planSafety = evaluateTradePlanSafety(
-    selectedPlan,
-    stock.forecast.predictedAt,
-  );
-  const planEvidenceSections: DetailSection[] = [
-    {
-      label: "方案生成",
-      body: `${selectedPlan.methodVersion} · ${formatAsOf(selectedPlan.generatedAt)} · ${selectedPlan.horizon}`,
-    },
-    {
-      label: "安全门",
-      body: planSafety.allowed ? "通过当前演示安全门" : planSafety.reasons.join(" · "),
-    },
-    {
-      label: "时序边界",
-      body: `证据与借券状态都不得晚于 ${formatAsOf(stock.forecast.predictedAt)}`,
-    },
-  ];
 
   if (!demoMode) {
     const block = council.data?.adviserCouncil ?? null;
@@ -267,6 +241,80 @@ export function AdvisersScreen({
       </Screen>
     );
   }
+
+  const demoData = loadDemoFixtures(symbol, horizon);
+  if (!demoData) {
+    return (
+      <Screen hideGlobalHeader style={styles.screen}>
+        <View style={styles.header}>
+          <Pressable
+            accessibilityLabel="返回股票详情"
+            accessibilityRole="button"
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.back, pressed && styles.pressed]}>
+            <Text style={styles.backText}>返回</Text>
+          </Pressable>
+          <View style={styles.headerCopy}>
+            <Text style={styles.headerTitle}>{symbol} · 顾问会诊</Text>
+          </View>
+          <View style={styles.back} />
+        </View>
+        <Text style={styles.demo}>演示数据 · 非实时行情</Text>
+        <View style={styles.notice} testID="adviser-demo-fixture-missing">
+          <Text style={styles.noticeTitle}>演示模式仅包含 NVDA</Text>
+          <Text style={styles.noticeBody}>
+            当前演示数据没有覆盖 {symbol}；切换回 NVDA 查看完整演示，或切换到真实模式请求{" "}
+            {symbol} 的顾问委员会。
+          </Text>
+        </View>
+        <Text style={styles.safety}>
+          仅供分析与建议，不连接券商，不会自动下单。
+        </Text>
+      </Screen>
+    );
+  }
+  const { stock, advisers, plans } = demoData;
+  const selectedPlan = selectTradePlan(plans, side, preference, horizon);
+  const activeAdvisers = advisers.filter(({ active }) => active);
+  const bullishCount = activeAdvisers.filter(({ direction }) => direction === "bullish").length;
+  const bearishCount = activeAdvisers.filter(({ direction }) => direction === "bearish").length;
+  const neutralCount = activeAdvisers.length - bullishCount - bearishCount;
+  const adviserAdjustment = Math.max(
+    -ADVISER_SCORE_CAP,
+    Math.min(
+      ADVISER_SCORE_CAP,
+      activeAdvisers.reduce(
+        (sum, adviser) =>
+          sum +
+          (adviser.direction === "bullish"
+            ? adviser.confidence
+            : adviser.direction === "bearish"
+              ? -adviser.confidence
+              : 0),
+        0,
+      ) /
+        Math.max(activeAdvisers.length, 1) *
+        10,
+    ),
+  );
+  const planSafety = evaluateTradePlanSafety(
+    selectedPlan,
+    stock.forecast.predictedAt,
+  );
+  const planEvidenceSections: DetailSection[] = [
+    {
+      label: "方案生成",
+      body: `${selectedPlan.methodVersion} · ${formatAsOf(selectedPlan.generatedAt)} · ${selectedPlan.horizon}`,
+    },
+    {
+      label: "安全门",
+      body: planSafety.allowed ? "通过当前演示安全门" : planSafety.reasons.join(" · "),
+    },
+    {
+      label: "时序边界",
+      body: `证据与借券状态都不得晚于 ${formatAsOf(stock.forecast.predictedAt)}`,
+    },
+  ];
 
   return (
     <Screen hideGlobalHeader style={styles.screen}>
