@@ -16,6 +16,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from us_stock_helper_analysis_api.http_app import PAIRING_PATH, _READ_PATHS
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 ANALYSIS_API_README = REPOSITORY_ROOT / "services/analysis_api/README.md"
@@ -102,6 +104,33 @@ class DocumentationDriftTests(unittest.TestCase):
             f"{command}\n--- stdout (tail) ---\n{completed.stdout[-4000:]}\n"
             f"--- stderr (tail) ---\n{completed.stderr[-4000:]}",
         )
+
+
+class AllowlistDriftTests(unittest.TestCase):
+    """The README's own safety claim has to name every path actually served.
+
+    services/analysis_api/README.md said the allowlist was exactly
+    `GET /health`, `GET /decision` and `POST /v1/device-pairings` after
+    `GET /market-brief` (http_app.MARKET_BRIEF_PATH) had already joined
+    `http_app._READ_PATHS` -- a reader trusting the safety-invariants section
+    over the code would not have known that path existed at all.
+    """
+
+    def test_the_documented_allowlist_sentence_matches_the_served_paths(
+        self,
+    ) -> None:
+        text = ANALYSIS_API_README.read_text(encoding="utf-8")
+        # DOTALL: the README wraps this sentence across lines inside the
+        # `- The path allowlist is exactly ...;` bullet.
+        match = re.search(r"The path allowlist is exactly (.+?);", text, re.DOTALL)
+        self.assertIsNotNone(
+            match, "README has no 'the path allowlist is exactly ...' sentence"
+        )
+        documented = set(re.findall(r"`(GET|POST) (/[\w/-]+)`", match.group(1)))
+        expected = {("GET", path) for path in _READ_PATHS} | {
+            ("POST", PAIRING_PATH)
+        }
+        self.assertEqual(documented, expected)
 
 
 if __name__ == "__main__":

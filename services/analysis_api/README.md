@@ -12,19 +12,31 @@ default. Intraday intervals are chart views, not an implicit basis for every
 short-, swing- and long-horizon conclusion. Each response carries `interval`
 so clients can state the analytical basis instead of guessing it.
 
-The analysis service does not read `/stock-snapshot`, `/v2/stock-snapshot`, or
-`/v3/stock-snapshot`. Its deterministic price path reads only `/candles` with
-`interval=day` by default, so delayed holdings, current-session order-size flow,
-and every other optional snapshot section cannot change a score or its daily
-price basis. A live quote remains a separate Watchlist/current-session value.
-The two point-in-time boundaries on that candle envelope are defined below;
-the decision still prices from the latest completed daily close.
+The analysis service's deterministic price path reads only `/candles` with
+`interval=day` by default; it does not read `/stock-snapshot` or
+`/v2/stock-snapshot`, and no snapshot section of any schema version can move
+`currentPrice` or the daily price basis. A live quote remains a separate
+Watchlist/current-session value. The two point-in-time boundaries on that
+candle envelope are defined below; the decision still prices from the latest
+completed daily close.
+
+The service does read `/v3/stock-snapshot`, but only its `currentSessionFlow`
+and `holdings` sections, and only to feed the `institutional_flow` score
+factor (see `gateway_provider.MarketGatewayProvider.institutional_flow_inputs_for`).
+Both sections are re-filtered locally against the decision's own `as_of`
+cutoff rather than trusted from the gateway's snapshot-request-time envelope,
+so a row published in the gap between the decision's cutoff and this second
+fetch cannot reach the score. This is the one place a snapshot section can
+change a score: current-session order-size flow and delayed holdings
+disclosures are real inputs to `institutional_flow`, not inert context, and a
+symbol with either ingredient at the cutoff gets a nonzero reading from them.
 
 ## Safety invariants
 
-- The path allowlist is exactly `GET /health`, `GET /decision` and
-  `POST /v1/device-pairings`; every other method on every path fails closed
-  with 405, and the pairing path answers nothing but POST.
+- The path allowlist is exactly `GET /health`, `GET /decision`,
+  `GET /market-brief` and `POST /v1/device-pairings`; every other method on
+  every path fails closed with 405, and the pairing path answers nothing but
+  POST.
 - The pairing path is unauthenticated because it is where a credential comes
   from. What protects it is the code — single use, minutes long, and rate
   limited per caller in the credential database, so the count survives a
@@ -42,9 +54,15 @@ screen rather than being smoothed over in serialization:
 
 - `score.factorCoverage` and `score.unavailableFactors` — Treasury data and SEC
   XBRL fundamentals fill macro and fundamental inputs when public records are
-  available. Geopolitics and institutional flow remain explicit abstentions;
-  unsupported or failed sources reduce coverage instead of becoming fake
-  neutral values.
+  available. Geopolitics remains an explicit, permanent abstention: no free,
+  structured source turns geopolitical events into a number this system
+  could defend (`information_layer.factors.unsupported.geopolitics_reading`).
+  Institutional flow is no longer a permanent abstention — it blends the
+  gateway's order-size participation proxy and dated holdings disclosures
+  described above whenever either qualifies at the cutoff, and states a
+  named reason (`source_unreachable`, `no_data_at_cutoff`, …) instead of a
+  fake neutral only when neither does. Unsupported or failed sources reduce
+  coverage instead of becoming fake neutral values either way.
 - `forecast: null` with a note — when realized volatility cannot be measured
   there is no honest width for a scenario range, and a band of no width shown
   as confidently as a measured one is worse than showing nothing.
@@ -58,8 +76,11 @@ screen rather than being smoothed over in serialization:
 ## Operate the durable local service
 
 `market_gateway` must already be serving on the same host; its `/candles`
-endpoint is this service's only deterministic price source. Optional sections
-of a stock snapshot, including holdings, cannot affect a decision.
+endpoint is this service's only deterministic price source. `market_gateway`
+also serves `GET /v3/stock-snapshot`, whose `currentSessionFlow` and
+`holdings` sections feed the `institutional_flow` factor as described above
+— the one place a snapshot section can move a score. Every other section of
+that snapshot is not read by this service at all.
 
 From the repository root, use the lifecycle CLI instead of starting a
 foreground Python process:
