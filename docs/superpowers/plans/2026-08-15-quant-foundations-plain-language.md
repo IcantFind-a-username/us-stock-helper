@@ -38,8 +38,22 @@ Wire breadth/sector-RS into the market-brief driver slots created by the demo-pa
 - Mobile: `PlainReadingCard` component implementing the three-layer contract (headline → expandable explainer → numbers with sample size and 失效条件); wired on the stock page for RVOL/volatility and the dashboard brief for breadth/sector drivers.
 - RED first: screen tests pinning all three layers render, jargon-only rendering fails, banned verbs absent.
 
-### Task 7: Methodology documentation
-Extend docs/indicator-methodology.md with each new algorithm: formula, source references, validation rules, known limitations, and the plain-language vocabulary table (so the copy is reviewable as part of the methodology, not scattered in code).
+### Task 7: Magic Nine plain-language reading (Franz request, 2026-08-15)
+The served magicNine state currently renders as jargon ("九转 2 · 尚未完成 · 完美 · 14 根前"). Add its full three-layer reading to the plain-language vocabulary: what TD Setup counts (consecutive closes vs. four bars earlier), what reaching 9 suggests (trend persistence nearing exhaustion — a caution zone, not a trade signal), what 完美/perfection adds, what interruption means ("序列中断则重新计数"), and the reading for every reachable state (counting up/down × count bucket × completed recently × perfected). Rendered via PlainReadingCard beside the existing chart badge; the badge itself stays.
+
+### Task 8: Candlestick pattern detection engine with explained hints (Franz request, 2026-08-15)
+`analysis_core/patterns_shapes.py` (name distinct from the existing td_setup module): deterministic, completed-bars-only detectors, each with a versioned rule spelled out in the methodology doc:
+- 顶分型/底分型 (three-bar fractal top/bottom);
+- W底/双头 (double bottom / double top with neckline);
+- 头肩顶/头肩底 (head and shoulders top/bottom with neckline);
+- 回踩五日线企稳 / 回眸一笑 (pullback to MA5 that holds and turns — define the exact rule transparently in the methodology doc; this is a colloquial retail pattern, so the definition we ship IS the spec).
+Each detection returns: name, status (`forming`/`confirmed`/`invalidated`), the exact invalidation condition (e.g. "收盘跌破颈线"), the bars involved (for chart markers), minimum-window honesty (below the detector's window → typed unavailable, per the 四点七 pattern-factor lesson), and version `patterns-shapes-v1`.
+Wire: serve through the snapshot/decision technical section (the demo `PatternSignal` mobile contract already models this); mobile renders a pattern card listing current detections and draws tap-to-expand markers on the chart. Every pattern hint carries its three-layer reading: 一句话含义 (e.g. 底分型: "连续下跌后，中间这根K线的最低点比两边都低，又收回来了——短线卖压可能衰竭的第一个迹象"), 展开解释 (formation logic and what confirms/voids it), 数字层 (which bars, invalidation price, and the honesty line "历史胜率待回测" until the phase-2 walk-forward engine attaches real hit rates).
+PIT tests: a pattern may only use completed bars; adding a future bar must never change an already-emitted detection for earlier timestamps; forming→confirmed/invalidated transitions must be reproducible from the bar sequence alone.
+Presentation red line unchanged: hints describe structure and invalidation, never instruct an action; no efficacy claims before backtest.
+
+### Task 9: Methodology documentation
+Extend docs/indicator-methodology.md with each new algorithm: formula, source references, validation rules, known limitations, and the plain-language vocabulary table — including every pattern definition from Task 8 and the Magic Nine reading table from Task 7 (so the copy is reviewable as part of the methodology, not scattered in code).
 
 ## Phase 2 (separate plan, larger)
 Conformal calibration for the forecast band (the unlock for the withheld probability overlay), walk-forward backtest engine attaching honest hit rates to TD Setup / Dragon Trend / patterns, and the event-study engine over information-layer events once 阶段 6 source adapters widen coverage.
