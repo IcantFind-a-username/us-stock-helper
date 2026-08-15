@@ -131,7 +131,8 @@ const FACTOR_EXPLANATIONS: Record<string, string> = {
   market_sentiment: "按当时可见的市场情绪，结合引用的新闻证据。",
   macro: "按当时可见的宏观经济背景，作为软因子处理。",
   geopolitics: "按当时可见的地缘政治背景，作为软因子处理。",
-  institutional_flow: "按当时可见的机构资金流估算，不声称掌握隐藏订单信息。",
+  institutional_flow:
+    "融合日内大单资金净流入占比的估算代理与机构持仓变动趋势（按披露日期计入），不声称掌握隐藏订单信息。",
   fundamentals: "按当时可见的公司财务状况。",
 };
 
