@@ -1,6 +1,10 @@
 import { describe, expect, it, jest } from "@jest/globals";
 
-import { createAnalysisClient, decodeDecisionEnvelope } from "../analysisGateway";
+import {
+  createAnalysisClient,
+  decodeDecisionEnvelope,
+  decodeMarketBriefEnvelope,
+} from "../analysisGateway";
 
 import {
   adviserCouncilFixture,
@@ -10,6 +14,7 @@ import {
 } from "./decision.fixture";
 
 const now = new Date("2026-07-25T16:00:10.000Z");
+const marketBriefCutoff = "2026-07-25T16:00:00.000Z";
 
 function jsonResponse(value: unknown, status = 200) {
   return {
@@ -17,6 +22,89 @@ function jsonResponse(value: unknown, status = 200) {
     status,
     json: async () => value,
   } as Response;
+}
+
+/**
+ * The unsourced eight, exactly as `market_brief.py`'s `_UNSOURCED_REASON`
+ * names them -- copied verbatim rather than paraphrased, so a decoder test
+ * that asserts on the string is testing the wire contract, not a rewording
+ * of it.
+ */
+const UNSOURCED_DRIVER_REASON: Record<string, string> = {
+  breadth: "大盘涨跌家数、新高新低等广度数据源尚未接入。",
+  "volatility-options": "波动率与期权持仓数据源尚未接入。",
+  sector: "板块轮动强弱数据源尚未接入。",
+  "rates-dollar": "利率与美元指数数据源尚未接入。",
+  "macro-credit-energy": "信用利差与能源价格数据源尚未接入。",
+  "liquidity-correlation": "流动性与相关性压力数据源尚未接入。",
+  "broad-market-trend": "大盘趋势判定数据源尚未接入。",
+  geopolitics: "地缘政治的独立驱动判定尚未接入，相关报道已计入整体新闻情绪。",
+};
+
+const ALL_DRIVER_CATEGORIES = [
+  "news-sentiment",
+  "breadth",
+  "volatility-options",
+  "sector",
+  "rates-dollar",
+  "macro-credit-energy",
+  "liquidity-correlation",
+  "broad-market-trend",
+  "geopolitics",
+];
+
+function marketBriefFixture() {
+  return {
+    schemaVersion: "1",
+    status: "available" as "available" | "unavailable",
+    reason: null as string | null,
+    decisionCutoff: marketBriefCutoff,
+    marketSession: "regular" as
+      | "premarket"
+      | "regular"
+      | "afterhours"
+      | "closed",
+    dataHealth: "fresh" as
+      | "fresh"
+      | "stale"
+      | "conflict"
+      | "insufficient"
+      | null,
+    sentiment: {
+      conclusion: "偏多",
+      actionScore: 0.42,
+      uncertainty: ["独立来源不足"] as string[],
+    } as Record<string, unknown> | null,
+    driverCoverage: ALL_DRIVER_CATEGORIES.map((category) =>
+      category === "news-sentiment"
+        ? {
+            category,
+            available: true,
+            conclusion: "偏多",
+            actionScore: 0.42,
+            missingReason: null as string | null,
+          }
+        : {
+            category,
+            available: false,
+            conclusion: null as string | null,
+            actionScore: null as number | null,
+            missingReason: UNSOURCED_DRIVER_REASON[category]!,
+          },
+    ) as Record<string, unknown>[],
+    citations: [
+      {
+        id: "C1",
+        headline: "NVIDIA raises full-year revenue guidance",
+        publisher: "reuters",
+        url: "https://reuters.example/a",
+        availableAt: "2026-07-25T15:44:00Z",
+        freshnessSeconds: 1140,
+        stale: false as boolean | null,
+      },
+    ] as Record<string, unknown>[],
+    sourceGaps: [] as string[],
+  };
 }
 
 describe("decision envelope validation", () => {
@@ -187,6 +275,261 @@ describe("decision envelope validation", () => {
     // The server has no such field; if one ever appears the app must refuse
     // the payload rather than render around it.
     expect(() => decodeDecisionEnvelope(value, { now })).toThrow(/order/i);
+  });
+});
+
+/**
+ * `GET /market-brief` reuses the Decision envelope's decoding conventions
+ * exactly: null-means-absent, the same clock-skew tolerance, the same
+ * whole-payload rejection on an embedded order/credential field, https-only
+ * citations. The wire shape is frozen by
+ * `.superpowers/sdd/2026-08-15-stage5-objective-review/market-brief-contract.md`.
+ */
+describe("market brief envelope validation", () => {
+  it("decodes an available brief with its full nine-category coverage disclosure", () => {
+    const brief = decodeMarketBriefEnvelope(marketBriefFixture(), { now });
+
+    expect(brief).toMatchObject({
+      status: "available",
+      reason: null,
+      decisionCutoff: "2026-07-25T16:00:00.000Z",
+      marketSession: "regular",
+      dataHealth: "fresh",
+    });
+    expect(brief.sentiment).toMatchObject({
+      conclusion: "偏多",
+      actionScore: 0.42,
+      uncertainty: ["独立来源不足"],
+    });
+    expect(brief.driverCoverage).toHaveLength(9);
+    expect(brief.sourceGaps).toEqual([]);
+  });
+
+  it("decodes the one sourced driver category with values and the rest as named absences", () => {
+    const brief = decodeMarketBriefEnvelope(marketBriefFixture(), { now });
+
+    const sourced = brief.driverCoverage.find(
+      (item) => item.category === "news-sentiment",
+    );
+    expect(sourced).toMatchObject({
+      available: true,
+      conclusion: "偏多",
+      actionScore: 0.42,
+      missingReason: null,
+    });
+
+    const unsourced = brief.driverCoverage.filter(
+      (item) => item.category !== "news-sentiment",
+    );
+    expect(unsourced).toHaveLength(8);
+    for (const item of unsourced) {
+      expect(item.available).toBe(false);
+      // An absent field must arrive as an absence, never a fabricated zero
+      // or an invented sentence standing in for one.
+      expect(item.conclusion).toBeNull();
+      expect(item.actionScore).toBeNull();
+      expect(item.missingReason).toBeTruthy();
+    }
+  });
+
+  it("passes the 情绪未测量 uncertainty marker through verbatim, actionScore included", () => {
+    // 情绪未测量 is the disambiguator between "measured zero" and "nothing
+    // measured": actionScore stays a real float even when nothing could be
+    // read, and the marker string is how a reader tells the two apart.
+    const value = marketBriefFixture();
+    (value.sentiment as Record<string, unknown>).uncertainty = ["情绪未测量"];
+    (value.sentiment as Record<string, unknown>).actionScore = 0.0;
+    value.dataHealth = "insufficient";
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    expect(brief.sentiment?.uncertainty).toEqual(["情绪未测量"]);
+    expect(brief.sentiment?.actionScore).toBe(0.0);
+    expect(brief.dataHealth).toBe("insufficient");
+  });
+
+  it("keeps a citation's unmeasured freshness and staleness as null, not zero or false", () => {
+    const value = marketBriefFixture();
+    const citation = value.citations[0] as Record<string, unknown>;
+    citation.freshnessSeconds = null;
+    citation.stale = null;
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    expect(brief.citations[0]?.freshnessSeconds).toBeNull();
+    expect(brief.citations[0]?.stale).toBeNull();
+  });
+
+  it("decodes an unavailable brief as a typed unavailable carrying the server's reason", () => {
+    const value = marketBriefFixture();
+    value.status = "unavailable";
+    value.reason =
+      "本次未能读取任何情报源：sec-current-8-k（HTTP 503）、fred-releases（unreachable）";
+    value.dataHealth = null;
+    value.sentiment = null;
+    value.citations = [];
+    value.sourceGaps = [
+      "sec-current-8-k（HTTP 503）",
+      "fred-releases（unreachable）",
+    ];
+    value.driverCoverage = value.driverCoverage.map((item) => ({
+      ...item,
+      available: false,
+      conclusion: null,
+      actionScore: null,
+      missingReason: "本次没有可读取的情报源，无法给出该驱动的结论。",
+    }));
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    expect(brief.status).toBe("unavailable");
+    expect(brief.reason).toContain("sec-current-8-k");
+    expect(brief.reason).toContain("fred-releases");
+    expect(brief.dataHealth).toBeNull();
+    expect(brief.sentiment).toBeNull();
+    expect(brief.citations).toEqual([]);
+    expect(brief.driverCoverage).toHaveLength(9);
+    expect(brief.driverCoverage.every((item) => !item.available)).toBe(true);
+  });
+
+  it("rejects a non-https citation rather than serving it", () => {
+    const value = marketBriefFixture();
+    (value.citations[0] as Record<string, unknown>).url =
+      "http://reuters.example/a";
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow(/https/i);
+  });
+
+  it("rejects a payload carrying anything that could place an order", () => {
+    const value = marketBriefFixture() as Record<string, unknown>;
+    value.submitOrder = { quantity: 100 };
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow(/order/i);
+  });
+
+  it("rejects a credential field embedded anywhere inside the payload", () => {
+    const value = marketBriefFixture() as Record<string, unknown>;
+    const driverCoverage = value.driverCoverage as Record<string, unknown>[];
+    driverCoverage[0]!.brokerToken = "sk-live-should-never-ride-along";
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow(/order/i);
+  });
+
+  it("tolerates the same clock skew a decision does", () => {
+    const value = marketBriefFixture();
+    value.decisionCutoff = new Date(now.getTime() + 3_000).toISOString();
+
+    const brief = decodeMarketBriefEnvelope(value, { now });
+
+    expect(brief.decisionCutoff).toBe(value.decisionCutoff);
+  });
+
+  it("still refuses a cutoff that is meaningfully in the future", () => {
+    const value = marketBriefFixture();
+    value.decisionCutoff = new Date(now.getTime() + 20 * 60_000).toISOString();
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow(/future/);
+  });
+
+  it.each([
+    [
+      "an unsupported schema version",
+      (value: Record<string, unknown>) => {
+        value.schemaVersion = "2";
+      },
+    ],
+    [
+      "a status this app does not know",
+      (value: Record<string, unknown>) => {
+        value.status = "pending";
+      },
+    ],
+    [
+      "an unavailable brief that names no reason",
+      (value: Record<string, unknown>) => {
+        value.status = "unavailable";
+        value.dataHealth = null;
+        value.sentiment = null;
+        value.citations = [];
+      },
+    ],
+    [
+      "an available brief carrying a reason it should not have",
+      (value: Record<string, unknown>) => {
+        value.reason = "should not be present when available";
+      },
+    ],
+    [
+      "an unavailable brief that still carries a data health reading",
+      (value: Record<string, unknown>) => {
+        value.status = "unavailable";
+        value.reason = "本次未能读取任何情报源：sec-current-8-k（HTTP 503）";
+        value.sentiment = null;
+        value.citations = [];
+      },
+    ],
+    [
+      "an unavailable brief that still carries a sentiment reading",
+      (value: Record<string, unknown>) => {
+        value.status = "unavailable";
+        value.reason = "本次未能读取任何情报源：sec-current-8-k（HTTP 503）";
+        value.dataHealth = null;
+        value.citations = [];
+      },
+    ],
+    [
+      "a driver coverage list missing one of the nine designed categories",
+      (value: Record<string, unknown>) => {
+        value.driverCoverage = (
+          value.driverCoverage as Record<string, unknown>[]
+        ).slice(0, 8);
+      },
+    ],
+    [
+      "an available driver category with no conclusion",
+      (value: Record<string, unknown>) => {
+        (value.driverCoverage as Record<string, unknown>[])[0]!.conclusion =
+          null;
+      },
+    ],
+    [
+      "an available driver category with no action score",
+      (value: Record<string, unknown>) => {
+        (value.driverCoverage as Record<string, unknown>[])[0]!.actionScore =
+          null;
+      },
+    ],
+    [
+      "an unavailable driver category that names no missing reason",
+      (value: Record<string, unknown>) => {
+        (value.driverCoverage as Record<string, unknown>[])[1]!.missingReason =
+          null;
+      },
+    ],
+    [
+      "an unsupported market session",
+      (value: Record<string, unknown>) => {
+        value.marketSession = "midnight";
+      },
+    ],
+    [
+      "an unsupported data health value",
+      (value: Record<string, unknown>) => {
+        value.dataHealth = "great";
+      },
+    ],
+    [
+      "a driver category this app does not know",
+      (value: Record<string, unknown>) => {
+        (value.driverCoverage as Record<string, unknown>[])[0]!.category =
+          "vibes";
+      },
+    ],
+  ])("rejects %s", (_label, mutate) => {
+    const value = marketBriefFixture() as Record<string, unknown>;
+    mutate(value);
+
+    expect(() => decodeMarketBriefEnvelope(value, { now })).toThrow();
   });
 });
 
@@ -540,6 +883,83 @@ describe("analysis client transport", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe("market brief client transport", () => {
+  it("requests the market brief over a plain GET with no query parameters", async () => {
+    const fetchImpl = jest.fn(async () =>
+      jsonResponse(marketBriefFixture()),
+    ) as unknown as typeof fetch;
+    const client = createAnalysisClient({
+      baseUrl: "http://192.168.1.10:8788/",
+      authorizationToken: "0123456789abcdef0123456789abcdef",
+      fetchImpl,
+      now: () => now,
+    });
+
+    const brief = await client.getMarketBrief!();
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://192.168.1.10:8788/market-brief",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          Authorization: "Bearer 0123456789abcdef0123456789abcdef",
+        }),
+      }),
+    );
+    expect(brief).toMatchObject({ status: "available", marketSession: "regular" });
+  });
+
+  it("returns an explicitly unavailable brief rather than inventing one", async () => {
+    const value = marketBriefFixture();
+    value.status = "unavailable";
+    value.reason = "本次未能读取任何情报源：sec-current-8-k（HTTP 503）";
+    value.dataHealth = null;
+    value.sentiment = null;
+    value.citations = [];
+    const client = createAnalysisClient({
+      baseUrl: "http://127.0.0.1:8788",
+      fetchImpl: jest.fn(async () => jsonResponse(value)) as unknown as typeof fetch,
+      now: () => now,
+    });
+
+    const brief = await client.getMarketBrief!();
+
+    expect(brief.status).toBe("unavailable");
+    expect(brief.reason).toContain("sec-current-8-k");
+  });
+
+  it("classifies a market brief failure the same way a decision failure is classified", async () => {
+    const client = createAnalysisClient({
+      baseUrl: "http://127.0.0.1:8788",
+      fetchImpl: jest.fn(async () =>
+        jsonResponse({ error: { code: "AUTH_REQUIRED" } }, 401),
+      ) as unknown as typeof fetch,
+      now: () => now,
+    });
+
+    await expect(client.getMarketBrief!()).rejects.toMatchObject({
+      name: "AnalysisRequestError",
+      kind: "auth-required",
+    });
+  });
+
+  it("refuses to start once the caller has already cancelled", async () => {
+    const caller = new AbortController();
+    caller.abort();
+    const fetchImpl = jest.fn() as unknown as typeof fetch;
+    const client = createAnalysisClient({
+      baseUrl: "http://127.0.0.1:8788",
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(
+      client.getMarketBrief!(caller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 

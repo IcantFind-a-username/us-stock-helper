@@ -288,6 +288,62 @@ export interface Decision {
   notes: string[];
 }
 
+export type MarketSession = "premarket" | "regular" | "afterhours" | "closed";
+
+export interface MarketBriefSentiment {
+  conclusion: string;
+  /** Always a measured float; 0.0 when unmeasured (see `dataHealth`/`uncertainty`). */
+  actionScore: number;
+  /** e.g. "情绪未测量", "来源冲突", "含未证实传闻", "独立来源不足". */
+  uncertainty: string[];
+}
+
+export interface MarketBriefDriverCoverage {
+  category: MarketDriverCategory;
+  available: boolean;
+  /** null unless `available`. */
+  conclusion: string | null;
+  /** null unless `available`. */
+  actionScore: number | null;
+  /** null only when `available`; named otherwise, never invented. */
+  missingReason: string | null;
+}
+
+export interface MarketBriefCitation {
+  id: string;
+  headline: string;
+  publisher: string;
+  url: string;
+  availableAt: string;
+  /** null only when age was never measured -- not a real production path. */
+  freshnessSeconds: number | null;
+  stale: boolean | null;
+}
+
+/**
+ * `GET /market-brief`'s decoded envelope -- the Dashboard's real-mode market
+ * hero. Deliberately shaped nothing like `DashboardSnapshot`: no `demoData`,
+ * no symbol, no market score, no candidates, no priority alert. That
+ * structural distance is what keeps `demoData: true` demo-only by
+ * construction -- a decoded brief cannot be mistaken for, or substituted
+ * into, the fixture path the Dashboard already renders.
+ */
+export interface MarketBrief {
+  status: "available" | "unavailable";
+  /** Set only when `status` is "unavailable"; names every source that failed. */
+  reason: string | null;
+  decisionCutoff: string;
+  marketSession: MarketSession;
+  /** null only when `status` is "unavailable". */
+  dataHealth: DataHealth | null;
+  /** null only when `status` is "unavailable". */
+  sentiment: MarketBriefSentiment | null;
+  /** Always nine entries, one per designed `MarketDriverCategory`. */
+  driverCoverage: MarketBriefDriverCoverage[];
+  citations: MarketBriefCitation[];
+  sourceGaps: string[];
+}
+
 export interface Candle {
   /** Bar-close time. Indicators and patterns may only consume completed bars. */
   timestamp: string;

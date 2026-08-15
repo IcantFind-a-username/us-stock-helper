@@ -6,6 +6,7 @@ import type {
   AdviserConclusion,
   AdviserUsage,
   CouncilFrameworkOpinion,
+  DataHealth,
   Decision,
   DecisionAdviserCouncil,
   DecisionForecast,
@@ -14,6 +15,11 @@ import type {
   DecisionScore,
   FactorContribution,
   Horizon,
+  MarketBrief,
+  MarketBriefCitation,
+  MarketBriefDriverCoverage,
+  MarketBriefSentiment,
+  MarketDriverCategory,
 } from "@/domain/models";
 
 /**
@@ -515,6 +521,252 @@ function decodeAdviserUsage(value: unknown): AdviserUsage | null {
   };
 }
 
+const MARKET_SESSIONS = ["premarket", "regular", "afterhours", "closed"];
+const DATA_HEALTH_VALUES = ["fresh", "stale", "conflict", "insufficient"];
+const MARKET_DRIVER_CATEGORIES = [
+  "news-sentiment",
+  "breadth",
+  "volatility-options",
+  "sector",
+  "rates-dollar",
+  "macro-credit-energy",
+  "liquidity-correlation",
+  "broad-market-trend",
+  "geopolitics",
+];
+
+function decodeMarketBriefSentiment(value: unknown): MarketBriefSentiment {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("market brief sentiment must be an object");
+  }
+  if (!Array.isArray(value.uncertainty)) {
+    throw new DecisionValidationError("sentiment uncertainty must be an array");
+  }
+  return {
+    conclusion: requireString(value, "conclusion"),
+    // Always a measured float, never null, exactly like a decision's
+    // sentiment: 0.0 means unmeasured, and the "情绪未测量" string inside
+    // uncertainty -- not a null value here -- is what says so.
+    actionScore: requireFiniteNumber(value, "actionScore"),
+    uncertainty: value.uncertainty.map(String),
+  };
+}
+
+function decodeMarketBriefDriverCoverage(
+  value: unknown,
+): MarketBriefDriverCoverage {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("driver coverage entry must be an object");
+  }
+  const category = requireString(value, "category");
+  if (!MARKET_DRIVER_CATEGORIES.includes(category)) {
+    throw new DecisionValidationError(
+      `unsupported market driver category: ${category}`,
+    );
+  }
+  if (typeof value.available !== "boolean") {
+    throw new DecisionValidationError("driver coverage available must be boolean");
+  }
+  const conclusion = value.conclusion;
+  if (conclusion !== null && typeof conclusion !== "string") {
+    throw new DecisionValidationError(
+      "driver coverage conclusion must be a string or null",
+    );
+  }
+  const actionScore = decodeOptionalFiniteNumber(value, "actionScore");
+  const missingReason = value.missingReason;
+  if (missingReason !== null && typeof missingReason !== "string") {
+    throw new DecisionValidationError(
+      "driver coverage missingReason must be a string or null",
+    );
+  }
+  if (value.available) {
+    // A sourced category must carry the values it claims to have; an
+    // "available: true" entry with nothing inside it is exactly the kind of
+    // fabricated-looking gap this envelope exists to avoid.
+    if (conclusion === null || actionScore === null) {
+      throw new DecisionValidationError(
+        "an available driver category must carry its conclusion and score",
+      );
+    }
+    if (missingReason !== null) {
+      throw new DecisionValidationError(
+        "an available driver category must not carry a missing reason",
+      );
+    }
+  } else {
+    if (conclusion !== null || actionScore !== null) {
+      throw new DecisionValidationError(
+        "an unavailable driver category must not carry a conclusion or score",
+      );
+    }
+    // Silence here is the failure mode this whole disclosure exists to
+    // prevent: a category with no source and no stated reason reads as an
+    // oversight, not an honest gap.
+    if (typeof missingReason !== "string" || missingReason.trim() === "") {
+      throw new DecisionValidationError(
+        "an unavailable driver category must say why",
+      );
+    }
+  }
+  return {
+    category: category as MarketDriverCategory,
+    available: value.available,
+    conclusion,
+    actionScore,
+    missingReason,
+  };
+}
+
+function decodeMarketBriefCitation(value: unknown): MarketBriefCitation {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("market brief citation must be an object");
+  }
+  const url = requireString(value, "url");
+  if (!url.startsWith("https://")) {
+    throw new DecisionValidationError("market brief citation url must be https");
+  }
+  const freshnessSeconds = decodeOptionalFiniteNumber(value, "freshnessSeconds");
+  const stale = value.stale;
+  if (stale !== null && typeof stale !== "boolean") {
+    throw new DecisionValidationError(
+      "market brief citation stale must be boolean or null",
+    );
+  }
+  return {
+    id: requireString(value, "id"),
+    headline: requireString(value, "headline"),
+    publisher: requireString(value, "publisher"),
+    url,
+    availableAt: requireString(value, "availableAt"),
+    freshnessSeconds,
+    stale,
+  };
+}
+
+/**
+ * Decodes `GET /market-brief`'s envelope with the same strictness discipline
+ * `decodeDecisionEnvelope` already uses: null means an honest absence, never
+ * a coerced zero; an order or credential field anywhere in the payload
+ * rejects the whole response; a citation is refused rather than served over
+ * plain http; the cutoff tolerates the same few minutes of clock skew a
+ * decision's does. The wire shape is frozen by
+ * `.superpowers/sdd/2026-08-15-stage5-objective-review/market-brief-contract.md`.
+ */
+export function decodeMarketBriefEnvelope(
+  value: unknown,
+  { now = new Date() }: { now?: Date } = {},
+): MarketBrief {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("market brief must be an object");
+  }
+  rejectOrderFields(value);
+  if (value.schemaVersion !== "1") {
+    throw new DecisionValidationError("unsupported market brief schemaVersion");
+  }
+  const status = requireString(value, "status");
+  if (status !== "available" && status !== "unavailable") {
+    throw new DecisionValidationError("market brief status is unsupported");
+  }
+  const cutoff = parseTimestamp(
+    requireString(value, "decisionCutoff"),
+    "decisionCutoff",
+  );
+  // Same tolerance as a decision's cutoff, for the same reason: the service
+  // stamps this the instant it answers, so a few milliseconds of latency --
+  // or of this device's clock lagging -- is not the service claiming to know
+  // the future. That claim is measured in minutes.
+  if (cutoff.getTime() - now.getTime() > CLOCK_SKEW_TOLERANCE_MS) {
+    throw new DecisionValidationError("market brief cutoff is in the future");
+  }
+  const marketSession = requireString(value, "marketSession");
+  if (!MARKET_SESSIONS.includes(marketSession)) {
+    throw new DecisionValidationError("market brief session is unsupported");
+  }
+  const reason = value.reason;
+  if (reason !== null && typeof reason !== "string") {
+    throw new DecisionValidationError(
+      "market brief reason must be a string or null",
+    );
+  }
+  if (!Array.isArray(value.driverCoverage) || value.driverCoverage.length !== 9) {
+    throw new DecisionValidationError(
+      "market brief must name all nine driver categories",
+    );
+  }
+  if (!Array.isArray(value.citations)) {
+    throw new DecisionValidationError("market brief citations must be an array");
+  }
+  if (!Array.isArray(value.sourceGaps)) {
+    throw new DecisionValidationError("market brief sourceGaps must be an array");
+  }
+
+  let dataHealth: DataHealth | null;
+  let sentiment: MarketBriefSentiment | null;
+  if (status === "unavailable") {
+    // The fail-closed path: every configured source failed, so an outage
+    // must never be served looking like a quiet market. The reason names
+    // every failed source, and none of the readings a real sweep would have
+    // produced may ride along with it.
+    if (typeof reason !== "string" || reason.trim() === "") {
+      throw new DecisionValidationError(
+        "an unavailable market brief must say why",
+      );
+    }
+    if (value.dataHealth !== null) {
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry a data health reading",
+      );
+    }
+    if (value.sentiment !== null) {
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry a sentiment reading",
+      );
+    }
+    if (value.citations.length !== 0) {
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry citations",
+      );
+    }
+    dataHealth = null;
+    sentiment = null;
+  } else {
+    if (reason !== null) {
+      throw new DecisionValidationError(
+        "an available market brief must not carry a reason",
+      );
+    }
+    const dataHealthRaw = value.dataHealth;
+    if (
+      typeof dataHealthRaw !== "string" ||
+      !DATA_HEALTH_VALUES.includes(dataHealthRaw)
+    ) {
+      throw new DecisionValidationError(
+        "market brief data health is unsupported",
+      );
+    }
+    if (value.sentiment === null || value.sentiment === undefined) {
+      throw new DecisionValidationError(
+        "an available market brief must carry a sentiment reading",
+      );
+    }
+    dataHealth = dataHealthRaw as DataHealth;
+    sentiment = decodeMarketBriefSentiment(value.sentiment);
+  }
+
+  return {
+    status,
+    reason: reason ?? null,
+    decisionCutoff: cutoff.toISOString(),
+    marketSession: marketSession as MarketBrief["marketSession"],
+    dataHealth,
+    sentiment,
+    driverCoverage: value.driverCoverage.map(decodeMarketBriefDriverCoverage),
+    citations: value.citations.map(decodeMarketBriefCitation),
+    sourceGaps: value.sourceGaps.map(String),
+  };
+}
+
 export function decodeDecisionEnvelope(
   value: unknown,
   { now = new Date() }: { now?: Date } = {},
@@ -636,6 +888,13 @@ export type AnalysisSource = {
     signal?: AbortSignal,
     options?: AnalysisRequestOptions,
   ): Promise<Decision>;
+  /**
+   * Optional because the fakes elsewhere in this codebase only ever exercise
+   * `getDecision`; the real client below always implements it. `GET
+   * /market-brief` takes no symbol or horizon -- it is the Dashboard's
+   * real-mode market hero, safe to call on every load.
+   */
+  getMarketBrief?(signal?: AbortSignal): Promise<MarketBrief>;
 };
 
 export type AnalysisRequestOptions = {
@@ -810,6 +1069,15 @@ export function createAnalysisClient({
           );
         }
         return decision;
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        throw toAnalysisRequestError(error);
+      }
+    },
+    async getMarketBrief(signal) {
+      try {
+        const payload = await fetchJson("/market-brief", signal);
+        return decodeMarketBriefEnvelope(payload, { now: now() });
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
         throw toAnalysisRequestError(error);
