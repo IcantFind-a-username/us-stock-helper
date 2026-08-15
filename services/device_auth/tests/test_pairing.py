@@ -178,6 +178,33 @@ class RedeemingPairingCodeTests(StoreCase):
             self.service().redeem_pairing_code(issued.code, client_id=CLIENT).token
         )
 
+    def test_a_live_code_survives_a_flood_of_newer_dead_rows(self) -> None:
+        # A code with a long TTL must stay redeemable however many newer,
+        # dead-but-still-retained rows pile up around it: the candidate
+        # window must keep it in view, not just cap the total scanned.
+        long_lived = self.service(code_ttl=timedelta(minutes=60))
+        issued = long_lived.issue_pairing_code(label="franz-iphone")
+        # created_at must be strictly older than every row that follows, or
+        # this row ties the first batch on created_at and the outcome rides
+        # on an arbitrary code_id tie-break instead of the bug being fixed.
+        self.clock.advance(timedelta(seconds=1))
+
+        # MAX_LIVE_CODES=5 permits 4 short-lived codes alongside the
+        # long-lived one; four batches of four, each expiring before the
+        # next batch is issued, plant MAX_CANDIDATE_CODES=16 rows that are
+        # all newer than the long-lived code and all dead by the time it is
+        # finally redeemed.
+        short_lived = self.service(code_ttl=timedelta(minutes=1))
+        for _ in range(4):
+            for index in range(4):
+                short_lived.issue_pairing_code(label=f"throwaway-{index}")
+            self.clock.advance(timedelta(minutes=1, seconds=1))
+
+        outcome = long_lived.redeem_pairing_code(issued.code, client_id=CLIENT)
+
+        self.assertIsNotNone(outcome.token)
+        self.assertIsNone(outcome.reason)
+
     def test_a_wrong_code_yields_nothing_and_says_so(self) -> None:
         service = self.service()
         service.issue_pairing_code(label="iphone")
