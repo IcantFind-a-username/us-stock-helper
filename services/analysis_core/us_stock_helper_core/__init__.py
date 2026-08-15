@@ -1,5 +1,15 @@
 """Point-in-time-safe analysis primitives for US Stock Helper."""
 
+from .breadth import (
+    BREADTH_VERSION,
+    AdvanceDeclineResult,
+    BreadthPoint,
+    NewHighLowResult,
+    PercentAboveMAResult,
+    advance_decline_line,
+    new_high_low_differential,
+    percent_above_moving_average,
+)
 from .evidence import EvidencePacket, freeze_evidence_packet
 from .forecasting import (
     CalibrationStatus,
@@ -79,7 +89,10 @@ from .trend import (
 
 __all__ = [
     "ADVISER_SCORE_CAP",
+    "AdvanceDeclineResult",
     "AnalyticalAction",
+    "BREADTH_VERSION",
+    "BreadthPoint",
     "CalibrationStatus",
     "CapitalFlowPoint",
     "DRAGON_TREND_VERSION",
@@ -96,10 +109,12 @@ __all__ = [
     "MACDValue",
     "MagicNineSignal",
     "MarketContext",
+    "NewHighLowResult",
     "OHLCVBar",
     "ParticipationBar",
     "PatternKind",
     "PatternSignal",
+    "PercentAboveMAResult",
     "RiskPlan",
     "RiskPreference",
     "ScenarioCase",
@@ -113,6 +128,7 @@ __all__ = [
     "TrendTransition",
     "VOLATILITY_VERSION",
     "VolatilityEstimate",
+    "advance_decline_line",
     "bars_per_year",
     "build_participation_bars",
     "build_risk_plan",
@@ -131,6 +147,8 @@ __all__ = [
     "magic_nine",
     "moving_average",
     "moving_average_series",
+    "new_high_low_differential",
+    "percent_above_moving_average",
     "rsi",
     "rsi_series",
     "score_horizon",
