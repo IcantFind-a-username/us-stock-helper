@@ -643,11 +643,9 @@ describe("schema-v3 stock snapshot validation", () => {
     }
     payload.sections.technical.data.indicators.macd.asOf =
       payload.sections.technical.asOf;
-    payload.sections.technical.data.indicators.macd.series = {
-      line: [],
-      signal: [],
-      histogram: [],
-    };
+    payload.sections.technical.data.indicators.macd.lineSeries = [];
+    payload.sections.technical.data.indicators.macd.signalSeries = [];
+    payload.sections.technical.data.indicators.macd.histogramSeries = [];
     payload.sections.technical.data.indicators.volatility.asOf =
       payload.sections.technical.asOf;
     payload.sections.technical.data.magicNine.asOf =
@@ -686,6 +684,16 @@ describe("schema-v3 stock snapshot validation", () => {
     expect(snapshot.snapshotStatus).toBe("live");
     expect(snapshot.source.status).toBe("live");
     expect(snapshot.compatibility).toBe("v3");
+    // The gateway publishes MACD's three lines as bare arrays beside the
+    // indicator, not nested under a separate `series` envelope; decoding the
+    // wrong shape silently drew nothing while the server was already live.
+    expect(snapshot.indicators.rsi.series?.values).toEqual([48.5, 56.2]);
+    expect(snapshot.indicators.macd.series).toMatchObject({
+      line: [0.3, 0.45],
+      signal: [0.25, 0.3],
+      histogram: [0.05, 0.15],
+      methodVersion: "macd-12-26-9-v1",
+    });
   });
 
   it("keeps a quote-only partial snapshot honest", () => {
@@ -2024,7 +2032,7 @@ describe("indicator series", () => {
       value.indicators.ma5.series = { values: [140.2, 140.8] } as never;
     }],
     ["ragged macd series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      value.indicators.macd.series!.signal = [0.25];
+      value.indicators.macd.signalSeries = [0.25];
     }],
   ])("rejects a series that cannot be drawn on the candles: %s", (_label, mutate) => {
     // A series one bar out of step draws every point against the wrong

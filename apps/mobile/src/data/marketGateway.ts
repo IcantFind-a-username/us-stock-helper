@@ -652,27 +652,37 @@ function decodeSeriesArray(
   });
 }
 
+/**
+ * The gateway publishes MACD's three lines as bare arrays directly on the
+ * indicator record (`lineSeries`/`signalSeries`/`histogramSeries`), the same
+ * way it publishes every other series — there is no nested `series` envelope
+ * to unwrap, so `record` here is the `indicators.macd` object itself.
+ */
 function decodeMacdSeries(
-  value: unknown,
+  record: Record<string, unknown>,
   parent: { asOf: string; availableAt: string },
   qualityStatus: string,
   candleCount: number,
 ): ChartMacdSeries | null {
-  if (value === undefined || value === null) return null;
+  const { lineSeries, signalSeries, histogramSeries } = record;
+  if (
+    lineSeries === undefined &&
+    signalSeries === undefined &&
+    histogramSeries === undefined
+  ) {
+    return null;
+  }
   if (qualityStatus !== "live") return null;
   const label = "indicators.macd";
-  if (!isRecord(value)) {
-    throw new GatewayValidationError(`${label}.series must be an object`);
-  }
   return {
     asOf: parent.asOf,
     availableAt: parent.availableAt,
     source: "analysis-core",
-    line: decodeSeriesArray(value.line, `${label}.series.line`, candleCount),
-    signal: decodeSeriesArray(value.signal, `${label}.series.signal`, candleCount),
+    line: decodeSeriesArray(lineSeries, `${label}.lineSeries`, candleCount),
+    signal: decodeSeriesArray(signalSeries, `${label}.signalSeries`, candleCount),
     histogram: decodeSeriesArray(
-      value.histogram,
-      `${label}.series.histogram`,
+      histogramSeries,
+      `${label}.histogramSeries`,
       candleCount,
     ),
     methodVersion: "macd-12-26-9-v1",
@@ -1498,7 +1508,7 @@ export function decodeStockSnapshotEnvelope(
     signal: macdValues[1]!,
     histogram: macdValues[2]!,
     series: decodeMacdSeries(
-      macdRecord.series,
+      macdRecord,
       macdMetadata,
       macdStatus,
       candles.length,
@@ -1879,7 +1889,7 @@ function decodeV3TechnicalSection(
     signal: macdValues[1]!,
     histogram: macdValues[2]!,
     series: decodeMacdSeries(
-      macdRecord.series,
+      macdRecord,
       macdMetadata,
       macdStatus,
       candleCount,

@@ -145,11 +145,9 @@ export function stockSnapshotV3Fixture() {
               availableAt: cutoff,
               methodVersion: "macd-12-26-9-v1",
               qualityStatus: "live",
-              series: {
-                line: [0.3, 0.45] as (number | null)[],
-                signal: [0.25, 0.3] as (number | null)[],
-                histogram: [0.05, 0.15] as (number | null)[],
-              },
+              lineSeries: [0.3, 0.45] as (number | null)[],
+              signalSeries: [0.25, 0.3] as (number | null)[],
+              histogramSeries: [0.05, 0.15] as (number | null)[],
             },
             volatility: {
               value: 0.42 as number | null,
