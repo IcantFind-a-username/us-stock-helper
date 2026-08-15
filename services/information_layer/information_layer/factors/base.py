@@ -25,8 +25,14 @@ from typing import Iterable
 
 FACTOR_MACRO = "macro"
 FACTOR_GEOPOLITICS = "geopolitics"
-FACTOR_INSTITUTIONAL_FLOW = "institutional_flow"
 FACTOR_FUNDAMENTALS = "fundamentals"
+# institutional_flow is deliberately absent from this module: its source is
+# the market gateway's own internal snapshot (order-size participation plus
+# dated holdings disclosures), not a citable public HTTPS feed, so it never
+# fit FactorInput's citation contract. It is wired directly by
+# analysis_api/institutional_flow_provider.py and travels through
+# DecisionInputs.institutional_flow as a plain float, same as before this
+# module existed. See that module for its own honest-absence handling.
 
 
 class FactorUnavailable(str, Enum):

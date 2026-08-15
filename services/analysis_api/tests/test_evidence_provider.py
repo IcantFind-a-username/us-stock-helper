@@ -4,6 +4,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from information_layer import ClaimStatus, EvidenceEvent, SourceProvenance
+from information_layer.factors.base import FactorUnavailable
 from information_layer.feeds import (
     FRESHNESS_ATTRIBUTE,
     STALE_ATTRIBUTE,
@@ -17,6 +18,9 @@ from us_stock_helper_analysis_api.evidence_provider import (
     CompositeAnalysisProvider,
     FeedEvidenceProvider,
     evidence_provider_from_environment,
+)
+from us_stock_helper_analysis_api.institutional_flow_provider import (
+    InstitutionalFlowReading,
 )
 from us_stock_helper_core import OHLCVBar
 
@@ -116,6 +120,22 @@ class FakeFactors:
         return self.answer
 
 
+class FakeInstitutionalFlow:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, datetime]] = []
+        self.answer = InstitutionalFlowReading(
+            value=None,
+            unavailable_reason=FactorUnavailable.NO_DATA_AT_CUTOFF,
+            detail="test stub",
+        )
+
+    def reading(
+        self, *, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading:
+        self.queries.append((symbol, as_of))
+        return self.answer
+
+
 class EvidenceProviderTests(unittest.TestCase):
     def test_the_provider_scopes_the_collection_to_the_requested_symbol(
         self,
@@ -144,20 +164,25 @@ class CompositeProviderTests(unittest.TestCase):
         bars = FakeBars()
         collector = FakeCollector()
         factors = FakeFactors()
+        institutional_flow = FakeInstitutionalFlow()
         provider = CompositeAnalysisProvider(
             bars=bars,
             evidence=FeedEvidenceProvider(collector),
             factors=factors,
+            institutional_flow=institutional_flow,
         )
 
         provider.bars_for("NVDA", "5m")
         provider.read_evidence("NVDA")
         answer = provider.factors_for("NVDA", AS_OF)
+        institutional_answer = provider.institutional_flow_for("NVDA", AS_OF)
 
         self.assertEqual(bars.queries, [("NVDA", "5m")])
         self.assertEqual(collector.requests, [("NVDA",)])
         self.assertIs(answer, factors.answer)
         self.assertEqual(factors.queries, [("NVDA", AS_OF)])
+        self.assertIs(institutional_answer, institutional_flow.answer)
+        self.assertEqual(institutional_flow.queries, [("NVDA", AS_OF)])
 
 
 class RequestScopedGapTests(unittest.TestCase):
@@ -203,6 +228,7 @@ class RequestScopedGapTests(unittest.TestCase):
             bars=ServedBars(),
             evidence=shared,
             factors=ConcurrentSweepFactors(),
+            institutional_flow=FakeInstitutionalFlow(),
         )
 
         payload = AnalysisService(provider, clock=lambda: AS_OF).decision(

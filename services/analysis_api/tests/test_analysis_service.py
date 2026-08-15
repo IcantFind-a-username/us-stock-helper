@@ -11,6 +11,9 @@ from information_layer.factors import (
     FactorSnapshot,
     FactorUnavailable,
 )
+from us_stock_helper_analysis_api.institutional_flow_provider import (
+    InstitutionalFlowReading,
+)
 from us_stock_helper_analysis_api.service import AnalysisService
 from us_stock_helper_core import OHLCVBar
 
@@ -155,13 +158,6 @@ class ProviderWithFactors(Provider):
                 reason=FactorUnavailable.NO_QUALIFIED_SOURCE,
                 detail="No qualified source.",
             ),
-            institutional_flow=FactorReading.unavailable(
-                factor="institutional_flow",
-                method_version="abstained-v1",
-                as_of=as_of,
-                reason=FactorUnavailable.NO_QUALIFIED_SOURCE,
-                detail="No timely source.",
-            ),
             fundamentals=measured_factor("fundamentals", 0.6),
         )
 
@@ -178,6 +174,35 @@ class ProviderWithMalformedFactors(Provider):
 
     def factors_for(self, symbol: str, as_of: datetime) -> object:
         return {"not": "a snapshot"}
+
+
+class ProviderWithInstitutionalFlow(Provider):
+    def __init__(self, reading: InstitutionalFlowReading) -> None:
+        super().__init__()
+        self.reading_value = reading
+        self.institutional_flow_queries: list[tuple[str, datetime]] = []
+
+    def institutional_flow_for(
+        self, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading:
+        self.institutional_flow_queries.append((symbol, as_of))
+        return self.reading_value
+
+
+class ProviderWithBrokenInstitutionalFlow(Provider):
+    """`institutional_flow_for` exists but raises — one source is down."""
+
+    def institutional_flow_for(
+        self, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading:
+        raise RuntimeError("institutional flow source unreachable")
+
+
+class ProviderWithMalformedInstitutionalFlow(Provider):
+    """`institutional_flow_for` exists but hands back the wrong shape."""
+
+    def institutional_flow_for(self, symbol: str, as_of: datetime) -> object:
+        return {"not": "a reading"}
 
 
 def service(provider: Provider | None = None) -> AnalysisService:
@@ -262,10 +287,6 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertIn(
             "geopolitics unavailable (no_qualified_source).", result["notes"]
         )
-        self.assertIn(
-            "institutional_flow unavailable (no_qualified_source).",
-            result["notes"],
-        )
 
     def test_a_broken_factor_source_degrades_into_a_chinese_note(self) -> None:
         # Investor-readable Chinese (2026-08-15 served-copy sweep): this is
@@ -282,6 +303,77 @@ class AnalysisContractTests(unittest.TestCase):
         result = service(ProviderWithMalformedFactors()).decision("NVDA", "short")
 
         self.assertIn("公开因子数据源返回了不支持的快照格式。", result["notes"])
+
+    def test_institutional_flow_reaches_the_score_when_the_provider_supplies_it(
+        self,
+    ) -> None:
+        # 2026-08-15 institutional-capital factor wiring: this factor used to
+        # be permanently unavailable everywhere. A provider that actually
+        # supplies data must lift factor_coverage and land a real
+        # contribution, not stay stuck in unavailableFactors.
+        provider = ProviderWithInstitutionalFlow(
+            InstitutionalFlowReading(
+                value=0.42, unavailable_reason=None, detail="blended"
+            )
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertEqual(provider.institutional_flow_queries, [("NVDA", AS_OF)])
+        self.assertNotIn(
+            "institutional_flow", result["score"]["unavailableFactors"]
+        )
+        contributions = {
+            item["name"]: item for item in result["score"]["contributions"]
+        }
+        self.assertEqual(contributions["institutional_flow"]["rawValue"], 0.42)
+        self.assertFalse(
+            any("institutional_flow unavailable" in note for note in result["notes"])
+        )
+
+    def test_institutional_flow_stays_honestly_unavailable_with_a_named_reason(
+        self,
+    ) -> None:
+        # The named reason distinguishes "no data for this symbol today"
+        # from the old blanket "未接入" — the exact semantics the plan asked
+        # for: symbols without data show *why*, not a generic never-wired
+        # label.
+        provider = ProviderWithInstitutionalFlow(
+            InstitutionalFlowReading(
+                value=None,
+                unavailable_reason=FactorUnavailable.NO_DATA_AT_CUTOFF,
+                detail="neither ingredient was available",
+            )
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertIn("institutional_flow", result["score"]["unavailableFactors"])
+        self.assertIn(
+            "institutional_flow unavailable (no_data_at_cutoff).",
+            result["notes"],
+        )
+
+    def test_a_broken_institutional_flow_source_degrades_into_a_chinese_note(
+        self,
+    ) -> None:
+        result = service(ProviderWithBrokenInstitutionalFlow()).decision(
+            "NVDA", "short"
+        )
+
+        self.assertIn("本次未能读取机构资金数据源。", result["notes"])
+        self.assertIn(
+            "institutional_flow", result["score"]["unavailableFactors"]
+        )
+
+    def test_a_malformed_institutional_flow_reading_degrades_into_a_chinese_note(
+        self,
+    ) -> None:
+        result = service(ProviderWithMalformedInstitutionalFlow()).decision(
+            "NVDA", "short"
+        )
+
+        self.assertIn("机构资金数据源返回了不支持的读数格式。", result["notes"])
 
     def test_the_forecast_carries_three_scenarios_and_its_disclaimer(self) -> None:
         forecast = service().decision("NVDA", "short")["forecast"]

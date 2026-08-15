@@ -36,6 +36,7 @@ from information_layer.feeds import (
 from us_stock_helper_core import OHLCVBar
 
 from .cik_registry_provider import LazySecTickerRegistry
+from .institutional_flow_provider import InstitutionalFlowReading
 
 
 class BarSource(Protocol):
@@ -48,6 +49,12 @@ class EvidenceSource(Protocol):
 
 class FactorSource(Protocol):
     def snapshot(self, *, symbol: str, as_of: datetime) -> FactorSnapshot: ...
+
+
+class InstitutionalFlowSource(Protocol):
+    def reading(
+        self, *, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading: ...
 
 
 class Collector(Protocol):
@@ -97,11 +104,13 @@ class FeedEvidenceProvider:
 
 @dataclass(frozen=True, slots=True)
 class CompositeAnalysisProvider:
-    """Candles and evidence come from different systems and fail differently."""
+    """Candles, evidence, public factors and institutional flow come from
+    different systems and fail differently."""
 
     bars: BarSource
     evidence: EvidenceSource
     factors: FactorSource
+    institutional_flow: InstitutionalFlowSource
 
     def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
         return self.bars.bars_for(symbol, interval)
@@ -111,6 +120,11 @@ class CompositeAnalysisProvider:
 
     def factors_for(self, symbol: str, as_of: datetime) -> FactorSnapshot:
         return self.factors.snapshot(symbol=symbol, as_of=as_of)
+
+    def institutional_flow_for(
+        self, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading:
+        return self.institutional_flow.reading(symbol=symbol, as_of=as_of)
 
 
 def evidence_provider_from_environment(

@@ -367,6 +367,22 @@ class ExplainableScoreTests(unittest.TestCase):
                     self.assertTrue(item.explanation.strip())
                     self.assertNotRegex(item.explanation, r"[a-z]{3,}")
 
+    def test_institutional_flow_explanation_names_its_blend_and_labels_the_proxy(
+        self,
+    ) -> None:
+        # 2026-08-15 institutional-capital factor wiring: the factor now
+        # blends an intraday order-size proxy with a dated holdings-
+        # disclosure trend, and the served explanation has to say so and
+        # mark the proxy half as an estimate (估算代理), not a verified
+        # institutional identity.
+        result = score_horizon(manual_features())
+        contribution = next(
+            item for item in result.contributions if item.name == "institutional_flow"
+        )
+
+        self.assertIn("估算代理", contribution.explanation)
+        self.assertIn("机构持仓", contribution.explanation)
+
     def test_hard_gate_blocks_action_even_with_maximum_adviser_support(self) -> None:
         result = score_horizon(
             manual_features(adviser_factor=1.0),

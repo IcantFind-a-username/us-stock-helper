@@ -36,6 +36,7 @@ from .adviser_provider import (
     provider_from_environment,
     unavailable_for_mode,
 )
+from .institutional_flow_provider import InstitutionalFlowReading
 
 
 SCHEMA_VERSION = "1"
@@ -143,6 +144,31 @@ class AnalysisService:
             return None, "公开因子数据源返回了不支持的快照格式。"
         return snapshot, None
 
+    def _institutional_flow_reading(
+        self,
+        symbol: str,
+        as_of: datetime,
+    ) -> tuple[InstitutionalFlowReading | None, str | None]:
+        """Read the gateway-derived institutional-capital factor, without failure.
+
+        Mirrors `_factor_snapshot`'s degradation shape exactly: a provider
+        that has not wired this in yet answers (None, None) and the decision
+        proceeds exactly as it always has; one that has wired it in but hits
+        an unexpected fault reports the fault in a note instead of taking
+        the whole decision down.
+        """
+
+        read = getattr(self.provider, "institutional_flow_for", None)
+        if not callable(read):
+            return None, None
+        try:
+            reading = read(symbol, as_of)
+        except Exception:  # noqa: BLE001 - this is the degradation boundary
+            return None, "本次未能读取机构资金数据源。"
+        if not isinstance(reading, InstitutionalFlowReading):
+            return None, "机构资金数据源返回了不支持的读数格式。"
+        return reading, None
+
     def decision(
         self,
         symbol: str,
@@ -187,6 +213,9 @@ class AnalysisService:
         evidence, gaps = self._read_evidence(normalized)
         as_of = self.clock()
         factors, factor_failure = self._factor_snapshot(normalized, as_of)
+        institutional, institutional_failure = self._institutional_flow_reading(
+            normalized, as_of
+        )
         output = DecisionEngine().evaluate(
             DecisionInputs(
                 symbol=normalized,
@@ -203,7 +232,7 @@ class AnalysisService:
                     factors.geopolitics.measured_value if factors else None
                 ),
                 institutional_flow=(
-                    factors.institutional_flow.measured_value if factors else None
+                    institutional.value if institutional else None
                 ),
                 fundamentals=(
                     factors.fundamentals.measured_value if factors else None
@@ -225,6 +254,19 @@ class AnalysisService:
             notes.extend(
                 f"{name} unavailable ({reason.value})."
                 for name, reason in factors.unavailable_reasons()
+            )
+        if institutional_failure:
+            notes.append(institutional_failure)
+        if institutional and institutional.unavailable_reason is not None:
+            # Same raw, code-bearing shape as the public-factor notes above
+            # (mirrors "Hard gate active: <gate>,..."): apps/mobile's
+            # serverVocabulary.ts is what turns this into Chinese, not this
+            # service. This is the "named reason, not 未接入" the 2026-08-15
+            # institutional-capital factor wiring exists to serve — a
+            # symbol with neither ingredient still says exactly why.
+            notes.append(
+                "institutional_flow unavailable "
+                f"({institutional.unavailable_reason.value})."
             )
         stale_count = sum(1 for item in citations if item["stale"] is True)
         if stale_count:

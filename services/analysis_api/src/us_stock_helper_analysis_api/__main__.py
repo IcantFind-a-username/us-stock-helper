@@ -7,6 +7,7 @@ from .evidence_provider import (
 from .factor_provider import factor_provider_from_environment
 from .gateway_provider import provider_from_environment
 from .http_app import AnalysisServerConfig, build_server
+from .institutional_flow_provider import GatewayInstitutionalFlowProvider
 from .service import AnalysisService
 
 
@@ -15,10 +16,14 @@ def main() -> None:
     # Both providers validate their configuration here rather than at the
     # first request, so a deployment that cannot reach candles or cannot
     # lawfully poll its evidence sources fails before it starts answering.
+    # The same gateway instance backs both candles and the institutional-flow
+    # factor: they are two reads of one loopback HTTP client, not two.
+    gateway = provider_from_environment()
     provider = CompositeAnalysisProvider(
-        bars=provider_from_environment(),
+        bars=gateway,
         evidence=evidence_provider_from_environment(),
         factors=factor_provider_from_environment(),
+        institutional_flow=GatewayInstitutionalFlowProvider(gateway=gateway),
     )
     service = AnalysisService(provider)
     server = build_server(service, config)

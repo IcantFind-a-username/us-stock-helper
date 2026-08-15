@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.error import URLError
 
@@ -433,3 +433,279 @@ class BarOrderingTests(unittest.TestCase):
         self.assertGreater(len(bars), 1)
         for index in range(1, len(bars)):
             self.assertLess(bars[index - 1].closed_at, bars[index].closed_at)
+
+
+# --- institutional-flow inputs (v3 snapshot: currentSessionFlow + candles + holdings) ---
+
+AS_OF = datetime(2026, 7, 25, 16, tzinfo=UTC)
+
+
+def flow_row(
+    hour: int,
+    minute: int,
+    *,
+    super_net: float,
+    big_net: float,
+    mid_net: float,
+    small_net: float,
+    session: str = "regular",
+    available_at: str | None = None,
+) -> dict[str, Any]:
+    timestamp = f"2026-07-25T{hour:02d}:{minute:02d}:00Z"
+    return {
+        "timestamp": timestamp,
+        "availableAt": available_at or timestamp,
+        "session": session,
+        "totalNetFlow": super_net + big_net + mid_net + small_net,
+        "extraLargeOrderNetFlow": super_net,
+        "largeOrderNetFlow": big_net,
+        "mediumOrderNetFlow": mid_net,
+        "smallOrderNetFlow": small_net,
+        "largeOrderProxyNetFlow": super_net + big_net,
+        "institutionalIdentity": False,
+    }
+
+
+def live_flow_rows() -> list[dict[str, Any]]:
+    """Six one-minute points covering one 5m candle (15:50-15:55).
+
+    Each minute's bucket deltas are (+10, +10, -5, -5) for
+    (super, big, mid, small), so every consecutive pair contributes
+    main_activity += 20, retail_activity += 10, net_flow += 10. Over five
+    pairs: main_activity=100, retail_activity=50 (denominator 150), and
+    net_flow=50, giving a clean proxy_raw of net_flow/denominator = 1/3.
+    """
+
+    return [
+        flow_row(15, 50, super_net=0.0, big_net=0.0, mid_net=100.0, small_net=100.0),
+        flow_row(15, 51, super_net=10.0, big_net=10.0, mid_net=95.0, small_net=95.0),
+        flow_row(15, 52, super_net=20.0, big_net=20.0, mid_net=90.0, small_net=90.0),
+        flow_row(15, 53, super_net=30.0, big_net=30.0, mid_net=85.0, small_net=85.0),
+        flow_row(15, 54, super_net=40.0, big_net=40.0, mid_net=80.0, small_net=80.0),
+        flow_row(15, 55, super_net=50.0, big_net=50.0, mid_net=75.0, small_net=75.0),
+    ]
+
+
+def flow_section(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    data = live_flow_rows() if rows is None else rows
+    return {
+        "availabilityStatus": "live",
+        "qualityStatus": "validated" if data else "invalid",
+        "source": "moomoo",
+        "asOf": data[-1]["timestamp"] if data else None,
+        "availableAt": data[-1]["availableAt"] if data else None,
+        "receivedAt": AS_OF.isoformat().replace("+00:00", "Z"),
+        "data": data,
+        "errorCode": None,
+        "reason": None,
+        "warnings": [],
+        "anomalies": [],
+        "methodVersion": "provider-capital-flow-normalized-v1",
+    }
+
+
+def candles_section(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    rows = [candle()] if items is None else items
+    return {
+        "availabilityStatus": "live",
+        "qualityStatus": "validated",
+        "source": "moomoo",
+        "asOf": rows[-1]["asOf"] if rows else None,
+        "availableAt": rows[-1]["availableAt"] if rows else None,
+        "receivedAt": rows[-1]["receivedAt"] if rows else None,
+        "data": {"candles": rows, "priceAdjustment": "forward-adjusted"},
+        "errorCode": None,
+        "reason": None,
+        "warnings": [],
+        "anomalies": [],
+        "methodVersion": "provider-completed-candle-v1",
+    }
+
+
+def holding_row(
+    *,
+    reported_at: str = "2026-06-30T00:00:00Z",
+    available_at: str = "2026-07-20T22:00:00Z",
+    holding_percent: float = 62.0,
+    holding_percent_change: float = 2.5,
+    institution_count_change: int = 3,
+) -> dict[str, Any]:
+    return {
+        "period": "2026/Q2",
+        "reportedAt": reported_at,
+        "reportedAtBasis": "reporting-period-end",
+        "availableAt": available_at,
+        "source": "moomoo-delayed-institutional-disclosure",
+        "institutionCount": 120,
+        "institutionCountChange": institution_count_change,
+        "sharesHeld": 500_000_000.0,
+        "sharesHeldChange": 10_000_000.0,
+        "holdingPercent": holding_percent,
+        "holdingPercentChange": holding_percent_change,
+    }
+
+
+def holdings_section(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    data = [holding_row()] if rows is None else rows
+    return {
+        "availabilityStatus": "delayed" if data else "unavailable",
+        "qualityStatus": "validated" if data else "invalid",
+        "source": "moomoo-delayed-institutional-disclosure",
+        "asOf": data[0]["reportedAt"] if data else None,
+        "availableAt": data[0]["availableAt"] if data else None,
+        "receivedAt": AS_OF.isoformat().replace("+00:00", "Z"),
+        "data": data,
+        "errorCode": None if data else "HOLDINGS_UNAVAILABLE",
+        "reason": None if data else "机构持仓数据不可用",
+        "warnings": [],
+        "anomalies": [],
+        "methodVersion": "reported-holdings-v2-anomaly-aware",
+    }
+
+
+def v3_snapshot(
+    *,
+    symbol: str = "NVDA",
+    flow: dict[str, Any] | None = None,
+    candles: dict[str, Any] | None = None,
+    holdings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": "3",
+        "status": "live",
+        "symbol": symbol,
+        "interval": "5m",
+        "count": 12,
+        "decisionCutoff": AS_OF.isoformat().replace("+00:00", "Z"),
+        "requestedSections": [
+            "quote",
+            "candles",
+            "technical",
+            "currentSessionFlow",
+            "holdings",
+        ],
+        "sections": {
+            "quote": {"availabilityStatus": "unavailable", "qualityStatus": "invalid"},
+            "candles": candles_section() if candles is None else candles,
+            "technical": {"availabilityStatus": "unavailable", "qualityStatus": "invalid"},
+            "currentSessionFlow": flow_section(None) if flow is None else flow,
+            "holdings": holdings_section(None) if holdings is None else holdings,
+            "marketContext": {"availabilityStatus": "unavailable", "qualityStatus": "invalid"},
+            "news": {"availabilityStatus": "unavailable", "qualityStatus": "invalid"},
+            "forecastDecision": {"availabilityStatus": "unavailable", "qualityStatus": "invalid"},
+        },
+    }
+
+
+class InstitutionalFlowInputsTests(unittest.TestCase):
+    def test_the_request_names_the_symbol_interval_and_count(self) -> None:
+        gateway = Gateway(v3_snapshot())
+
+        provider(gateway).institutional_flow_inputs_for("NVDA", AS_OF)
+
+        self.assertEqual(
+            gateway.urls,
+            ["http://127.0.0.1:8765/v3/stock-snapshot?symbol=NVDA&interval=5m&count=12"],
+        )
+
+    def test_a_live_participation_bar_and_a_holdings_row_both_arrive(self) -> None:
+        inputs = provider(Gateway(v3_snapshot())).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertEqual(len(inputs.participation_bars), 1)
+        bar = inputs.participation_bars[0]
+        self.assertEqual(bar.quality_status, "live")
+        self.assertAlmostEqual(bar.main_activity, 100.0)
+        self.assertAlmostEqual(bar.retail_activity, 50.0)
+        self.assertAlmostEqual(bar.net_flow, 50.0)
+
+        self.assertEqual(len(inputs.holdings), 1)
+        self.assertAlmostEqual(inputs.holdings[0].holding_percent_change, 2.5)
+        self.assertEqual(inputs.holdings[0].institution_count_change, 3)
+
+    def test_a_holdings_row_exactly_at_the_cutoff_is_included(self) -> None:
+        # Pins the PIT boundary as `<=`, not `<`: a mutation to strict-less
+        # would silently drop a disclosure the decision was entitled to see.
+        row = holding_row(available_at=AS_OF.isoformat().replace("+00:00", "Z"))
+
+        inputs = provider(
+            Gateway(v3_snapshot(holdings=holdings_section([row])))
+        ).institutional_flow_inputs_for("NVDA", AS_OF)
+
+        self.assertEqual(len(inputs.holdings), 1)
+
+    def test_a_holdings_row_one_microsecond_after_the_cutoff_is_dropped(self) -> None:
+        # Pins the same boundary from the other side: a mutation to `<=`
+        # (or the check's removal) would leak a filing across the cutoff.
+        future = AS_OF + timedelta(microseconds=1)
+        row = holding_row(available_at=future.isoformat().replace("+00:00", "Z"))
+
+        inputs = provider(
+            Gateway(v3_snapshot(holdings=holdings_section([row])))
+        ).institutional_flow_inputs_for("NVDA", AS_OF)
+
+        self.assertEqual(inputs.holdings, ())
+
+    def test_neither_ingredient_available_yields_two_honest_empty_tuples(self) -> None:
+        empty_snapshot = v3_snapshot(
+            flow={"availabilityStatus": "unavailable", "qualityStatus": "invalid"},
+            holdings={"availabilityStatus": "unavailable", "qualityStatus": "invalid"},
+        )
+
+        inputs = provider(Gateway(empty_snapshot)).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertEqual(inputs.participation_bars, ())
+        self.assertEqual(inputs.holdings, ())
+
+    def test_flow_without_candles_yields_no_participation_bar(self) -> None:
+        no_candles = v3_snapshot(
+            candles={"availabilityStatus": "unavailable", "qualityStatus": "invalid"}
+        )
+
+        inputs = provider(Gateway(no_candles)).institutional_flow_inputs_for(
+            "NVDA", AS_OF
+        )
+
+        self.assertEqual(inputs.participation_bars, ())
+        # Holdings is a separate ingredient and must not be dragged down by
+        # the other one's absence.
+        self.assertEqual(len(inputs.holdings), 1)
+
+    def test_a_row_claiming_institutional_identity_is_refused(self) -> None:
+        rows = live_flow_rows()
+        rows[0] = {**rows[0], "institutionalIdentity": True}
+
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(
+                Gateway(v3_snapshot(flow=flow_section(rows)))
+            ).institutional_flow_inputs_for("NVDA", AS_OF)
+
+    def test_a_malformed_holdings_row_is_refused_not_silently_dropped(self) -> None:
+        bad_row = {**holding_row(), "source": "some-other-source"}
+
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(
+                Gateway(v3_snapshot(holdings=holdings_section([bad_row])))
+            ).institutional_flow_inputs_for("NVDA", AS_OF)
+
+    def test_an_unsupported_schema_version_is_refused(self) -> None:
+        payload = v3_snapshot()
+        payload["schemaVersion"] = "2"
+
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(Gateway(payload)).institutional_flow_inputs_for("NVDA", AS_OF)
+
+    def test_an_answer_for_a_different_symbol_is_refused(self) -> None:
+        payload = v3_snapshot(symbol="TSLA")
+
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(Gateway(payload)).institutional_flow_inputs_for("NVDA", AS_OF)
+
+    def test_an_unreachable_gateway_fails_loudly(self) -> None:
+        with self.assertRaises(MarketGatewayUnavailable):
+            provider(
+                Gateway(raises=URLError("connection refused"))
+            ).institutional_flow_inputs_for("NVDA", AS_OF)
