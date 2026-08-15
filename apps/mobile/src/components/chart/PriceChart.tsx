@@ -16,6 +16,7 @@ import {
   type StockSnapshot,
 } from "@/domain/models";
 import {
+  alignTouchXToViewBox,
   buildChartGeometry,
   findNearestByX,
   focusRatioForX,
@@ -102,6 +103,10 @@ export const PriceChart = memo(function PriceChart({
   // null means nobody has touched the chart yet, so it keeps following the
   // newest bar as refreshes arrive. A gesture takes that over.
   const [visibleWindow, setVisibleWindow] = useState<ChartWindow | null>(null);
+  // null until the Pressable's own onLayout fires. chartWidth is only ever a
+  // guess made before that; hit-testing falls back to trusting it verbatim
+  // until the real number is known.
+  const [renderedWidth, setRenderedWidth] = useState<number | null>(null);
   const hasForecast = showForecast && snapshot.forecast !== null;
 
   const panels = useMemo(() => {
@@ -165,6 +170,9 @@ export const PriceChart = memo(function PriceChart({
     // The zoom ceiling is solved from the drawing span, so it moves with the
     // width the chart was actually laid out at.
     width: chartWidth,
+    // The Pressable's own measured width, for turning a focal x back into
+    // viewBox coordinates before it is compared against plot bounds.
+    renderedWidth,
   });
   useEffect(() => {
     viewport.current = {
@@ -173,6 +181,7 @@ export const PriceChart = memo(function PriceChart({
       plotLeft: geometry.plotLeft,
       plotRight: geometry.plotRight,
       width: chartWidth,
+      renderedWidth,
     };
   });
 
@@ -243,9 +252,16 @@ export const PriceChart = memo(function PriceChart({
           window: viewport.current.window,
           scale: event.scale > 0 ? event.scale : 1,
           // The anchor is where the fingers landed; letting it follow their
-          // drifting midpoint would pan and zoom at the same time.
+          // drifting midpoint would pan and zoom at the same time. focalX
+          // arrives in the Pressable's own layout frame, same as it, so it
+          // needs the same realignment before it means anything against
+          // viewBox-space plot bounds.
           focusRatio: focusRatioForX({
-            x: event.focalX,
+            x: alignTouchXToViewBox({
+              x: event.focalX,
+              renderedWidth: viewport.current.renderedWidth ?? viewport.current.width,
+              chartWidth: viewport.current.width,
+            }),
             plotLeft: viewport.current.plotLeft,
             plotRight: viewport.current.plotRight,
           }),
@@ -463,7 +479,15 @@ export const PriceChart = memo(function PriceChart({
     if (!geometry.candles.length) return;
     const locationX = event.nativeEvent.locationX;
     const targetX = Number.isFinite(locationX) ? locationX : chartWidth;
-    const nearest = findNearestByX(geometry.candles, targetX);
+    // locationX arrives in the Pressable's own layout frame; the candles it
+    // is compared against live in the SVG's viewBox frame, which only ever
+    // matches when the Pressable happened to measure exactly chartWidth.
+    const alignedX = alignTouchXToViewBox({
+      x: targetX,
+      renderedWidth: renderedWidth ?? chartWidth,
+      chartWidth,
+    });
+    const nearest = findNearestByX(geometry.candles, alignedX);
     if (nearest) setSelectedTimestamp(nearest.timestamp);
   };
 
@@ -504,6 +528,9 @@ export const PriceChart = memo(function PriceChart({
             <Pressable
               accessibilityLabel={summary}
               accessibilityRole="button"
+              onLayout={(event) =>
+                setRenderedWidth(event.nativeEvent.layout.width)
+              }
               onLongPress={selectNearestCandle}
               onPress={selectNearestCandle}
               style={({ pressed }) => [

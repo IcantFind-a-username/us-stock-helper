@@ -596,8 +596,57 @@ const bandPath = (
   return `${linePath(upper)} ${lower.map((point) => `L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ")} Z`;
 };
 
+/**
+ * A best-effort chart width from the viewport alone, before the chart's own
+ * Pressable has actually been laid out.
+ *
+ * The chrome subtracted here is only ever an estimate: the card and screen
+ * padding it approximates live in component styles that can change without
+ * this function following, which is exactly how it went stale once already.
+ * Hit-testing does not lean on this number's precision — once the Pressable
+ * has measured itself, {@link alignTouchXToViewBox} reconciles whatever gap
+ * is left between this guess and the real layout.
+ */
 export const resolveChartWidth = (viewportWidth: number) =>
   Math.min(Math.max(viewportWidth - 56, 304), 1_180);
+
+/**
+ * Maps an x from the Pressable's own layout frame into the SVG viewBox's
+ * coordinate system.
+ *
+ * The canvas is told to render at `renderedWidth` (`width="100%"` of its
+ * Pressable) while its content is authored at `chartWidth` (the viewBox).
+ * Whenever those two widths differ — {@link resolveChartWidth}'s guess
+ * drifting from the card's actual padding, a phone too narrow for the
+ * readable-bar floor to fit — `preserveAspectRatio`'s default `xMidYMid meet`
+ * scales and centres the drawing to reconcile them. A caller comparing a raw
+ * touch x straight against viewBox-space candle positions is comparing across
+ * that reconciliation as if it never happened; this undoes exactly the scale
+ * and offset `meet` applied, so a touch lands on the candle under the finger
+ * regardless of how — or why — the two widths came to differ.
+ */
+export function alignTouchXToViewBox({
+  x,
+  renderedWidth,
+  chartWidth,
+}: {
+  /** The touch's x in the Pressable's own layout frame, e.g. `locationX`. */
+  x: number;
+  /** The Pressable's actual measured width, from its `onLayout`. */
+  renderedWidth: number;
+  /** The viewBox width geometry was built at. */
+  chartWidth: number;
+}): number {
+  if (!(renderedWidth > 0) || !(chartWidth > 0) || !Number.isFinite(x)) {
+    return x;
+  }
+  // Equal declared and rendered heights mean "meet" only ever scales by the
+  // width ratio, and never past 1: a wider Pressable is letterboxed (scale 1,
+  // centred), a narrower one is downscaled to fit (no residual letterboxing).
+  const scale = Math.min(renderedWidth / chartWidth, 1);
+  const offset = (renderedWidth - chartWidth * scale) / 2;
+  return (x - offset) / scale;
+}
 
 export function findNearestByX<T extends { x: number }>(
   points: T[],

@@ -1,6 +1,7 @@
 import { expect, it } from "@jest/globals";
 import {
   act,
+  fireEvent,
   render,
   userEvent,
 } from "@testing-library/react-native";
@@ -758,6 +759,33 @@ it("uses locationX to select both candles", async () => {
   expect(view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel).toContain(
     snapshot.candles[1]!.timestamp,
   );
+});
+
+it("aligns a tap with the viewBox once the Pressable measures wider than the width geometry assumed", async () => {
+  // The card's own padding can shrink out from under resolveChartWidth's
+  // guess (exactly what happened in the finding this regresses), so the
+  // Pressable the touch actually lands in is wider than the chart's viewBox.
+  // Without correcting for that gap, a tap square on a candle's centre picks
+  // its neighbour instead.
+  const view = await render(<PriceChart stock={deep} />);
+  const selector = view.getByRole("button", { name: /NVDA 图表摘要/ });
+
+  const chartWidth = resolveChartWidth(viewportWidth);
+  const renderedWidth = chartWidth + 20;
+  await act(async () => {
+    fireEvent(selector, "layout", {
+      nativeEvent: { layout: { x: 0, y: 0, width: renderedWidth, height: 460 } },
+    });
+  });
+
+  const targetIndex = 10;
+  const target = visibleBodies(view)[targetIndex]!;
+  const targetTimestamp = deepCandles.slice(-defaultWindowSize)[targetIndex]!.timestamp;
+  const centreX = (target.x as number) + (target.width as number) / 2;
+  const offset = (renderedWidth - chartWidth) / 2;
+
+  const label = await selectedTimestamp(view, centreX + offset);
+  expect(label).toContain(targetTimestamp);
 });
 
 it("selects a missing nearest candle by long press without inventing shares", async () => {
