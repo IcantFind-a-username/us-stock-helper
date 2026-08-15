@@ -221,6 +221,22 @@ export function DeviceSessionProvider({
         setRecord(unpairedRecord(failure("secure-store-unavailable")));
         return;
       }
+      // The server marks a pairing code consumed the instant it answers this
+      // call, and that cannot be undone from here. A Keychain already known
+      // to reject every read (the module-absent condition the initial
+      // mount-time read already reports as secure-store-unavailable) will
+      // reject the save just as surely, so this is checked fresh — not read
+      // from stale session state, which forgetDevice() clears — before the
+      // code is spent for a token this build was never going to keep. A
+      // burned code and a phantom device registered server-side is a strictly
+      // worse outcome than refusing up front.
+      const availability = await store.read().catch(
+        () => ({ credential: null, reason: "secure-store-unavailable" }) as const,
+      );
+      if (availability.reason === "secure-store-unavailable") {
+        setRecord(unpairedRecord(failure("secure-store-unavailable")));
+        return;
+      }
       setRecord((current) => ({ ...current, status: "pairing", failure: null }));
       try {
         const credential = await client.client.pair({ code });
