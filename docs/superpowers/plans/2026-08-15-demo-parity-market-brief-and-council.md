@@ -1,6 +1,6 @@
 # Demo Parity: Market Brief and Adviser Council Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Close the two demo-only surface clusters that are reachable almost entirely from parts that already exist and are tested: (1) the Dashboard market hero/header gets an honest real-mode counterpart served by a new read-only `GET /market-brief` route; (2) the thirteen-seat adviser council — already servable over `adviser=true` and already decoded on the phone — becomes invocable and rendered in real mode, with the council's capped score adjustment becoming the single served adviser adjustment. Two small red-line fixes land first.
 
@@ -33,9 +33,9 @@
 
 **Why:** v3 snapshots fully decode `sections.currentSessionFlow`, but the flattened `participationBars` are hardcoded placeholders with `missingReason: CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED`, so real mode permanently claims "暂无可用活动占比" — an unavailability the server never asserted. v2-fallback gateways still show live bars; v3 gateways must not look worse.
 
-- [ ] **Step 1 (RED):** Jest tests: given a v3 snapshot whose `currentSessionFlow` is `live/validated`, the participation surface renders the five order-size flow buckets and never the placeholder copy; given the section genuinely `unavailable`, the server's `errorCode`/reason shows verbatim. Both must fail against current behavior.
-- [ ] **Step 2 (GREEN):** Adapt decoded `NormalizedCapitalFlowPoint[]` into the participation surface for v3; keep the v2 path byte-identical. No contract or backend change.
-- [ ] **Step 3:** Full mobile suite + typecheck; commit `fix: render served session flow instead of a false unavailability`.
+- [x] **Step 1 (RED):** Jest tests: given a v3 snapshot whose `currentSessionFlow` is `live/validated`, the participation surface renders the five order-size flow buckets and never the placeholder copy; given the section genuinely `unavailable`, the server's `errorCode`/reason shows verbatim. Both must fail against current behavior.
+- [x] **Step 2 (GREEN):** Adapt decoded `NormalizedCapitalFlowPoint[]` into the participation surface for v3; keep the v2 path byte-identical. No contract or backend change.
+- [x] **Step 3:** Full mobile suite + typecheck; commit `fix: render served session flow instead of a false unavailability`.
 
 ### Task 2: De-demo the real-mode search copy
 
@@ -45,9 +45,9 @@
 
 **Why:** Real mode renders "本地关注列表 · 演示" / "没有匹配的演示标的" over real watchlist data — a direct violation of the demo/real labeling red line.
 
-- [ ] **Step 1 (RED):** Render the sheet in real mode; assert no string containing 演示 appears and honest watchlist-scope copy does (naming that whole-market search is not yet served). Fails today.
-- [ ] **Step 2 (GREEN):** Mode-aware copy; demo mode keeps its labels.
-- [ ] **Step 3:** Commit `fix: stop labeling real search results as demo`.
+- [x] **Step 1 (RED):** Render the sheet in real mode; assert no string containing 演示 appears and honest watchlist-scope copy does (naming that whole-market search is not yet served). Fails today.
+- [x] **Step 2 (GREEN):** Mode-aware copy; demo mode keeps its labels.
+- [x] **Step 3:** Commit `fix: stop labeling real search results as demo`.
 
 ### Task 3: Serve GET /market-brief from existing evidence pieces
 
@@ -59,9 +59,9 @@
 
 **Envelope (schemaVersion "1"):** `status` (`available`/`unavailable` + `reason`), `decisionCutoff`, `marketSession`, `dataHealth` (`fresh`/`stale`/`conflict`/`insufficient` derived from evidence-gap + staleness accounting), `sentiment` (conclusion, actionScore, uncertainty — from MarketSentiment over an empty-focus EvidencePacket), `driverCoverage` (every designed category with `available: false` + `missingReason` where no source exists; only sourced categories carry values), `citations` (https-only, freshness-tagged), `sourceGaps` (named). No symbol scores, no forecast, no adviser content.
 
-- [ ] **Step 1 (RED):** Failing tests pin: GET-only (405 writes), device-token gate ordering unchanged, 404 space unchanged elsewhere; envelope shape incl. `driverCoverage` naming unsourced categories; fail-closed `unavailable` naming sources when nothing is readable; structural rejection of order/credential fields; deploy pinning test red until Caddyfile matcher updated.
-- [ ] **Step 2 (GREEN):** Compose existing builders only. Reuse the evidence provider's collector; do not add new feed fetch paths. Per-request sweep is acceptable only if the existing coordinator throttling provably bounds outbound requests — add a test that a burst of N brief requests within the minimum poll interval performs at most one feed sweep (wire the existing coordinator snapshot/throttle state into the provider if needed; that wiring is in scope here).
-- [ ] **Step 3:** Full analysis_api + deploy suites; commit `feat: serve an honest market brief over the read-only boundary`.
+- [x] **Step 1 (RED):** Failing tests pin: GET-only (405 writes), device-token gate ordering unchanged, 404 space unchanged elsewhere; envelope shape incl. `driverCoverage` naming unsourced categories; fail-closed `unavailable` naming sources when nothing is readable; structural rejection of order/credential fields; deploy pinning test red until Caddyfile matcher updated.
+- [x] **Step 2 (GREEN):** Compose existing builders only. Reuse the evidence provider's collector; do not add new feed fetch paths. Per-request sweep is acceptable only if the existing coordinator throttling provably bounds outbound requests — add a test that a burst of N brief requests within the minimum poll interval performs at most one feed sweep (wire the existing coordinator snapshot/throttle state into the provider if needed; that wiring is in scope here).
+- [x] **Step 3:** Full analysis_api + deploy suites; commit `feat: serve an honest market brief over the read-only boundary`.
 
 ### Task 4: Decode the market brief on the phone
 
@@ -69,9 +69,9 @@
 - Modify: `apps/mobile/src/data/analysisGateway.ts`
 - Test: `apps/mobile/src/data/__tests__/analysisGateway.test.ts`
 
-- [ ] **Step 1 (RED):** Decoder tests against the frozen Task-3 schema: absent-field → null; non-https citation → reject; embedded order field → whole-payload reject; `unavailable` → typed unavailable with reason; clock-skew tolerance identical to the Decision envelope.
-- [ ] **Step 2 (GREEN):** `decodeMarketBriefEnvelope` + client method reusing Decision conventions. The decoded type must remain structurally distinct from the demo `DashboardSnapshot` (`demoData: true` stays demo-only by construction).
-- [ ] **Step 3:** Commit `feat: decode the market brief envelope`.
+- [x] **Step 1 (RED):** Decoder tests against the frozen Task-3 schema: absent-field → null; non-https citation → reject; embedded order field → whole-payload reject; `unavailable` → typed unavailable with reason; clock-skew tolerance identical to the Decision envelope.
+- [x] **Step 2 (GREEN):** `decodeMarketBriefEnvelope` + client method reusing Decision conventions. The decoded type must remain structurally distinct from the demo `DashboardSnapshot` (`demoData: true` stays demo-only by construction).
+- [x] **Step 3:** Commit `feat: decode the market brief envelope`.
 
 ### Task 5: Real-mode dashboard renders the brief
 
@@ -80,9 +80,9 @@
 - Wire: `DataHealthBanner` (currently orphaned)
 - Test: `apps/mobile/src/screens/__tests__/DemoAnalysisGating.test.tsx` + dashboard tests
 
-- [ ] **Step 1 (RED):** Real mode + brief available → conclusion/actionScore/uncertainty/coverage disclosure/citations render; zero fixture strings. Real mode + brief unavailable → explicit 不可用 card with the server reason, never fixture fallback. Demo mode byte-identical. Header shows session/data-health from the brief in real mode.
-- [ ] **Step 2 (GREEN):** Replace the placeholder card; priority-alert card and candidate strip stay hidden with copy naming their still-missing services (no fake parity).
-- [ ] **Step 3:** Full mobile suite; commit `feat: show the real market brief on the dashboard`.
+- [x] **Step 1 (RED):** Real mode + brief available → conclusion/actionScore/uncertainty/coverage disclosure/citations render; zero fixture strings. Real mode + brief unavailable → explicit 不可用 card with the server reason, never fixture fallback. Demo mode byte-identical. Header shows session/data-health from the brief in real mode.
+- [x] **Step 2 (GREEN):** Replace the placeholder card; priority-alert card and candidate strip stay hidden with copy naming their still-missing services (no fake parity).
+- [x] **Step 3:** Full mobile suite; commit `feat: show the real market brief on the dashboard`.
 
 ### Task 6: Invoke and render the thirteen-seat council in real mode
 
@@ -94,9 +94,9 @@
 
 **Taxonomy note:** ship the de-branded framework taxonomy the real adviser_llm implements (per-horizon seat counts short 7 / swing 12 / long 9); the demo's named-investor framing stays demo-only. Flagged for Franz's product call; copy keeps "风格模型，非本人意见".
 
-- [ ] **Step 1 (RED):** Request-shape test `adviser:'full'` → `&adviser=true`; screen test with a mocked available council pinning per-framework stance/blind-spot/conclusions with verbatim quotes, baseline vs adjusted score, blockedBy gating, usage cost; distinct copy for not-deployed / not-requested / unavailable; exactly one network call per tap, aborted on unmount.
-- [ ] **Step 2 (GREEN):** Implement hook + rendering; AnalysisNotConnected remains only for the genuinely-not-deployed case.
-- [ ] **Step 3:** Commit `feat: bring the real adviser council to the phone`.
+- [x] **Step 1 (RED):** Request-shape test `adviser:'full'` → `&adviser=true`; screen test with a mocked available council pinning per-framework stance/blind-spot/conclusions with verbatim quotes, baseline vs adjusted score, blockedBy gating, usage cost; distinct copy for not-deployed / not-requested / unavailable; exactly one network call per tap, aborted on unmount.
+- [x] **Step 2 (GREEN):** Implement hook + rendering; AnalysisNotConnected remains only for the genuinely-not-deployed case.
+- [x] **Step 3:** Commit `feat: bring the real adviser council to the phone`.
 
 ### Task 7: One adviser adjustment authority
 
@@ -105,9 +105,9 @@
 - Modify: `apps/mobile` DecisionCard (baseline/adjusted split rendered only when a council actually ran)
 - Test: both sides
 
-- [ ] **Step 1 (RED):** Python: council available → top-level `adviserAdjustment == council.scoreAdjustment`, `adjustedScore == baseline + adjustment`, zeroed when `blockedBy` non-empty, `|adjustment| <= ADVISER_SCORE_CAP`; council off → 0 with note. Jest: DecisionCard shows the split only when council status is available (watchlist scores never imply adviser input).
-- [ ] **Step 2 (GREEN):** Fold post-evaluate where the briefing already computes baseline; engine untouched.
-- [ ] **Step 3:** Commit `fix: give the served adviser adjustment one authority`.
+- [x] **Step 1 (RED):** Python: council available → top-level `adviserAdjustment == council.scoreAdjustment`, `adjustedScore == baseline + adjustment`, zeroed when `blockedBy` non-empty, `|adjustment| <= ADVISER_SCORE_CAP`; council off → 0 with note. Jest: DecisionCard shows the split only when council status is available (watchlist scores never imply adviser input).
+- [x] **Step 2 (GREEN):** Fold post-evaluate where the briefing already computes baseline; engine untouched.
+- [x] **Step 3:** Commit `fix: give the served adviser adjustment one authority`.
 
 ### Task 8: Pin the ±3 cap across layers
 
@@ -115,8 +115,8 @@
 - Modify: `services/adviser_layer/adviser_layer/council.py` (defaults sourced from the shared constant)
 - Create: cross-language contract test parsing `apps/mobile/src/domain/models.ts` `ADVISER_SCORE_CAP` and asserting equality with the Python constant
 
-- [ ] **Step 1 (RED):** Tests fail while council.py hardcodes 4.0/3.0 and while the TS mirror is comment-enforced only.
-- [ ] **Step 2 (GREEN):** Single authority; commit `fix: pin the adviser cap across languages`.
+- [x] **Step 1 (RED):** Tests fail while council.py hardcodes 4.0/3.0 and while the TS mirror is comment-enforced only.
+- [x] **Step 2 (GREEN):** Single authority; commit `fix: pin the adviser cap across languages`.
 
 ### Task 9: Bookkeeping — roadmap and README truth
 
