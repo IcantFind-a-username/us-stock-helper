@@ -39,6 +39,30 @@ describe("decision envelope validation", () => {
     expect(decision.notes).toHaveLength(1);
   });
 
+  it("keeps a null adviserAdjustment distinct from a measured zero when no council ran", () => {
+    // decisionFixture()'s default is the common case: nobody paid for the
+    // adviser council, so baselineScore mirrors score exactly and
+    // adviserAdjustment is null -- not the 0.0 this app used to serve for
+    // "nobody asked" and "the council found nothing to move" alike.
+    const decision = decodeDecisionEnvelope(decisionFixture(), { now });
+
+    expect(decision.baselineScore).toMatchObject({ value: 72.5 });
+    expect(decision.adviserAdjustment).toBeNull();
+  });
+
+  it("folds the council's own verdict into the top-level fields when it actually ran", () => {
+    const value = decisionFixture();
+    (value.score as Record<string, unknown>).value = 75.5;
+    value.adviserAdjustment = 3;
+    value.adviserCouncil = adviserCouncilFixture();
+
+    const decision = decodeDecisionEnvelope(value, { now });
+
+    expect(decision.score?.value).toBe(75.5);
+    expect(decision.baselineScore).toMatchObject({ value: 72.5 });
+    expect(decision.adviserAdjustment).toBe(3);
+  });
+
   it("keeps an unavailable factor as null rather than zero", () => {
     const decision = decodeDecisionEnvelope(decisionFixture(), { now });
 
@@ -127,6 +151,18 @@ describe("decision envelope validation", () => {
     }],
     ["a risk plan invalidation price that is a numeric string", (value: ReturnType<typeof decisionFixture>) => {
       (value.riskPlan as Record<string, unknown>).invalidationPrice = "114.7";
+    }],
+    ["an adviser adjustment beyond the positive adviser cap", (value: ReturnType<typeof decisionFixture>) => {
+      value.adviserAdjustment = 3.5;
+    }],
+    ["an adviser adjustment beyond the negative adviser cap", (value: ReturnType<typeof decisionFixture>) => {
+      value.adviserAdjustment = -3.1;
+    }],
+    ["an adviser adjustment that is NaN", (value: ReturnType<typeof decisionFixture>) => {
+      value.adviserAdjustment = NaN;
+    }],
+    ["an adviser adjustment that is a numeric string", (value: ReturnType<typeof decisionFixture>) => {
+      (value as Record<string, unknown>).adviserAdjustment = "3";
     }],
   ])("rejects %s", (_label, mutate) => {
     const value = decisionFixture();

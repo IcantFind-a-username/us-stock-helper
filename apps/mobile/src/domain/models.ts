@@ -262,6 +262,20 @@ export interface Decision {
   decisionCutoff: string;
   /** null when the chain had nothing to score. */
   score: DecisionScore | null;
+  /**
+   * The engine's own score before any adviser council touched it. Equal to
+   * `score` whenever `adviserAdjustment` is null or 0; a reader wanting the
+   * pre-adjustment number reads this rather than trying to undo the fold.
+   */
+  baselineScore: DecisionScore | null;
+  /**
+   * Null means no adviser council ran for this response -- not a measured
+   * zero. A folded, ±ADVISER_SCORE_CAP-clamped number means the council ran:
+   * `score.value == baselineScore.value + adviserAdjustment` (clamped to
+   * [0,100]) when ungated, or 0.0 with `score.value == baselineScore.value`
+   * unchanged when a hard gate voided what the council would have said.
+   */
+  adviserAdjustment: number | null;
   /** null when volatility could not be measured; notes say why. */
   forecast: DecisionForecast | null;
   riskPlan: DecisionRiskPlan | null;

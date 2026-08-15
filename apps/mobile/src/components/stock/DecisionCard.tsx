@@ -1,5 +1,6 @@
 import { StyleSheet, Text, View } from "react-native";
 
+import { ADVISER_SCORE_CAP } from "@/domain/models";
 import type { Decision } from "@/domain/models";
 import {
   factorLabel,
@@ -66,6 +67,20 @@ export function DecisionCard({ decision }: { decision: Decision }) {
           {scoreDirectionLabel(score.direction)}
         </Text>
       </Text>
+      {/* The split renders only once an adviser council actually ran for this
+          response — adviserAdjustment is null, not zero, for every request
+          that never convened one (adviser=off, adviser="news"), so a score
+          nobody's council touched must not read as adviser-checked. */}
+      {decision.adviserCouncil?.status === "available" &&
+      decision.adviserAdjustment !== null &&
+      decision.baselineScore !== null ? (
+        <Text style={styles.adviserFold} testID="decision-adviser-fold">
+          顾问核验前 {decision.baselineScore.value.toFixed(1)} · 顾问调整{" "}
+          {decision.adviserAdjustment > 0 ? "+" : ""}
+          {decision.adviserAdjustment.toFixed(1)}（上限 ±
+          {ADVISER_SCORE_CAP.toFixed(1)}）
+        </Text>
+      ) : null}
       {/* A blocked conclusion must not look like an ordinary one. The gate used
           to reach the screen only through the risk plan's warnings, and a
           decision with no measurable volatility has no risk plan — so a score
@@ -175,6 +190,7 @@ const styles = StyleSheet.create({
   coverage: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   score: { color: colors.ink, fontSize: 26, fontWeight: "900" },
   direction: { color: colors.muted, fontSize: 12, fontWeight: "800" },
+  adviserFold: { color: colors.muted, fontSize: 12, fontWeight: "700" },
   blocked: {
     backgroundColor: colors.amberSoft,
     borderRadius: radius.sm,

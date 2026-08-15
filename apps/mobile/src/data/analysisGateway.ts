@@ -1,3 +1,4 @@
+import { ADVISER_SCORE_CAP } from "@/domain/models";
 import type {
   AdviserBlock,
   AdviserBlockStatus,
@@ -182,6 +183,35 @@ function decodeScore(value: unknown): DecisionScore {
     blockedBy: value.blockedBy.map(String),
     contributions: value.contributions.map(decodeContribution),
   };
+}
+
+/** Same shape as `score`; null when the engine had nothing to baseline. */
+function decodeOptionalScore(value: unknown): DecisionScore | null {
+  if (value === null || value === undefined) return null;
+  return decodeScore(value);
+}
+
+/**
+ * Null is the whole point: it means no adviser council ran for this
+ * response, a fact the server states explicitly rather than folding into a
+ * measured zero. A council that ran and was voided by a hard gate reports
+ * 0.0, a real number distinct from "nobody asked" -- so this only rejects
+ * shapes that are neither null nor a number, or a number the server's own
+ * ±ADVISER_SCORE_CAP invariant forbids.
+ */
+function decodeAdviserAdjustment(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new DecisionValidationError(
+      "adviserAdjustment must be null or a finite number",
+    );
+  }
+  if (Math.abs(value) > ADVISER_SCORE_CAP) {
+    throw new DecisionValidationError(
+      `adviserAdjustment must not exceed the shared ±${ADVISER_SCORE_CAP} adviser cap`,
+    );
+  }
+  return value;
 }
 
 function decodeForecast(value: unknown): DecisionForecast | null {
@@ -526,6 +556,8 @@ export function decodeDecisionEnvelope(
   if (!Array.isArray(value.notes) || !Array.isArray(value.citations)) {
     throw new DecisionValidationError("notes and citations must be arrays");
   }
+  const baselineScore = decodeOptionalScore(value.baselineScore);
+  const adviserAdjustment = decodeAdviserAdjustment(value.adviserAdjustment);
   return {
     status,
     symbol: requireString(value, "symbol"),
@@ -533,6 +565,8 @@ export function decodeDecisionEnvelope(
     interval: requireString(value, "interval"),
     decisionCutoff: cutoff.toISOString(),
     score,
+    baselineScore,
+    adviserAdjustment,
     forecast: decodeForecast(value.forecast),
     riskPlan: decodeRiskPlan(value.riskPlan),
     citations: value.citations.map((item) => {

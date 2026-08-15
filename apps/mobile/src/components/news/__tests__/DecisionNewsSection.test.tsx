@@ -80,6 +80,8 @@ function decision(overrides: Partial<Decision> = {}): Decision {
     interval: "day",
     decisionCutoff: "2026-08-13T13:30:00.000Z",
     score: null,
+    baselineScore: null,
+    adviserAdjustment: null,
     forecast: null,
     riskPlan: null,
     citations: [],

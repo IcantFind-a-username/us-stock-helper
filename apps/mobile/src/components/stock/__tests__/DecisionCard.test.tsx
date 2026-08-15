@@ -218,3 +218,67 @@ it("does not cry blocked when nothing is blocking", async () => {
 
   expect(view.queryByTestId("decision-blocked")).toBeNull();
 });
+
+it("says nothing about an adviser when no council ran for this response", async () => {
+  // decisionFixture()'s default: adviserCouncil is not-requested and
+  // adviserAdjustment is null. A watchlist-style score with no council input
+  // must not read as if an adviser had a say.
+  const view = await render(<DecisionCard decision={decision()} />);
+
+  expect(view.queryByTestId("decision-adviser-fold")).toBeNull();
+});
+
+it("shows the baseline-vs-adjusted split only once the council actually ran", async () => {
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        (value.score as Record<string, unknown>).value = 75.5;
+        value.adviserAdjustment = 3;
+        value.adviserCouncil = {
+          status: "available",
+          reason: null,
+          value: {
+            summary: "各框架都读到同一条指引上调。",
+            opinions: [
+              {
+                frameworkId: "technical",
+                displayName: "技术结构框架",
+                stance: "bullish",
+                blindSpot: "对基本面突变无感。",
+                conclusions: [
+                  {
+                    statement: "指引上调支持偏多的解读。",
+                    confidence: "medium",
+                    citations: [
+                      {
+                        evidenceId: "a",
+                        quote: "raises full-year revenue guidance",
+                        url: "https://reuters.example/a",
+                        publisher: "reuters",
+                        availableAt: "2026-07-25T15:41:00Z",
+                        isCounterEvidence: false,
+                      },
+                    ],
+                    counterEvidence: [],
+                  },
+                ],
+              },
+            ],
+            baselineScore: 72.5,
+            adjustedScore: 75.5,
+            scoreAdjustment: 3,
+            objectiveDirection: "bullish",
+            actionable: true,
+            blockedBy: [] as string[],
+            disclaimer:
+              "顾问观点是分析建议，不是操作指令；其影响有上限，且任一硬门未通过时一律作废。",
+          },
+        };
+      })}
+    />,
+  );
+
+  const fold = view.getByTestId("decision-adviser-fold");
+  expect(fold).toHaveTextContent(/72\.5/);
+  expect(fold).toHaveTextContent(/\+3\.0/);
+});

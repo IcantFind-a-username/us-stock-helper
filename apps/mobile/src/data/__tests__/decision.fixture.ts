@@ -38,8 +38,42 @@ export function decisionFixture() {
         },
       ],
     } as Record<string, unknown> | null,
-    baselineScore: null,
-    adviserAdjustment: 0,
+    // Identical to `score` by default: nobody asked for the adviser council,
+    // so nothing folded an adjustment in and the two describe the same
+    // computation, exactly as the wire contract's "council off" example
+    // shows (server: adviser-adjustment-contract.md).
+    baselineScore: {
+      value: 72.5,
+      direction: "bullish",
+      actionable: true,
+      methodVersion: "explainable-horizon-score-v1",
+      factorCoverage: 0.7,
+      unavailableFactors: [
+        "fundamentals",
+        "geopolitics",
+        "institutional_flow",
+        "macro",
+      ],
+      blockedBy: [] as string[],
+      contributions: [
+        {
+          name: "technical_trend",
+          rawValue: 0.57 as number | null,
+          weight: 0.36,
+          points: 10.1,
+          explanation: "Closed-bar return over the horizon-specific lookback.",
+        },
+        {
+          name: "macro",
+          rawValue: null as number | null,
+          weight: 0,
+          points: 0,
+          explanation: "As-of macroeconomic context. Unavailable for this snapshot.",
+        },
+      ],
+    } as Record<string, unknown> | null,
+    // Null, not zero: no adviser council ran for this response by default.
+    adviserAdjustment: null as number | null,
     forecast: {
       currentPrice: 119.5,
       methodVersion: "bounded-scenario-forecast-v1",
