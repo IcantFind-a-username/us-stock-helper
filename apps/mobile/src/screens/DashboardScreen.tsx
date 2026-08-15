@@ -9,6 +9,7 @@ import {
 } from "@/components/dashboard/DashboardDetailSheet";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { DashboardSectionHeader } from "@/components/dashboard/DashboardSectionHeader";
+import { MarketBriefCard } from "@/components/dashboard/MarketBriefCard";
 import { MarketRegimeHero } from "@/components/dashboard/MarketRegimeHero";
 import { PriorityAlertCard } from "@/components/dashboard/PriorityAlertCard";
 import {
@@ -19,6 +20,7 @@ import {
   StockSearchSheet,
   type StockSearchOption,
 } from "@/components/search/StockSearchSheet";
+import { AnalysisNotConnected } from "@/components/ui/AnalysisNotConnected";
 import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
 import { Screen } from "@/components/ui/Screen";
 import type { Candidate, Citation } from "@/domain/models";
@@ -27,6 +29,7 @@ import { describeMarketError } from "@/i18n/marketErrorCopy";
 import { useNow } from "@/hooks/use-now";
 import { useAppState } from "@/state/AppStateProvider";
 import {
+  useMarketBrief,
   useMarketDataMode,
   useMarketWatchlist,
   useWatchlistDecisions,
@@ -45,6 +48,7 @@ export function DashboardScreen() {
   const { horizon, setHorizon } = useAppState();
   const { demoAvailable, demoMode, setDemoMode } = useMarketDataMode();
   const marketWatchlist = useMarketWatchlist();
+  const marketBrief = useMarketBrief();
   const snapshot = fixtureRepository.getDashboard(horizon);
   const [detail, setDetail] = useState<DetailState>(null);
   const [searchVisible, setSearchVisible] = useState(false);
@@ -248,6 +252,7 @@ export function DashboardScreen() {
         now={now}
         onAlerts={() => router.push("/alerts")}
         onSearch={() => setSearchVisible(true)}
+        realBrief={marketBrief.data}
         updatedAt={snapshot.updatedAt}
       />
       <HorizonSwitch value={horizon} onChange={changeHorizon} />
@@ -284,39 +289,45 @@ export function DashboardScreen() {
           updatedAt={snapshot.updatedAt}
         />
       ) : (
-        <View style={styles.analysisPlaceholder}>
-          <Text style={styles.analysisPlaceholderTitle}>
-            市场分析尚未接入真实数据
-          </Text>
-          <Text style={styles.analysisPlaceholderHint}>
-            市场结论、优先提醒与候选列表只在演示模式展示确定性演示内容；真实分析上线前不显示任何推断结论。下方自选里的个股评分来自真实分析服务，取不到时会写明原因。
-          </Text>
-        </View>
+        <MarketBriefCard
+          brief={marketBrief.data}
+          error={marketBrief.error}
+          onRetry={marketBrief.refresh}
+          status={marketBrief.status}
+        />
       )}
-      {demoMode ? (
-        <View style={styles.section}>
-          <DashboardSectionHeader
-            actionLabel="全部提醒 ›"
-            onAction={() => router.push("/alerts")}
-            title="需要关注"
+      <View style={styles.section}>
+        {demoMode ? (
+          <>
+            <DashboardSectionHeader
+              actionLabel="全部提醒 ›"
+              onAction={() => router.push("/alerts")}
+              title="需要关注"
+            />
+            <PriorityAlertCard
+              alert={snapshot.priorityAlert}
+              onOpenDetail={() =>
+                openDetail(
+                  `${snapshot.priorityAlert.symbol} 提醒依据`,
+                  [
+                    { label: "当前状态", body: snapshot.priorityAlert.currentState },
+                    { label: "来源覆盖", body: snapshot.priorityAlert.sourceCoverage },
+                    { label: "失效条件", body: snapshot.priorityAlert.invalidation },
+                  ],
+                  snapshot.priorityAlert.citations.map((citation) => citation.id),
+                )
+              }
+              onPress={() => openStock(snapshot.priorityAlert.symbol)}
+            />
+          </>
+        ) : (
+          <AnalysisNotConnected
+            missing="缺的是提醒服务本身：分析接口只在你打开某只股票时按需回答一次，服务端没有常驻扫描，也没有生成或推送提醒的路由。个股页的结论与引用已经是真实数据。"
+            surface="优先提醒"
+            testID="dashboard-priority-alert-not-connected"
           />
-          <PriorityAlertCard
-            alert={snapshot.priorityAlert}
-            onOpenDetail={() =>
-              openDetail(
-                `${snapshot.priorityAlert.symbol} 提醒依据`,
-                [
-                  { label: "当前状态", body: snapshot.priorityAlert.currentState },
-                  { label: "来源覆盖", body: snapshot.priorityAlert.sourceCoverage },
-                  { label: "失效条件", body: snapshot.priorityAlert.invalidation },
-                ],
-                snapshot.priorityAlert.citations.map((citation) => citation.id),
-              )
-            }
-            onPress={() => openStock(snapshot.priorityAlert.symbol)}
-          />
-        </View>
-      ) : null}
+        )}
+      </View>
       {watchlistSurface}
       {demoMode ? (
         <CandidateList
@@ -325,7 +336,15 @@ export function DashboardScreen() {
           onOpenEvidence={openCandidateEvidence}
           onPress={openStock}
         />
-      ) : null}
+      ) : (
+        <View style={styles.section}>
+          <AnalysisNotConnected
+            missing="缺的是全市场扫描服务：上面的自选来自你的行情账户，只是价格变动排序；候选列表需要服务端的全市场扫描来筛选催化、最强反证与失效条件，目前没有这个路由。"
+            surface="潜力候选"
+            testID="dashboard-candidate-list-not-connected"
+          />
+        </View>
+      )}
       <DashboardDetailSheet
         citations={detail?.citations ?? []}
         onClose={() => setDetail(null)}
@@ -334,6 +353,7 @@ export function DashboardScreen() {
         visible={detail !== null}
       />
       <StockSearchSheet
+        demoMode={demoMode}
         onClose={() => setSearchVisible(false)}
         onSelect={(symbol) => {
           setSearchVisible(false);
@@ -365,14 +385,6 @@ const styles = StyleSheet.create({
   },
   demoModeLabel: { color: colors.ink, fontSize: 13, fontWeight: "800" },
   demoModeHint: { color: colors.muted, fontSize: 11, lineHeight: 16, marginTop: 2 },
-  analysisPlaceholder: {
-    backgroundColor: colors.blueSoft,
-    borderRadius: radius.md,
-    gap: spacing.xs,
-    padding: spacing.md,
-  },
-  analysisPlaceholderTitle: { color: colors.ink, fontSize: 14, fontWeight: "800" },
-  analysisPlaceholderHint: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   watchlistState: { gap: spacing.xs },
   emptyCard: {
     backgroundColor: colors.card,

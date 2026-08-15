@@ -4,11 +4,14 @@ import type {
   Candle,
   ForecastSnapshot,
   ParticipationBar,
+  PatternShapeSignal,
 } from "@/domain/models";
 
 import {
+  alignTouchXToViewBox,
   buildChartGeometry,
   findNearestByX,
+  recentPatternSignalsPerKind,
   resolveChartWidth,
   type ChartGeometryInput,
 } from "../chart";
@@ -545,6 +548,106 @@ it("uses the available phone width while keeping chart geometry bounded", () => 
   expect(resolveChartWidth(1_600)).toBe(1_180);
 });
 
+it("passes a touch through untouched when the Pressable measured exactly the width geometry was built at", () => {
+  expect(
+    alignTouchXToViewBox({ x: 123.4, renderedWidth: 334, chartWidth: 334 }),
+  ).toBeCloseTo(123.4, 9);
+});
+
+it("undoes the letterbox shift preserveAspectRatio applies when the Pressable measures wider than the viewBox", () => {
+  // The exact stale-chrome scenario the finding walked through: the card's
+  // padding shrank out from under resolveChartWidth's 56pt guess, so on a
+  // 390pt phone the Pressable actually lays out ~7.3pt wider than the 334pt
+  // viewBox. With equal declared/rendered heights, "xMidYMid meet" cannot
+  // downscale (the width ratio exceeds 1), so it only centres: every candle
+  // renders shifted right by half that gap, un-shifted in the touch's own
+  // layout frame.
+  const chartWidth = 334;
+  const renderedWidth = 341.3;
+  const offset = (renderedWidth - chartWidth) / 2;
+  // A touch registered dead-center on a candle drawn at viewBox x = 150.
+  const touchX = 150 + offset;
+  expect(
+    alignTouchXToViewBox({ x: touchX, renderedWidth, chartWidth }),
+  ).toBeCloseTo(150, 6);
+});
+
+it("undoes the uniform downscale preserveAspectRatio applies when the Pressable measures narrower than the viewBox", () => {
+  // The SE-class path: resolveChartWidth's 304pt floor is wider than the
+  // phone can actually give the card, so "meet" scales the whole drawing
+  // down to fit — a touch in the Pressable's own (smaller) frame has to be
+  // scaled back up before it means anything in viewBox units.
+  const chartWidth = 304;
+  const renderedWidth = 271.3;
+  const scale = renderedWidth / chartWidth;
+  const touchX = 278 * scale;
+  expect(
+    alignTouchXToViewBox({ x: touchX, renderedWidth, chartWidth }),
+  ).toBeCloseTo(278, 6);
+});
+
+it("leaves a touch alone when the Pressable has not measured itself yet", () => {
+  expect(
+    alignTouchXToViewBox({ x: 42, renderedWidth: 0, chartWidth: 334 }),
+  ).toBe(42);
+  expect(
+    alignTouchXToViewBox({ x: 42, renderedWidth: 334, chartWidth: 0 }),
+  ).toBe(42);
+  expect(
+    alignTouchXToViewBox({ x: Number.NaN, renderedWidth: 334, chartWidth: 334 }),
+  ).toBeNaN();
+});
+
+it("recovers the tapped candle from a raw locationX once it is aligned to the viewBox", () => {
+  // A concrete regression of the finding's own Path A: without alignment,
+  // comparing a shifted touch straight against viewBox-space candle x picks
+  // a neighbouring bar instead of the one under the finger.
+  const chartWidth = resolveChartWidth(390);
+  const dense: Candle[] = Array.from({ length: 38 }, (_, index) => {
+    const timestamp = new Date(
+      Date.UTC(2026, 6, 24, 13, 30 + index * 5),
+    ).toISOString();
+    return {
+      timestamp,
+      availableAt: new Date(Date.parse(timestamp) + 1_000).toISOString(),
+      complete: true,
+      open: 100 + index,
+      high: 102 + index,
+      low: 99 + index,
+      close: 101 + index,
+      volume: 1_000 + index,
+    };
+  });
+  const geometry = buildChartGeometry({
+    candles: dense,
+    forecast: null,
+    participationBars: [],
+    decisionCutoff: new Date(
+      Date.parse(dense.at(-1)!.timestamp) + 60_000,
+    ).toISOString(),
+    width: chartWidth,
+    height: 460,
+  });
+  expect(geometry.candles).toHaveLength(38);
+
+  // The letterbox gap the shrunken card padding leaves at this viewport.
+  const renderedWidth = chartWidth + 20;
+  const offset = (renderedWidth - chartWidth) / 2;
+  const target = geometry.candles[10]!; // a bar with a real right-hand neighbour
+  const rawTouch = target.x + offset;
+
+  // The naive comparison — what selectNearestCandle did before this fix —
+  // no longer lands on the candle the finger is actually over.
+  expect(findNearestByX(geometry.candles, rawTouch)?.timestamp).not.toBe(
+    target.timestamp,
+  );
+
+  const aligned = alignTouchXToViewBox({ x: rawTouch, renderedWidth, chartWidth });
+  expect(findNearestByX(geometry.candles, aligned)?.timestamp).toBe(
+    target.timestamp,
+  );
+});
+
 it("selects the nearest x coordinate and resolves an exact midpoint to the first", () => {
   const points = [
     { id: "first", x: 10 },
@@ -820,4 +923,50 @@ it("stacks only the panels asked for and leaves room for the time axis", () => {
     stacked.panels.participation!.bottom,
   );
   expect(stacked.panels.axisY).toBeLessThanOrEqual(420);
+});
+
+function fractalMarkerSignal(eventIndex: number): PatternShapeSignal {
+  return {
+    kind: "fractal_bottom",
+    name: "底分型",
+    status: "confirmed",
+    direction: "bullish",
+    bars: [{ index: eventIndex, closedAt: "2026-07-25T15:50:00.000Z" }],
+    anchorIndex: eventIndex,
+    eventIndex,
+    invalidation: "收盘价跌破分型低点 90.00",
+    explanation: "中间K线的最低价同时低于左右两根K线。",
+    reading: {
+      summary: "底分型。",
+      detail: "第三根K线收盘后才能确认。",
+      honesty: "历史胜率待回测",
+    },
+    methodVersion: "patterns-shapes-v1",
+  };
+}
+
+it("keeps only each pattern kind's most recent N signals for chart markers", () => {
+  const manyFractals = Array.from({ length: 10 }, (_, index) =>
+    fractalMarkerSignal(index + 1),
+  );
+  const loneDoubleBottom: PatternShapeSignal = {
+    ...fractalMarkerSignal(3),
+    kind: "double_bottom",
+    name: "W底",
+  };
+
+  const kept = recentPatternSignalsPerKind(
+    [...manyFractals, loneDoubleBottom],
+    3,
+  );
+
+  const fractalsKept = kept.filter((signal) => signal.kind === "fractal_bottom");
+  expect(fractalsKept).toHaveLength(3);
+  // The three highest eventIndex values survive -- the most recent ones.
+  expect(fractalsKept.map((signal) => signal.eventIndex).sort((a, b) => a - b)).toEqual([
+    8, 9, 10,
+  ]);
+  // A kind with fewer instances than the limit is untouched.
+  expect(kept).toContainEqual(loneDoubleBottom);
+  expect(kept).toHaveLength(4);
 });

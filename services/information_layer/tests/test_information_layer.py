@@ -563,3 +563,45 @@ class UnmeasuredSentimentTests(unittest.TestCase):
     def test_an_event_cannot_claim_a_score_it_did_not_measure(self) -> None:
         with self.assertRaisesRegex(ValueError, "sentiment_measured"):
             event("bad", sentiment=0.7, sentiment_measured=False)
+
+    def test_the_sentiment_says_whether_its_action_score_was_measured(
+        self,
+    ) -> None:
+        # A served 0.0 is two different claims: 测得中性 (a reading of zero)
+        # or 没测 (no reading at all). The engine keys the factor's
+        # availability off this flag, and the flag has to be a type on the
+        # packet — matching the uncertainty text would be a convention.
+        builder = EvidencePacketBuilder()
+        authoritative = source("sec", reliability=0.98)
+
+        nothing = builder.build((), as_of=AS_OF)
+        unread = builder.build(
+            (
+                event(
+                    "unread",
+                    sentiment=0.0,
+                    sentiment_measured=False,
+                    status=ClaimStatus.VERIFIED,
+                    confidence=0.95,
+                    provenance=authoritative,
+                ),
+            ),
+            as_of=AS_OF,
+        )
+        neutral = builder.build(
+            (
+                event(
+                    "neutral",
+                    sentiment=0.0,
+                    status=ClaimStatus.VERIFIED,
+                    confidence=0.95,
+                    provenance=authoritative,
+                ),
+            ),
+            as_of=AS_OF,
+        )
+
+        self.assertFalse(nothing.sentiment.action_score_measured)
+        self.assertFalse(unread.sentiment.action_score_measured)
+        self.assertTrue(neutral.sentiment.action_score_measured)
+        self.assertEqual(neutral.sentiment.action_score, 0.0)

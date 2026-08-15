@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Text } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { DeviceSessionGate } from "@/components/ui/DeviceSessionGate";
 import { decisionFixture } from "@/data/__tests__/decision.fixture";
@@ -89,15 +90,17 @@ function DecisionProbe() {
 
 async function renderApp(seed?: string) {
   return render(
-    <DeviceSessionProvider
-      credentialStore={createDeviceCredentialStore(memoryBackend(seed))}
-      pairingRequired>
-      <DeviceSessionGate>
-        <PairedMarketData>
-          <DecisionProbe />
-        </PairedMarketData>
-      </DeviceSessionGate>
-    </DeviceSessionProvider>,
+    <SafeAreaProvider>
+      <DeviceSessionProvider
+        credentialStore={createDeviceCredentialStore(memoryBackend(seed))}
+        pairingRequired>
+        <DeviceSessionGate>
+          <PairedMarketData>
+            <DecisionProbe />
+          </PairedMarketData>
+        </DeviceSessionGate>
+      </DeviceSessionProvider>
+    </SafeAreaProvider>,
   );
 }
 

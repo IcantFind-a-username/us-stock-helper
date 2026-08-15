@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Iterable, Sequence
 
-from .indicators import macd, rsi
+from .indicators import macd, moving_average_series, rsi
 from .models import (
     Direction,
     EvidenceRecord,
@@ -15,12 +15,12 @@ from .models import (
     require_unit_range,
     require_utc,
 )
-from .patterns import (
-    detect_double_bottom,
-    detect_head_and_shoulders,
-    detect_ma5_pullback,
-    magic_nine,
-    three_bar_fractals,
+from .patterns import magic_nine
+from .patterns_shapes import (
+    PatternShapeKind,
+    PatternShapeSignal,
+    PatternShapeStatus,
+    detect_pattern_shapes,
 )
 from .temporal import select_bars_as_of, select_evidence_as_of
 
@@ -29,6 +29,68 @@ from .temporal import select_bars_as_of, select_evidence_as_of
 # layer that caps, normalizes or displays an adviser adjustment must read this
 # rather than repeating the number, or the layers drift apart silently.
 ADVISER_SCORE_CAP = 3.0
+
+# The smallest window any pattern detector can read: three-bar fractals need
+# three completed bars (magic nine needs five closes, everything else more).
+# Below this no detector ran at all, and "the detectors found nothing" would
+# be a claim about a reading nobody took.
+_SMALLEST_PATTERN_WINDOW = 3
+
+# Score magnitude per confirmed shape kind (sign follows the signal's own
+# direction) -- mirrors patterns_shapes.py's own confirmed/invalidated
+# distinction: only a confirmed shape votes, and (explainable-horizon-score-v2)
+# only while its invalidation condition has not been met at the latest close,
+# matching the 形态 factor explanation below.
+_PATTERN_SHAPE_MAGNITUDE: dict[PatternShapeKind, float] = {
+    PatternShapeKind.FRACTAL_TOP: 0.3,
+    PatternShapeKind.FRACTAL_BOTTOM: 0.3,
+    PatternShapeKind.DOUBLE_TOP: 0.9,
+    PatternShapeKind.DOUBLE_BOTTOM: 0.9,
+    PatternShapeKind.HEAD_SHOULDERS_TOP: 0.9,
+    PatternShapeKind.HEAD_SHOULDERS_BOTTOM: 0.9,
+    PatternShapeKind.MA5_PULLBACK: 0.6,
+}
+
+# How long a completed bar remains "the current picture" before a decision
+# must refuse to act on it. Budgeted against the interval the bars were
+# actually sampled on, not the horizon asking about them: a horizon is a
+# claim about the future, not about how often the exchange publishes a new
+# candle. An intraday bar goes stale within a small multiple of its own
+# length; a daily bar is only replaced once a session, and the previous
+# session can be a weekend or a short holiday run away, so its budget has to
+# span that gap rather than the bar's own 24-hour length.
+_INTRADAY_BAR_DURATIONS: dict[str, timedelta] = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "60m": timedelta(hours=1),
+}
+_INTRADAY_STALE_MULTIPLE = 3
+# Covers a holiday-extended weekend (Friday close to Tuesday reopen) with
+# margin, without disguising a feed that has genuinely stopped reporting.
+_DAILY_STALE_BUDGET = timedelta(days=5)
+# A weekly bar is only replaced once a week, so its age legitimately climbs
+# toward -- but stays under -- 7 days for most of the cycle; sharing the
+# 5-day daily budget stale-gated every request made in the back half of the
+# week. Budgeted past a full 7-day cycle with margin for a holiday-shifted
+# close, while staying well short of a feed that has genuinely stopped.
+_WEEKLY_STALE_BUDGET = timedelta(days=9)
+# No interval could be attributed to the bars at all: fail toward the
+# tightest budget rather than assume a cadence nobody confirmed.
+_UNKNOWN_INTERVAL_STALE_BUDGET = timedelta(minutes=20)
+
+
+def data_freshness_budget(interval: str | None) -> timedelta:
+    """How old the freshest bar of ``interval`` may be before it is stale."""
+    duration = _INTRADAY_BAR_DURATIONS.get(interval) if interval else None
+    if duration is not None:
+        return duration * _INTRADAY_STALE_MULTIPLE
+    if interval == "week":
+        return _WEEKLY_STALE_BUDGET
+    if interval == "day":
+        return _DAILY_STALE_BUDGET
+    return _UNKNOWN_INTERVAL_STALE_BUDGET
 
 
 class HardGate(str, Enum):
@@ -58,6 +120,12 @@ class FeatureSet:
     adviser_factor: float
     evidence_confidence: float
     latest_market_data_at: datetime | None
+    # The interval the bars behind latest_market_data_at were sampled on
+    # ("day", "5m", ...). The staleness gate budgets freshness against this,
+    # not against the horizon: a horizon is a question about the future, not
+    # a claim about how often the exchange publishes a new candle. None means
+    # no bars could be attributed to a single known interval.
+    data_interval: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.as_of, "as_of")
@@ -102,7 +170,12 @@ class ScoreResult:
     blocked_by: tuple[HardGate, ...]
     unavailable_factors: tuple[str, ...] = ()
     factor_coverage: float = 1.0
-    method_version: str = "explainable-horizon-score-v1"
+    # v2 (2026-08-16): the 形态 factor now counts a confirmed shape only
+    # while it is still in force at the latest close, and breaks equal-
+    # magnitude ties toward the most recent signal. The semantics change is
+    # disclosed here and in the served pattern explanation, not slipped
+    # under a stable version id.
+    method_version: str = "explainable-horizon-score-v2"
 
 
 def extract_horizon_features(
@@ -122,6 +195,7 @@ def extract_horizon_features(
     if len(series) > 1:
         raise ValueError("feature extraction requires a single symbol and interval")
     symbol = next(iter(series))[0] if series else None
+    data_interval = next(iter(series))[1] if series else None
     selected_evidence = tuple(
         record
         for record in select_evidence_as_of(evidence, context.as_of)
@@ -157,34 +231,55 @@ def extract_horizon_features(
         sum(momentum_parts) / len(momentum_parts) if momentum_parts else None
     )
 
-    pattern_values: list[float] = []
+    # Each vote is (recency, value): recency orders equal-magnitude votes so
+    # the most recent read wins the tie, restoring the pre-rewrite "latest
+    # signal decides" semantics instead of letting list order pick.
+    pattern_votes: list[tuple[int, float]] = []
     sequential = magic_nine(closes)
     if sequential is not None:
-        pattern_values.append(
-            (1.0 if sequential.direction == Direction.BULLISH else -1.0)
-            * sequential.count
-            / 9.0
-            * 0.5
+        pattern_votes.append(
+            (
+                # A running count has no single event bar; order it below
+                # every dated shape signal.
+                -1,
+                (1.0 if sequential.direction == Direction.BULLISH else -1.0)
+                * sequential.count
+                / 9.0
+                * 0.5,
+            )
         )
-    pullback = detect_ma5_pullback(selected_bars)
-    double_bottom = detect_double_bottom(selected_bars)
-    head_and_shoulders = detect_head_and_shoulders(selected_bars)
-    if pullback is not None:
-        pattern_values.append(
-            0.6 if pullback.direction == Direction.BULLISH else -0.6
-        )
-    if double_bottom is not None:
-        pattern_values.append(0.9)
-    if head_and_shoulders is not None:
-        pattern_values.append(-0.9)
-    fractals = three_bar_fractals(selected_bars)
-    if fractals:
-        pattern_values.append(
-            0.3 if fractals[-1].direction == Direction.BULLISH else -0.3
-        )
-    # No confirmed pattern is a genuine reading of zero: the detectors ran and
-    # found nothing. It stays 0.0, unlike a factor that could not be computed.
-    pattern = max(pattern_values, key=abs) if pattern_values else 0.0
+    # detect_pattern_shapes runs 顶分型/底分型/W底/双头/头肩顶/头肩底/回踩五日线
+    # over the same completed bars the chart-hint card serves; only a
+    # confirmed shape votes here, so the score and the served hint can never
+    # disagree about what "confirmed" means -- and (explainable-horizon-
+    # score-v2) only while the shape is still in force: once its own
+    # invalidation condition has happened at the latest close (a W底 whose
+    # neckline is lost, a 回眸一笑 whose five-day average is broken again),
+    # its vote stops instead of persisting forever in the window.
+    for detection in detect_pattern_shapes(selected_bars):
+        for signal in detection.signals:
+            if signal.status is not PatternShapeStatus.CONFIRMED:
+                continue
+            if not _confirmed_shape_in_force(signal, closes):
+                continue
+            sign = 1.0 if signal.direction == Direction.BULLISH else -1.0
+            pattern_votes.append(
+                (signal.event_index, sign * _PATTERN_SHAPE_MAGNITUDE[signal.kind])
+            )
+    if len(selected_bars) < _SMALLEST_PATTERN_WINDOW:
+        # Too few bars for any detector to have looked. Claiming a measured
+        # zero here would report "looked and found nothing" for a window that
+        # was never looked at.
+        pattern = None
+    elif pattern_votes:
+        # The largest in-force reading wins; equal magnitudes go to the most
+        # recent one.
+        pattern = max(pattern_votes, key=lambda vote: (abs(vote[1]), vote[0]))[1]
+    else:
+        # No in-force confirmed pattern is a genuine reading of zero: the
+        # detectors ran and nothing currently stands. It stays 0.0, unlike a
+        # factor nothing could read.
+        pattern = 0.0
 
     confidence_total = sum(record.confidence for record in selected_evidence)
     # Only sources something actually read contribute an opinion. Unread ones
@@ -230,24 +325,70 @@ def extract_horizon_features(
             (row.available_at for row in selected_bars),
             default=None,
         ),
+        data_interval=data_interval,
     )
+
+
+def _confirmed_shape_in_force(
+    signal: PatternShapeSignal, closes: Sequence[float]
+) -> bool:
+    """True while the confirmed signal's invalidation has not happened.
+
+    Per pattern kind, checked against the latest close only (the same close
+    the reader sees):
+
+    - Fixed-level kinds (分型 extreme, W底/双头/头肩 neckline) carry their
+      boundary as ``invalidation_level``. 跌破/升破 are strict breaks: a
+      bullish signal dies on a close strictly below its level, a bearish one
+      on a close strictly above it; a close exactly on the level has not met
+      the condition and the signal still votes.
+    - 回踩五日线 (confirmed 回眸一笑) has a dynamic boundary -- its served
+      invalidation is 收盘再次跌破五日线，或五日线转跌 -- so it holds while
+      the latest close is not below the latest bar's own MA5 and the MA5 has
+      not turned down against its value three bars earlier.
+    """
+
+    latest_close = closes[-1]
+    if signal.kind is PatternShapeKind.MA5_PULLBACK:
+        ma5 = moving_average_series(closes, 5)
+        if len(ma5) < 4:
+            return False
+        ma5_now, ma5_then = ma5[-1], ma5[-4]
+        if ma5_now is None or ma5_then is None:
+            return False
+        return latest_close >= ma5_now and ma5_now >= ma5_then
+    level = signal.invalidation_level
+    if level is None:  # pragma: no cover - construction guard makes this dead
+        return False
+    if signal.direction == Direction.BULLISH:
+        return not latest_close < level
+    return not latest_close > level
 
 
 def score_horizon(
     features: FeatureSet, hard_gates: Iterable[HardGate] = ()
 ) -> ScoreResult:
     weights = _WEIGHTS[features.horizon]
+    # Investor-readable Chinese, exact-pinned by tests/test_scoring.py. These
+    # strings ride the wire verbatim as `contributions[].explanation` — the
+    # analysis_api layer does no translation of its own — so this is the one
+    # place they are written, not a template a downstream layer fills in.
     explanations = {
-        "technical_trend": "Closed-bar return over the horizon-specific lookback.",
-        "momentum": "RSI and MACD momentum calculated from closed bars only.",
-        "pattern": "Confirmed close-only pattern evidence; unconfirmed shapes contribute zero.",
-        "market_sentiment": "Point-in-time market mood blended with cited news evidence.",
-        "macro": "As-of macroeconomic context, treated as a soft factor.",
-        "geopolitics": "As-of geopolitical context, treated as a soft factor.",
-        "institutional_flow": (
-            "As-of institutional-flow estimate with no claim of hidden order knowledge."
+        "technical_trend": "按周期对应的回看窗口，用已收盘K线计算涨跌幅。",
+        "momentum": "RSI 与 MACD 动量，只用已收盘K线计算。",
+        "pattern": (
+            "只计入收盘确认、且失效条件尚未触发的形态证据：确认后一旦收盘越过失效价位"
+            "（如W底跌回颈线下方），该形态即停止计分；多个形态并存时取幅度最大者，"
+            "幅度相同取最新。未确认的形态贡献为零。"
         ),
-        "fundamentals": "Point-in-time company financial health.",
+        "market_sentiment": "按当时可见的市场情绪，结合引用的新闻证据。",
+        "macro": "按当时可见的宏观经济背景，作为软因子处理。",
+        "geopolitics": "按当时可见的地缘政治背景，作为软因子处理。",
+        "institutional_flow": (
+            "融合日内大单资金净流入占比的估算代理与机构持仓变动趋势"
+            "（按披露日期计入），不声称掌握隐藏订单信息。"
+        ),
+        "fundamentals": "按当时可见的公司财务状况。",
     }
     contributions: list[FactorContribution] = []
     unavailable = tuple(
@@ -270,7 +411,7 @@ def score_horizon(
                     raw_value=None,
                     weight=0.0,
                     points=0.0,
-                    explanation=f"{explanations[name]} Unavailable for this snapshot.",
+                    explanation=f"{explanations[name]}本次快照不可用。",
                 )
             )
             continue
@@ -291,8 +432,8 @@ def score_horizon(
             weight=0.0,
             points=adviser_points,
             explanation=(
-                f"Bounded style-adviser soft factor; capped at "
-                f"±{ADVISER_SCORE_CAP:g} points and never bypasses a hard gate."
+                f"顾问软因子设有上限：最多影响 ±{ADVISER_SCORE_CAP:g} 分，"
+                "且不能绕过任何硬性拦截。"
             ),
         )
     )
@@ -308,11 +449,7 @@ def score_horizon(
     gates = list(hard_gates)
     if features.evidence_confidence < 0.35:
         gates.append(HardGate.INSUFFICIENT_EVIDENCE)
-    maximum_age = {
-        Horizon.SHORT: timedelta(minutes=20),
-        Horizon.SWING: timedelta(days=5),
-        Horizon.LONG: timedelta(days=10),
-    }[features.horizon]
+    maximum_age = data_freshness_budget(features.data_interval)
     latest_market_data_at = features.latest_market_data_at
     if (
         latest_market_data_at is None

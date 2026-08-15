@@ -1,10 +1,12 @@
-"""Answer for all four soft factors at once, without letting any of them fail loudly.
+"""Answer for all three public soft factors at once, without letting any of them fail loudly.
 
-The decision chain asks for a snapshot and gets four readings back, always.
-A source being down changes what the readings say, never whether they arrive:
-a macro outage must not cost the caller its fundamentals, and neither may
-raise into the scoring path, because the scorer's job is to redistribute
-weight across what it could see and it cannot do that if it never runs.
+The decision chain asks for a snapshot and gets three readings back, always
+(institutional_flow is no longer one of them — see unsupported.py's module
+docstring for where it moved). A source being down changes what the readings
+say, never whether they arrive: a macro outage must not cost the caller its
+fundamentals, and neither may raise into the scoring path, because the
+scorer's job is to redistribute weight across what it could see and it
+cannot do that if it never runs.
 
 The provider deliberately owns no HTTP itself. It resolves a ticker to a
 filer, delegates, and converts anything unexpected into a stated reason.
@@ -24,7 +26,7 @@ from .base import (
 )
 from .fundamentals import SEC_FUNDAMENTALS_METHOD_VERSION
 from .macro import TREASURY_MACRO_METHOD_VERSION
-from .unsupported import geopolitics_reading, institutional_flow_reading
+from .unsupported import geopolitics_reading
 
 
 class FundamentalsSource(Protocol):
@@ -48,14 +50,12 @@ class FactorSnapshot:
     as_of: datetime
     macro: FactorReading
     geopolitics: FactorReading
-    institutional_flow: FactorReading
     fundamentals: FactorReading
 
     def readings(self) -> tuple[FactorReading, ...]:
         return (
             self.macro,
             self.geopolitics,
-            self.institutional_flow,
             self.fundamentals,
         )
 
@@ -93,7 +93,6 @@ class PublicFactorProvider:
             as_of=as_of,
             macro=self._macro_reading(as_of),
             geopolitics=geopolitics_reading(as_of=as_of),
-            institutional_flow=institutional_flow_reading(as_of=as_of),
             fundamentals=self._fundamentals_reading(normalized, as_of),
         )
 

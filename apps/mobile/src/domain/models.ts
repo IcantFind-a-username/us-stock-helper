@@ -262,6 +262,20 @@ export interface Decision {
   decisionCutoff: string;
   /** null when the chain had nothing to score. */
   score: DecisionScore | null;
+  /**
+   * The engine's own score before any adviser council touched it. Equal to
+   * `score` whenever `adviserAdjustment` is null or 0; a reader wanting the
+   * pre-adjustment number reads this rather than trying to undo the fold.
+   */
+  baselineScore: DecisionScore | null;
+  /**
+   * Null means no adviser council ran for this response -- not a measured
+   * zero. A folded, ±ADVISER_SCORE_CAP-clamped number means the council ran:
+   * `score.value == baselineScore.value + adviserAdjustment` (clamped to
+   * [0,100]) when ungated, or 0.0 with `score.value == baselineScore.value`
+   * unchanged when a hard gate voided what the council would have said.
+   */
+  adviserAdjustment: number | null;
   /** null when volatility could not be measured; notes say why. */
   forecast: DecisionForecast | null;
   riskPlan: DecisionRiskPlan | null;
@@ -271,6 +285,64 @@ export interface Decision {
   adviserCouncil: AdviserBlock<DecisionAdviserCouncil> | null;
   /** null when no model call reported what it spent. */
   adviserUsage: AdviserUsage | null;
+  notes: string[];
+}
+
+export type MarketSession = "premarket" | "regular" | "afterhours" | "closed";
+
+export interface MarketBriefSentiment {
+  conclusion: string;
+  /** Always a measured float; 0.0 when unmeasured (see `dataHealth`/`uncertainty`). */
+  actionScore: number;
+  /** e.g. "情绪未测量", "来源冲突", "含未证实传闻", "独立来源不足". */
+  uncertainty: string[];
+}
+
+export interface MarketBriefDriverCoverage {
+  category: MarketDriverCategory;
+  available: boolean;
+  /** null unless `available`. */
+  conclusion: string | null;
+  /** null unless `available`. */
+  actionScore: number | null;
+  /** null only when `available`; named otherwise, never invented. */
+  missingReason: string | null;
+}
+
+export interface MarketBriefCitation {
+  id: string;
+  headline: string;
+  publisher: string;
+  url: string;
+  availableAt: string;
+  /** null only when age was never measured -- not a real production path. */
+  freshnessSeconds: number | null;
+  stale: boolean | null;
+}
+
+/**
+ * `GET /market-brief`'s decoded envelope -- the Dashboard's real-mode market
+ * hero. Deliberately shaped nothing like `DashboardSnapshot`: no `demoData`,
+ * no symbol, no market score, no candidates, no priority alert. That
+ * structural distance is what keeps `demoData: true` demo-only by
+ * construction -- a decoded brief cannot be mistaken for, or substituted
+ * into, the fixture path the Dashboard already renders.
+ */
+export interface MarketBrief {
+  status: "available" | "unavailable";
+  /** Set only when `status` is "unavailable"; names every source that failed. */
+  reason: string | null;
+  decisionCutoff: string;
+  marketSession: MarketSession;
+  /** null only when `status` is "unavailable". */
+  dataHealth: DataHealth | null;
+  /** null only when `status` is "unavailable". */
+  sentiment: MarketBriefSentiment | null;
+  /** Always nine entries, one per designed `MarketDriverCategory`. */
+  driverCoverage: MarketBriefDriverCoverage[];
+  citations: MarketBriefCitation[];
+  sourceGaps: string[];
+  /** Point-in-time exclusion disclosures (e.g., events after the decision cutoff). */
   notes: string[];
 }
 
@@ -525,6 +597,72 @@ export interface LiveVolatilityIndicator extends LiveIndicatorValue {
   missingReason: string | null;
 }
 
+/**
+ * 顶分型/底分型/W底/双头/头肩顶/头肩底/回踩五日线企稳（回眸一笑）-- see
+ * services/analysis_core/us_stock_helper_core/patterns_shapes.py, whose
+ * module docstring is the versioned spec every rule here implements.
+ */
+export type PatternShapeKind =
+  | "fractal_top"
+  | "fractal_bottom"
+  | "double_bottom"
+  | "double_top"
+  | "head_shoulders_top"
+  | "head_shoulders_bottom"
+  | "ma5_pullback";
+
+export type PatternShapeStatus = "forming" | "confirmed" | "invalidated";
+
+export interface PatternShapeBarRef {
+  index: number;
+  closedAt: string;
+}
+
+/** Three-layer reading: 一句话含义 / 展开解释 / honesty line, fixed server-side copy. */
+export interface PatternShapeReading {
+  summary: string;
+  detail: string;
+  /** Fixed until the phase-2 backtest attaches real hit rates: "历史胜率待回测". */
+  honesty: string;
+}
+
+export interface PatternShapeSignal {
+  kind: PatternShapeKind;
+  name: string;
+  status: PatternShapeStatus;
+  direction: "bullish" | "bearish";
+  /** Structural bars (pivots/shoulders/touch bar…) in chronological order. */
+  bars: PatternShapeBarRef[];
+  /** Index (into completedCandles) a chart marker should anchor to. */
+  anchorIndex: number;
+  /** Bar index this status became true at (confirmed/invalidated), or "as of" for forming. */
+  eventIndex: number;
+  invalidation: string;
+  explanation: string;
+  reading: PatternShapeReading;
+  methodVersion: "patterns-shapes-v1";
+}
+
+export interface PatternShapeDetection {
+  detector: "fractal" | "double_extreme" | "head_and_shoulders" | "ma5_pullback";
+  minimumWindow: number;
+  sampleSize: number;
+  qualityStatus: "live" | "unavailable";
+  missingReason: string | null;
+  methodVersion: "patterns-shapes-v1";
+  signals: PatternShapeSignal[];
+}
+
+/** All four shape detectors' results for one snapshot's completed bars. */
+export interface LivePatternShapesIndicator {
+  source: "analysis-core";
+  asOf: string;
+  availableAt: string;
+  methodVersion: "patterns-shapes-v1";
+  qualityStatus: "live" | "unavailable";
+  detections: PatternShapeDetection[];
+}
+
 export interface ChartMacdIndicator {
   line: number | null;
   signal: number | null;
@@ -665,6 +803,7 @@ export interface LiveTechnicalIndicators {
   rsi: LiveIndicatorValue;
   macd: LiveMacdIndicator;
   volatility: LiveVolatilityIndicator;
+  patternShapes: LivePatternShapesIndicator;
 }
 
 export interface StockSnapshotSections {

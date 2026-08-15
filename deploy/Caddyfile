@@ -93,7 +93,7 @@ stock.example.com {
 	# it belongs in the 404 below.
 	@api {
 		method GET
-		path /health /decision
+		path /health /decision /market-brief
 	}
 	handle @api {
 		reverse_proxy 127.0.0.1:8770

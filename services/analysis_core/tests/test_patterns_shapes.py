@@ -1,0 +1,714 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+import unittest
+
+from us_stock_helper_core.models import Direction, OHLCVBar
+from us_stock_helper_core.patterns_shapes import (
+    PATTERN_SHAPE_READING_COPY,
+    PATTERNS_SHAPES_VERSION,
+    REACHABLE_PATTERN_SHAPE_STATES,
+    PatternShapeKind,
+    PatternShapeStatus,
+    detect_double_extreme_patterns,
+    detect_fractal_patterns,
+    detect_head_and_shoulders_patterns,
+    detect_ma5_pullback_pattern,
+    detect_pattern_shapes,
+)
+
+
+BASE_DAY = datetime(2026, 7, 1, tzinfo=UTC)
+
+_BANNED_VERBS = ("买入", "卖出", "加仓", "抄底", "梭哈")
+
+
+def bars_from_ohlc(
+    rows: list[tuple[float, float, float, float]],
+    *,
+    symbol: str = "NVDA",
+    interval: str = "day",
+) -> tuple[OHLCVBar, ...]:
+    """rows: list of (open, high, low, close). Index i -> BASE_DAY + i days."""
+
+    result: list[OHLCVBar] = []
+    for index, (open_, high, low, close) in enumerate(rows):
+        closed_at = BASE_DAY + timedelta(days=index)
+        result.append(
+            OHLCVBar(
+                symbol=symbol,
+                interval=interval,
+                opened_at=closed_at - timedelta(days=1),
+                closed_at=closed_at,
+                available_at=closed_at,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=1_000.0 + index,
+            )
+        )
+    return tuple(result)
+
+
+def bars_from_closes(closes: list[float]) -> tuple[OHLCVBar, ...]:
+    return bars_from_ohlc([(c, c + 1.0, c - 1.0, c) for c in closes])
+
+
+# ---------------------------------------------------------------------------
+# 顶分型 / 底分型 (three-bar fractals)
+# ---------------------------------------------------------------------------
+
+
+class FractalTests(unittest.TestCase):
+    def test_below_minimum_window_is_typed_unavailable(self) -> None:
+        detection = detect_fractal_patterns(bars_from_closes([100.0, 101.0]))
+
+        self.assertEqual(detection.quality_status, "unavailable")
+        self.assertEqual(detection.signals, ())
+        self.assertIsNotNone(detection.missing_reason)
+        self.assertEqual(detection.minimum_window, 3)
+        self.assertEqual(detection.algorithm_version, PATTERNS_SHAPES_VERSION)
+
+    def test_fractal_top_confirms_on_the_third_bar(self) -> None:
+        bars = bars_from_ohlc(
+            [
+                (100.0, 101.0, 99.0, 100.0),
+                (100.0, 110.0, 99.0, 104.0),  # middle bar: highest high
+                (104.0, 105.0, 100.0, 101.0),
+            ]
+        )
+
+        detection = detect_fractal_patterns(bars)
+
+        self.assertEqual(detection.quality_status, "live")
+        self.assertEqual(len(detection.signals), 1)
+        signal = detection.signals[0]
+        self.assertEqual(signal.kind, PatternShapeKind.FRACTAL_TOP)
+        self.assertEqual(signal.name, "顶分型")
+        self.assertEqual(signal.status, PatternShapeStatus.CONFIRMED)
+        self.assertEqual(signal.direction, Direction.BEARISH)
+        self.assertEqual(signal.anchor.index, 1)
+        self.assertEqual(signal.event_index, 2)
+        self.assertEqual([b.index for b in signal.bars], [0, 1, 2])
+        self.assertEqual(signal.invalidation, "收盘价升破分型高点 110.00")
+        self.assertEqual(signal.algorithm_version, PATTERNS_SHAPES_VERSION)
+        self.assertEqual(signal.reading_honesty, "历史胜率待回测")
+        self.assertTrue(signal.reading_summary)
+        self.assertTrue(signal.reading_detail)
+
+    def test_fractal_bottom_confirms_on_the_third_bar(self) -> None:
+        bars = bars_from_ohlc(
+            [
+                (100.0, 101.0, 99.0, 100.0),
+                (100.0, 102.0, 90.0, 96.0),  # middle bar: lowest low
+                (96.0, 103.0, 95.0, 101.0),
+            ]
+        )
+
+        detection = detect_fractal_patterns(bars)
+
+        self.assertEqual(len(detection.signals), 1)
+        signal = detection.signals[0]
+        self.assertEqual(signal.kind, PatternShapeKind.FRACTAL_BOTTOM)
+        self.assertEqual(signal.name, "底分型")
+        self.assertEqual(signal.status, PatternShapeStatus.CONFIRMED)
+        self.assertEqual(signal.direction, Direction.BULLISH)
+        self.assertEqual(signal.anchor.index, 1)
+        self.assertEqual(signal.invalidation, "收盘价跌破分型低点 90.00")
+
+    def test_incomplete_bar_is_rejected(self) -> None:
+        rows = list(
+            bars_from_ohlc(
+                [
+                    (100.0, 101.0, 99.0, 100.0),
+                    (100.0, 110.0, 99.0, 104.0),
+                    (104.0, 105.0, 100.0, 101.0),
+                ]
+            )
+        )
+        fields = {f: getattr(rows[-1], f) for f in rows[-1].__dataclass_fields__}
+        fields["complete"] = False
+        rows[-1] = OHLCVBar(**fields)
+
+        with self.assertRaises(ValueError):
+            detect_fractal_patterns(tuple(rows))
+
+
+# ---------------------------------------------------------------------------
+# W底 / 双头 (double bottom / double top with neckline)
+# ---------------------------------------------------------------------------
+
+_DOUBLE_BOTTOM_PREFIX = [
+    (105.0, 106.0, 104.0, 105.0),
+    (98.0, 99.0, 96.0, 97.0),  # first trough (low 96)
+    (98.0, 101.0, 97.0, 100.0),
+    (100.0, 104.0, 99.0, 103.0),  # neckline candidate high 104
+    (102.0, 103.0, 98.0, 99.0),
+    (97.0, 98.0, 96.5, 97.0),  # second trough (low 96.5)
+    (98.0, 101.0, 98.0, 100.0),
+]
+
+
+class DoubleBottomTests(unittest.TestCase):
+    def test_below_minimum_window_is_typed_unavailable(self) -> None:
+        detection = detect_double_extreme_patterns(bars_from_closes([100.0] * 3))
+
+        self.assertEqual(detection.quality_status, "unavailable")
+        self.assertEqual(detection.minimum_window, 7)
+
+    def test_forming_before_neckline_or_support_resolves(self) -> None:
+        bars = bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX)
+
+        detection = detect_double_extreme_patterns(bars)
+
+        bottoms = [s for s in detection.signals if s.kind is PatternShapeKind.DOUBLE_BOTTOM]
+        self.assertEqual(len(bottoms), 1)
+        signal = bottoms[0]
+        self.assertEqual(signal.status, PatternShapeStatus.FORMING)
+        self.assertEqual(signal.direction, Direction.BULLISH)
+        self.assertEqual(signal.name, "W底")
+        self.assertEqual(signal.anchor.index, 5)
+        self.assertIn("96.50", signal.invalidation)
+
+    def test_confirms_on_close_above_the_neckline(self) -> None:
+        bars = bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 109.0, 99.0, 108.0)])
+
+        detection = detect_double_extreme_patterns(bars)
+
+        bottoms = [s for s in detection.signals if s.kind is PatternShapeKind.DOUBLE_BOTTOM]
+        self.assertEqual(len(bottoms), 1)
+        signal = bottoms[0]
+        self.assertEqual(signal.status, PatternShapeStatus.CONFIRMED)
+        self.assertEqual(signal.event_index, 7)
+        self.assertEqual(signal.invalidation, "收盘跌破颈线 104.00")
+
+    def test_invalidated_when_support_breaks_before_the_neckline(self) -> None:
+        bars = bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(99.0, 100.0, 93.0, 94.0)])
+
+        detection = detect_double_extreme_patterns(bars)
+
+        bottoms = [s for s in detection.signals if s.kind is PatternShapeKind.DOUBLE_BOTTOM]
+        self.assertEqual(len(bottoms), 1)
+        signal = bottoms[0]
+        self.assertEqual(signal.status, PatternShapeStatus.INVALIDATED)
+        self.assertEqual(signal.event_index, 7)
+
+    def test_boundary_close_exactly_on_the_neckline_does_not_confirm(self) -> None:
+        # Mutation-check target: flipping the confirm comparison from strictly
+        # greater-than to greater-or-equal would flip this assertion.
+        bars = bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 104.0, 99.0, 104.0)])
+
+        detection = detect_double_extreme_patterns(bars)
+
+        bottoms = [s for s in detection.signals if s.kind is PatternShapeKind.DOUBLE_BOTTOM]
+        self.assertEqual(len(bottoms), 1)
+        self.assertEqual(bottoms[0].status, PatternShapeStatus.FORMING)
+
+    def test_pit_appending_a_future_bar_never_changes_the_confirmed_signal(self) -> None:
+        confirmed_bars = bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 109.0, 99.0, 108.0)])
+        extended_bars = bars_from_ohlc(
+            _DOUBLE_BOTTOM_PREFIX
+            + [(100.0, 109.0, 99.0, 108.0), (108.0, 110.0, 106.0, 109.0)]
+        )
+
+        before = detect_double_extreme_patterns(confirmed_bars)
+        after = detect_double_extreme_patterns(extended_bars)
+
+        before_confirmed = [
+            s
+            for s in before.signals
+            if s.kind is PatternShapeKind.DOUBLE_BOTTOM and s.status == PatternShapeStatus.CONFIRMED
+        ]
+        after_confirmed = [
+            s
+            for s in after.signals
+            if s.kind is PatternShapeKind.DOUBLE_BOTTOM and s.status == PatternShapeStatus.CONFIRMED
+        ]
+        self.assertEqual(len(before_confirmed), 1)
+        self.assertEqual(len(after_confirmed), 1)
+        self.assertEqual(before_confirmed[0], after_confirmed[0])
+
+
+_DOUBLE_TOP_PREFIX = [
+    (95.0, 96.0, 94.0, 95.0),
+    (97.0, 104.0, 96.0, 103.0),  # first peak (high 104)
+    (102.0, 103.0, 97.0, 98.0),
+    (97.0, 98.0, 93.0, 95.0),  # neckline candidate low 93
+    (96.0, 97.0, 95.0, 96.0),
+    (97.0, 103.5, 96.0, 99.0),  # second peak (high 103.5)
+    (98.0, 99.0, 95.0, 97.0),
+]
+
+
+class DoubleTopTests(unittest.TestCase):
+    def test_forming_before_neckline_or_resistance_resolves(self) -> None:
+        bars = bars_from_ohlc(_DOUBLE_TOP_PREFIX)
+
+        detection = detect_double_extreme_patterns(bars)
+
+        tops = [s for s in detection.signals if s.kind is PatternShapeKind.DOUBLE_TOP]
+        self.assertEqual(len(tops), 1)
+        signal = tops[0]
+        self.assertEqual(signal.status, PatternShapeStatus.FORMING)
+        self.assertEqual(signal.direction, Direction.BEARISH)
+        self.assertEqual(signal.name, "双头")
+
+    def test_confirms_on_close_below_the_neckline(self) -> None:
+        bars = bars_from_ohlc(_DOUBLE_TOP_PREFIX + [(96.0, 97.0, 88.0, 90.0)])
+
+        detection = detect_double_extreme_patterns(bars)
+
+        tops = [s for s in detection.signals if s.kind is PatternShapeKind.DOUBLE_TOP]
+        self.assertEqual(len(tops), 1)
+        self.assertEqual(tops[0].status, PatternShapeStatus.CONFIRMED)
+        self.assertEqual(tops[0].invalidation, "收盘升破颈线 93.00")
+
+    def test_invalidated_when_resistance_breaks_before_the_neckline(self) -> None:
+        bars = bars_from_ohlc(_DOUBLE_TOP_PREFIX + [(99.0, 106.0, 98.0, 105.0)])
+
+        detection = detect_double_extreme_patterns(bars)
+
+        tops = [s for s in detection.signals if s.kind is PatternShapeKind.DOUBLE_TOP]
+        self.assertEqual(len(tops), 1)
+        self.assertEqual(tops[0].status, PatternShapeStatus.INVALIDATED)
+
+
+# ---------------------------------------------------------------------------
+# 头肩顶 / 头肩底
+# ---------------------------------------------------------------------------
+
+_HS_TOP_FORMING = [100.0, 105.0, 110.0, 104.0, 108.0, 116.0, 107.0, 103.0, 110.0, 105.0]
+_HS_TOP_CONFIRMED = _HS_TOP_FORMING + [101.0]
+_HS_TOP_INVALIDATED = _HS_TOP_FORMING + [120.0]
+
+
+class HeadAndShouldersTests(unittest.TestCase):
+    def test_below_minimum_window_is_typed_unavailable(self) -> None:
+        detection = detect_head_and_shoulders_patterns(bars_from_closes([100.0] * 4))
+
+        self.assertEqual(detection.quality_status, "unavailable")
+        self.assertEqual(detection.minimum_window, 8)
+
+    def test_top_is_forming_before_neckline_or_head_breaks(self) -> None:
+        detection = detect_head_and_shoulders_patterns(bars_from_closes(_HS_TOP_FORMING))
+
+        tops = [s for s in detection.signals if s.kind is PatternShapeKind.HEAD_SHOULDERS_TOP]
+        self.assertEqual(len(tops), 1)
+        self.assertEqual(tops[0].status, PatternShapeStatus.FORMING)
+        self.assertEqual(tops[0].direction, Direction.BEARISH)
+        self.assertEqual(tops[0].name, "头肩顶")
+
+    def test_top_confirms_on_close_below_the_neckline(self) -> None:
+        detection = detect_head_and_shoulders_patterns(bars_from_closes(_HS_TOP_CONFIRMED))
+
+        tops = [s for s in detection.signals if s.kind is PatternShapeKind.HEAD_SHOULDERS_TOP]
+        self.assertEqual(len(tops), 1)
+        self.assertEqual(tops[0].status, PatternShapeStatus.CONFIRMED)
+        self.assertEqual(tops[0].invalidation, "收盘升破颈线 102.50")
+
+    def test_top_invalidated_when_price_reclaims_the_head(self) -> None:
+        detection = detect_head_and_shoulders_patterns(bars_from_closes(_HS_TOP_INVALIDATED))
+
+        tops = [s for s in detection.signals if s.kind is PatternShapeKind.HEAD_SHOULDERS_TOP]
+        self.assertEqual(len(tops), 1)
+        self.assertEqual(tops[0].status, PatternShapeStatus.INVALIDATED)
+
+    def test_bottom_confirms_on_close_above_the_neckline(self) -> None:
+        closes = [100.0 - (c - 100.0) for c in _HS_TOP_CONFIRMED]
+        detection = detect_head_and_shoulders_patterns(bars_from_closes(closes))
+
+        bottoms = [
+            s for s in detection.signals if s.kind is PatternShapeKind.HEAD_SHOULDERS_BOTTOM
+        ]
+        self.assertEqual(len(bottoms), 1)
+        self.assertEqual(bottoms[0].status, PatternShapeStatus.CONFIRMED)
+        self.assertEqual(bottoms[0].direction, Direction.BULLISH)
+        self.assertEqual(bottoms[0].name, "头肩底")
+
+
+# ---------------------------------------------------------------------------
+# 回踩五日线企稳 (回眸一笑)
+# ---------------------------------------------------------------------------
+
+_MA5_PREFIX = [100.0, 102.0, 104.0, 106.0, 108.0, 110.0, 112.0, 109.0]
+
+
+class Ma5PullbackTests(unittest.TestCase):
+    def test_below_minimum_window_is_typed_unavailable(self) -> None:
+        detection = detect_ma5_pullback_pattern(bars_from_closes([100.0] * 5))
+
+        self.assertEqual(detection.quality_status, "unavailable")
+        self.assertEqual(detection.minimum_window, 8)
+
+    def test_forming_when_touch_has_not_yet_resolved(self) -> None:
+        detection = detect_ma5_pullback_pattern(bars_from_closes(_MA5_PREFIX))
+
+        self.assertEqual(len(detection.signals), 1)
+        signal = detection.signals[0]
+        self.assertEqual(signal.kind, PatternShapeKind.MA5_PULLBACK)
+        self.assertEqual(signal.status, PatternShapeStatus.FORMING)
+        self.assertEqual(signal.direction, Direction.BULLISH)
+        self.assertEqual(signal.anchor.index, 7)
+
+    def test_forming_invalidation_copy_describes_the_daily_rule(self) -> None:
+        # The machine checks each later bar's close against that bar's OWN
+        # MA5 * 98% -- the threshold moves with the average every day. The
+        # served copy must state that rule, not quote a number frozen at the
+        # touch bar that the detector will never actually compare against.
+        detection = detect_ma5_pullback_pattern(bars_from_closes(_MA5_PREFIX))
+
+        self.assertEqual(len(detection.signals), 1)
+        signal = detection.signals[0]
+        self.assertEqual(signal.status, PatternShapeStatus.FORMING)
+        self.assertEqual(
+            signal.invalidation,
+            "收盘跌破当日五日线的 98%（门槛逐日随五日线变化）视为企稳失败",
+        )
+
+    def test_confirms_on_a_close_back_above_a_rising_ma5(self) -> None:
+        detection = detect_ma5_pullback_pattern(bars_from_closes(_MA5_PREFIX + [113.0]))
+
+        self.assertEqual(len(detection.signals), 1)
+        signal = detection.signals[0]
+        self.assertEqual(signal.status, PatternShapeStatus.CONFIRMED)
+        self.assertEqual(signal.event_index, 8)
+
+    def test_invalidated_on_a_clean_breakdown_through_ma5(self) -> None:
+        detection = detect_ma5_pullback_pattern(bars_from_closes(_MA5_PREFIX + [100.0]))
+
+        self.assertEqual(len(detection.signals), 1)
+        signal = detection.signals[0]
+        self.assertEqual(signal.status, PatternShapeStatus.INVALIDATED)
+        self.assertEqual(signal.event_index, 8)
+
+
+# ---------------------------------------------------------------------------
+# Replay immutability -- the 2026-08-16 re-review probes. Recomputing over a
+# longer history must never erase or mutate an episode that had already
+# resolved: the module docstring promises byte-for-byte reproduction, and the
+# single-forming-slot + global-cursor scan broke that promise whenever a
+# later-resolving candidate consumed an earlier-confirmed one's history.
+# ---------------------------------------------------------------------------
+
+# Reviewer probe 1 (double extremes): overlapping trough pairs (1,4) and
+# (4,7). Replayed at bar 8, pair (4,7) is a confirmed W底 (neckline 95,
+# anchor 7). Over the full history pair (1,4) resolves later (bar 10,
+# neckline 110, anchor 4) -- the old cursor then jumped past first=4 and the
+# already-confirmed@8 episode vanished from the full-history output.
+_OVERLAPPING_TROUGH_ROWS = [
+    (100.0, 101.0, 95.0, 100.0),
+    (96.0, 97.0, 90.0, 92.0),  # first trough of pair A (low 90)
+    (93.0, 105.0, 92.0, 104.0),
+    (105.0, 110.0, 100.0, 103.0),  # pair A neckline high 110
+    (95.0, 96.0, 88.0, 90.0),  # shared trough: second of A, first of B (low 88)
+    (91.0, 95.0, 90.0, 94.0),  # pair B neckline high 95
+    (93.0, 94.0, 90.5, 92.0),
+    (90.0, 91.0, 89.0, 90.0),  # second trough of pair B (low 89)
+    (92.0, 97.0, 91.0, 96.0),  # close 96 > 95: pair B confirms at bar 8
+    (97.0, 101.0, 95.0, 100.0),
+    (102.0, 113.0, 101.0, 112.0),  # close 112 > 110: pair A confirms at bar 10
+]
+
+# Reviewer probe 2 (head and shoulders, same scan structure): a first
+# head-and-shoulders top (peaks 1/3/5, neckline 102.5) stays unresolved while
+# a second one (peaks 7/9/11, neckline 104.5) forms and confirms at bar 12.
+# The first finally confirms at bar 13 -- the old cursor then swallowed the
+# already-confirmed@12 episode on the full-history recompute.
+_OVERLAPPING_HS_CLOSES = [
+    100.0,
+    110.0,  # left shoulder of T1
+    104.0,
+    116.0,  # head of T1
+    103.0,
+    111.0,  # right shoulder of T1
+    106.0,
+    110.0,  # left shoulder of T2
+    105.0,
+    115.0,  # head of T2
+    106.0,
+    110.5,  # right shoulder of T2
+    104.0,  # close < 104.5: T2 confirms at bar 12 (T1 still unresolved)
+    102.0,  # close < 102.5: T1 confirms at bar 13
+]
+
+# Reviewer probe 3 (回踩五日线): a touch at bar 7 confirms at bar 8; a second
+# qualifying touch at bar 12 then re-anchored touch_index and erased the
+# CONFIRMED@8 episode into a forming@12 read on the full-history recompute.
+_MA5_TWO_EPISODE_CLOSES = [
+    100.0,
+    102.0,
+    104.0,
+    106.0,
+    108.0,
+    110.0,
+    112.0,
+    109.0,  # touch: MA5 109, rising, close below previous close
+    113.0,  # confirms episode one at bar 8
+    115.0,
+    117.0,
+    119.0,
+    116.0,  # touch: MA5 116, rising -- a second, still-forming episode
+]
+
+
+class DoubleExtremeReplayTests(unittest.TestCase):
+    def test_a_confirmed_w_bottom_survives_the_full_history_recompute(self) -> None:
+        bars = bars_from_ohlc(_OVERLAPPING_TROUGH_ROWS)
+
+        replay = detect_double_extreme_patterns(bars[:9])
+        confirmed = [
+            s
+            for s in replay.signals
+            if s.kind is PatternShapeKind.DOUBLE_BOTTOM
+            and s.status is PatternShapeStatus.CONFIRMED
+        ]
+        self.assertEqual(len(confirmed), 1)
+        signal = confirmed[0]
+        self.assertEqual(signal.event_index, 8)
+        self.assertEqual(signal.anchor.index, 7)
+        self.assertIn("95.00", signal.invalidation)
+
+        full = detect_double_extreme_patterns(bars)
+
+        self.assertIn(signal, full.signals)
+
+    def test_the_overlapping_pair_still_resolves_in_the_full_history(self) -> None:
+        full = detect_double_extreme_patterns(bars_from_ohlc(_OVERLAPPING_TROUGH_ROWS))
+
+        confirmed = {
+            s.event_index: s
+            for s in full.signals
+            if s.kind is PatternShapeKind.DOUBLE_BOTTOM
+            and s.status is PatternShapeStatus.CONFIRMED
+        }
+        self.assertIn(10, confirmed)
+        self.assertEqual(confirmed[10].anchor.index, 4)
+        self.assertIn("110.00", confirmed[10].invalidation)
+
+
+class HeadAndShouldersReplayTests(unittest.TestCase):
+    def test_a_confirmed_top_survives_the_full_history_recompute(self) -> None:
+        bars = bars_from_closes(_OVERLAPPING_HS_CLOSES)
+
+        replay = detect_head_and_shoulders_patterns(bars[:13])
+        confirmed = [
+            s
+            for s in replay.signals
+            if s.kind is PatternShapeKind.HEAD_SHOULDERS_TOP
+            and s.status is PatternShapeStatus.CONFIRMED
+        ]
+        self.assertEqual(len(confirmed), 1)
+        signal = confirmed[0]
+        self.assertEqual(signal.event_index, 12)
+        self.assertEqual(signal.anchor.index, 9)
+        self.assertIn("104.50", signal.invalidation)
+
+        full = detect_head_and_shoulders_patterns(bars)
+
+        self.assertIn(signal, full.signals)
+
+    def test_the_earlier_structure_still_resolves_in_the_full_history(self) -> None:
+        full = detect_head_and_shoulders_patterns(
+            bars_from_closes(_OVERLAPPING_HS_CLOSES)
+        )
+
+        confirmed = {
+            s.event_index: s
+            for s in full.signals
+            if s.kind is PatternShapeKind.HEAD_SHOULDERS_TOP
+            and s.status is PatternShapeStatus.CONFIRMED
+        }
+        self.assertIn(13, confirmed)
+        self.assertEqual(confirmed[13].anchor.index, 3)
+        self.assertIn("102.50", confirmed[13].invalidation)
+
+
+class Ma5PullbackReplayTests(unittest.TestCase):
+    def test_a_confirmed_episode_survives_a_later_qualifying_touch(self) -> None:
+        bars = bars_from_closes(_MA5_TWO_EPISODE_CLOSES)
+
+        replay = detect_ma5_pullback_pattern(bars[:9])
+        confirmed = [
+            s
+            for s in replay.signals
+            if s.status is PatternShapeStatus.CONFIRMED
+        ]
+        self.assertEqual(len(confirmed), 1)
+        signal = confirmed[0]
+        self.assertEqual(signal.event_index, 8)
+        self.assertEqual(signal.anchor.index, 7)
+
+        full = detect_ma5_pullback_pattern(bars)
+
+        self.assertIn(signal, full.signals)
+
+    def test_the_later_touch_is_its_own_forming_episode(self) -> None:
+        full = detect_ma5_pullback_pattern(bars_from_closes(_MA5_TWO_EPISODE_CLOSES))
+
+        forming = [
+            s for s in full.signals if s.status is PatternShapeStatus.FORMING
+        ]
+        self.assertEqual(len(forming), 1)
+        self.assertEqual(forming[0].anchor.index, 12)
+
+
+class ReplayInvariantPropertyTests(unittest.TestCase):
+    """The pinned invariant: for every prefix length k, detect(bars[:k])
+    restricted to signals resolved at index < k equals exactly those signals
+    in detect(bars). A full-history recompute never erases or mutates an
+    already-resolved signal."""
+
+    def assert_replay_invariant(self, detector, bars) -> None:
+        full = detector(bars)
+        full_resolved = {
+            s
+            for s in (full.signals if full.quality_status == "live" else ())
+            if s.status is not PatternShapeStatus.FORMING
+        }
+        for k in range(1, len(bars) + 1):
+            prefix = detector(bars[:k])
+            prefix_resolved = {
+                s
+                for s in (prefix.signals if prefix.quality_status == "live" else ())
+                if s.status is not PatternShapeStatus.FORMING
+            }
+            expected = {s for s in full_resolved if s.event_index < k}
+            self.assertEqual(
+                prefix_resolved, expected, f"replay diverges at prefix length {k}"
+            )
+
+    def test_double_extremes_hold_the_invariant_on_the_probe_series(self) -> None:
+        self.assert_replay_invariant(
+            detect_double_extreme_patterns, bars_from_ohlc(_OVERLAPPING_TROUGH_ROWS)
+        )
+
+    def test_double_extremes_hold_the_invariant_on_the_simple_series(self) -> None:
+        self.assert_replay_invariant(
+            detect_double_extreme_patterns,
+            bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 109.0, 99.0, 108.0)]),
+        )
+
+    def test_head_and_shoulders_hold_the_invariant_on_the_probe_series(self) -> None:
+        self.assert_replay_invariant(
+            detect_head_and_shoulders_patterns,
+            bars_from_closes(_OVERLAPPING_HS_CLOSES),
+        )
+
+    def test_ma5_pullback_holds_the_invariant_on_the_probe_series(self) -> None:
+        self.assert_replay_invariant(
+            detect_ma5_pullback_pattern, bars_from_closes(_MA5_TWO_EPISODE_CLOSES)
+        )
+
+    def test_fractals_hold_the_invariant(self) -> None:
+        self.assert_replay_invariant(
+            detect_fractal_patterns, bars_from_ohlc(_OVERLAPPING_TROUGH_ROWS)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Aggregate entry point, PIT, and plain-language reading copy
+# ---------------------------------------------------------------------------
+
+
+class DetectPatternShapesTests(unittest.TestCase):
+    def test_runs_every_detector_and_tags_the_shared_version(self) -> None:
+        detections = detect_pattern_shapes(bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX))
+
+        detectors = {d.detector for d in detections}
+        self.assertEqual(
+            detectors, {"fractal", "double_extreme", "head_and_shoulders", "ma5_pullback"}
+        )
+        for detection in detections:
+            self.assertEqual(detection.algorithm_version, PATTERNS_SHAPES_VERSION)
+
+    def test_pit_no_lookahead_prefix_matches_a_truncated_recompute(self) -> None:
+        full_bars = bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 109.0, 99.0, 108.0)])
+        prefix_bars = full_bars[:7]
+
+        prefix_result = detect_double_extreme_patterns(prefix_bars)
+        full_result = detect_double_extreme_patterns(full_bars)
+
+        prefix_forming = [
+            s
+            for s in prefix_result.signals
+            if s.kind is PatternShapeKind.DOUBLE_BOTTOM
+        ]
+        full_confirmed = [
+            s
+            for s in full_result.signals
+            if s.kind is PatternShapeKind.DOUBLE_BOTTOM
+            and s.status == PatternShapeStatus.CONFIRMED
+        ]
+        # Truncated at bar 7 (before the neckline break is knowable), the read
+        # is honestly "forming" -- it must not have leaked the future close.
+        self.assertEqual(prefix_forming[0].status, PatternShapeStatus.FORMING)
+        self.assertEqual(len(full_confirmed), 1)
+
+
+class SignalBannedVerbGuardTests(unittest.TestCase):
+    """白话不喊单 at construction time, mirroring plain_language.PlainReading.
+
+    The copy-table sweep only covers PATTERN_SHAPE_READING_COPY; the
+    invalidation and explanation strings are f-string-built per signal, so a
+    banned action verb reaching any served text field must refuse to
+    construct rather than depend on a test happening to sweep that string.
+    """
+
+    def _confirmed_signal(self):
+        detection = detect_double_extreme_patterns(
+            bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 109.0, 99.0, 108.0)])
+        )
+        return detection.signals[0]
+
+    def test_a_banned_verb_in_any_served_text_field_is_rejected(self) -> None:
+        signal = self._confirmed_signal()
+        for field_name in (
+            "reading_summary",
+            "reading_detail",
+            "reading_honesty",
+            "invalidation",
+            "explanation",
+        ):
+            for verb in _BANNED_VERBS:
+                with self.subTest(field=field_name, verb=verb):
+                    with self.assertRaises(ValueError):
+                        replace(signal, **{field_name: f"形态确认后{verb}"})
+
+    def test_the_guard_names_the_field_and_the_verb(self) -> None:
+        signal = self._confirmed_signal()
+
+        with self.assertRaisesRegex(ValueError, "invalidation.*买入"):
+            replace(signal, invalidation="跌破颈线 104.00 前买入无效")
+
+    def test_the_real_detectors_still_construct_their_signals(self) -> None:
+        # The guard must reject injected instructions, not the reviewed copy
+        # the detectors actually build.
+        self.assertEqual(self._confirmed_signal().status, PatternShapeStatus.CONFIRMED)
+
+
+class ReadingCopyCompletenessTests(unittest.TestCase):
+    def test_every_reachable_state_has_reading_copy(self) -> None:
+        for state in REACHABLE_PATTERN_SHAPE_STATES:
+            self.assertIn(state, PATTERN_SHAPE_READING_COPY)
+
+    def test_no_reading_copy_uses_a_banned_action_verb(self) -> None:
+        for (kind, status), (summary, detail) in PATTERN_SHAPE_READING_COPY.items():
+            for verb in _BANNED_VERBS:
+                self.assertNotIn(
+                    verb, summary, f"{kind}/{status} summary used banned verb {verb}"
+                )
+                self.assertNotIn(
+                    verb, detail, f"{kind}/{status} detail used banned verb {verb}"
+                )
+
+    def test_every_reading_carries_the_backtest_honesty_line(self) -> None:
+        bars = bars_from_ohlc(_DOUBLE_BOTTOM_PREFIX + [(100.0, 109.0, 99.0, 108.0)])
+        detection = detect_double_extreme_patterns(bars)
+        for signal in detection.signals:
+            self.assertEqual(signal.reading_honesty, "历史胜率待回测")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2,6 +2,7 @@ import type {
   Candle,
   ForecastSnapshot,
   ParticipationBar,
+  PatternShapeSignal,
 } from "./models";
 
 export type CandleGeometry = {
@@ -296,18 +297,47 @@ const followsLatest = (window: ChartWindow) =>
   window.offset + window.size >= window.total;
 
 /**
+ * What a parked window needs to survive a refresh that isn't simple growth.
+ *
+ * `timestamp` is the bar that sat at the window's own `offset` the last time
+ * it was resolved, from whatever series it was resolved against then —
+ * `null` when no such bar is known (an empty series, say). `timestamps` is
+ * the new series' point-in-time order, oldest first, the same order `offset`
+ * is counted against; {@link decidedCandleTimestamps} builds exactly this
+ * from a candle list and a decision cutoff.
+ */
+export type ChartWindowAnchor = {
+  timestamp: string | null;
+  timestamps: readonly string[];
+};
+
+/**
  * Moves a window measured against one series length onto another.
  *
  * A window whose right edge was on the last bar belongs to a reader standing
- * at the live edge, so it keeps ending on the last bar as new ones close.
- * A window parked in history keeps the bars it was showing, because dragging
- * back to a particular hour is a request for that hour, not for whatever is
- * newest. Bars only ever arrive at the newest end of a point-in-time series,
- * which is what makes the second case a plain offset again.
+ * at the live edge, so it keeps ending on the last bar as new ones close —
+ * this holds regardless of `anchor`, and is checked first.
+ *
+ * A window parked in history keeps the bars it was showing. For a series
+ * that only ever grows at the newest end, the bars already in it never move,
+ * so the bare offset above still names them after growth alone — which is
+ * all `anchor` omitted does. A series the server publishes as a fixed-count
+ * window instead ("last 300 bars") rolls: it drops its oldest bars as new
+ * ones close, which shifts every offset behind the drop even though `total`
+ * itself does not change, the one case a bare offset cannot tell apart from
+ * not having moved at all. `anchor`, when given, relocates the bar the
+ * window was last anchored on in the new series' own order and re-offsets to
+ * it, which keeps the same bars on screen through either kind of refresh
+ * instead of a slice quietly shifted by however many rolled off the front.
+ * If that bar is gone entirely — rolled off past the window's own offset —
+ * there is nothing honest left to anchor on, so the window parks on the
+ * oldest bar the new series still has rather than keeping a stale offset
+ * against a series it no longer describes.
  */
 export function reanchorChartWindow(
   window: ChartWindow,
   total: number,
+  anchor?: ChartWindowAnchor | null,
 ): ChartWindow {
   // A window can only have been measured against a series it fits inside, so a
   // recorded total shorter than the window itself is not one; its own extent
@@ -319,12 +349,20 @@ export function reanchorChartWindow(
       wholeBars(window.offset) + wholeBars(window.size),
     ),
   );
-  return clampChartWindow(
-    followsLatest(previous)
-      ? { size: previous.size, offset: wholeBars(total) - previous.size }
-      : previous,
-    total,
-  );
+  if (followsLatest(previous)) {
+    return clampChartWindow(
+      { size: previous.size, offset: wholeBars(total) - previous.size },
+      total,
+    );
+  }
+  if (anchor && anchor.timestamp !== null) {
+    const located = anchor.timestamps.indexOf(anchor.timestamp);
+    return clampChartWindow(
+      { size: previous.size, offset: located === -1 ? 0 : located },
+      total,
+    );
+  }
+  return clampChartWindow(previous, total);
 }
 
 /**
@@ -596,8 +634,57 @@ const bandPath = (
   return `${linePath(upper)} ${lower.map((point) => `L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ")} Z`;
 };
 
+/**
+ * A best-effort chart width from the viewport alone, before the chart's own
+ * Pressable has actually been laid out.
+ *
+ * The chrome subtracted here is only ever an estimate: the card and screen
+ * padding it approximates live in component styles that can change without
+ * this function following, which is exactly how it went stale once already.
+ * Hit-testing does not lean on this number's precision — once the Pressable
+ * has measured itself, {@link alignTouchXToViewBox} reconciles whatever gap
+ * is left between this guess and the real layout.
+ */
 export const resolveChartWidth = (viewportWidth: number) =>
   Math.min(Math.max(viewportWidth - 56, 304), 1_180);
+
+/**
+ * Maps an x from the Pressable's own layout frame into the SVG viewBox's
+ * coordinate system.
+ *
+ * The canvas is told to render at `renderedWidth` (`width="100%"` of its
+ * Pressable) while its content is authored at `chartWidth` (the viewBox).
+ * Whenever those two widths differ — {@link resolveChartWidth}'s guess
+ * drifting from the card's actual padding, a phone too narrow for the
+ * readable-bar floor to fit — `preserveAspectRatio`'s default `xMidYMid meet`
+ * scales and centres the drawing to reconcile them. A caller comparing a raw
+ * touch x straight against viewBox-space candle positions is comparing across
+ * that reconciliation as if it never happened; this undoes exactly the scale
+ * and offset `meet` applied, so a touch lands on the candle under the finger
+ * regardless of how — or why — the two widths came to differ.
+ */
+export function alignTouchXToViewBox({
+  x,
+  renderedWidth,
+  chartWidth,
+}: {
+  /** The touch's x in the Pressable's own layout frame, e.g. `locationX`. */
+  x: number;
+  /** The Pressable's actual measured width, from its `onLayout`. */
+  renderedWidth: number;
+  /** The viewBox width geometry was built at. */
+  chartWidth: number;
+}): number {
+  if (!(renderedWidth > 0) || !(chartWidth > 0) || !Number.isFinite(x)) {
+    return x;
+  }
+  // Equal declared and rendered heights mean "meet" only ever scales by the
+  // width ratio, and never past 1: a wider Pressable is letterboxed (scale 1,
+  // centred), a narrower one is downscaled to fit (no residual letterboxing).
+  const scale = Math.min(renderedWidth / chartWidth, 1);
+  const offset = (renderedWidth - chartWidth * scale) / 2;
+  return (x - offset) / scale;
+}
 
 export function findNearestByX<T extends { x: number }>(
   points: T[],
@@ -618,6 +705,52 @@ const finiteAt = (values: readonly (number | null)[] | undefined, index: number)
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 };
 
+/**
+ * The point-in-time bars a chart window's `offset` is counted against: only
+ * complete candles the decision cutoff had already seen, oldest first. Every
+ * series the server sent is indexed against the candle list it came with, so
+ * the source index travels along rather than being re-derived — re-indexing
+ * after the fact would silently shift an indicator onto the wrong candle.
+ */
+function decidedEntries(
+  candles: readonly Candle[],
+  decisionCutoff: string,
+): { candle: Candle; sourceIndex: number }[] {
+  const decisionTime = Date.parse(decisionCutoff);
+  if (!Number.isFinite(decisionTime)) return [];
+  return candles
+    .map((candle, sourceIndex) => ({ candle, sourceIndex }))
+    .filter(({ candle }) => {
+      const availableAt = Date.parse(candle.availableAt);
+      return (
+        candle.complete &&
+        Number.isFinite(availableAt) &&
+        availableAt <= decisionTime
+      );
+    })
+    .sort(
+      (left, right) =>
+        Date.parse(left.candle.timestamp) - Date.parse(right.candle.timestamp),
+    );
+}
+
+/**
+ * The point-in-time order a {@link ChartWindow}'s `offset` is counted
+ * against — exactly the series {@link buildChartGeometry} itself decides
+ * from, exposed so a caller holding a window across a refresh (a poll that
+ * replaces the candle list without the symbol or interval changing) can
+ * locate the bar it was anchored on and hand {@link reanchorChartWindow} a
+ * {@link ChartWindowAnchor} instead of a bare offset that cannot tell a
+ * fixed-count series rolling its oldest bars off from one that has not moved
+ * at all.
+ */
+export function decidedCandleTimestamps(
+  candles: readonly Candle[],
+  decisionCutoff: string,
+): string[] {
+  return decidedEntries(candles, decisionCutoff).map(({ candle }) => candle.timestamp);
+}
+
 export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
   const {
     candles,
@@ -634,27 +767,7 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
   } = input;
 
   const decisionTime = Date.parse(decisionCutoff);
-  const hasValidCutoff = Number.isFinite(decisionTime);
-  // Every series the server sent is indexed against the candle list it came
-  // with, so the source index travels with the bar through the point-in-time
-  // filter and the visible window. Re-indexing after the fact would silently
-  // shift an indicator onto the wrong candle.
-  const decided = hasValidCutoff
-    ? candles
-        .map((candle, sourceIndex) => ({ candle, sourceIndex }))
-        .filter(({ candle }) => {
-          const availableAt = Date.parse(candle.availableAt);
-          return (
-            candle.complete &&
-            Number.isFinite(availableAt) &&
-            availableAt <= decisionTime
-          );
-        })
-        .sort(
-          (left, right) =>
-            Date.parse(left.candle.timestamp) - Date.parse(right.candle.timestamp),
-        )
-    : [];
+  const decided = decidedEntries(candles, decisionCutoff);
   const publishedForecast = forecast?.points ?? [];
   const totalBars = decided.length;
   // Every bar stays in memory to be dragged back into view; only the window is
@@ -986,4 +1099,41 @@ export function buildChartGeometry(input: ChartGeometryInput): ChartGeometry {
     priceMax,
     priceTicks,
   };
+}
+
+/**
+ * Chart markers a reader can still glance at once: each 形态 kind (fractals
+ * especially, which the detector fires on almost every third bar by
+ * construction) keeps only its `limit` most recent instances, ranked by
+ * `eventIndex` -- the bar index a signal's status became true at, in the
+ * same completed-candle numbering every detector shares, so it sorts
+ * unambiguously within a kind. This mirrors how Magic Nine's own bounded
+ * (non-series) marker set never draws more than the developing sequence
+ * plus its last completed one -- a handful of recent anchors, not the full
+ * historical detection log. That log stays complete and undropped in
+ * PatternHintsCard; this only bounds what gets drawn on the canvas.
+ *
+ * Order is otherwise left as given, so a caller that zips this back against
+ * its own index-keyed data sees a stable, input-relative ordering.
+ */
+export function recentPatternSignalsPerKind(
+  signals: PatternShapeSignal[],
+  limit: number,
+): PatternShapeSignal[] {
+  const byKind = new Map<PatternShapeSignal["kind"], PatternShapeSignal[]>();
+  for (const signal of signals) {
+    const group = byKind.get(signal.kind);
+    if (group) group.push(signal);
+    else byKind.set(signal.kind, [signal]);
+  }
+
+  const kept = new Set<PatternShapeSignal>();
+  for (const group of byKind.values()) {
+    const mostRecent = [...group]
+      .sort((a, b) => b.eventIndex - a.eventIndex)
+      .slice(0, Math.max(limit, 0));
+    for (const signal of mostRecent) kept.add(signal);
+  }
+
+  return signals.filter((signal) => kept.has(signal));
 }

@@ -18,18 +18,20 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .device_gate import MAX_PAIRING_BODY_BYTES, DeviceGate, rate_limit_identity
+from .market_brief import MarketBriefService, MarketBriefUniverse
 from .service import AnalysisService, InvalidRequest
 
 
 PAIRING_PATH = "/v1/device-pairings"
-_READ_PATHS = {"/health", "/decision"}
+MARKET_BRIEF_PATH = "/market-brief"
+_READ_PATHS = {"/health", "/decision", MARKET_BRIEF_PATH}
 # What the deployment must expose, read and write together. The edge allowlist
 # is tied to this set by a test in deploy/tests.
 _PATHS = _READ_PATHS | {PAIRING_PATH}
@@ -44,6 +46,13 @@ _HEADERS = {
 class AnalysisApplication:
     service: AnalysisService
     clock: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc)
+    # Built with the inert, "nothing configured" default so every existing
+    # caller that never mentions this keeps deterministic behaviour (breadth
+    # and sector-RS both report "not configured" rather than reading real
+    # process environment). Production wires a real one in explicitly via
+    # `build_server`'s own default, which does read the environment, exactly
+    # once, at startup.
+    market_brief_universe: MarketBriefUniverse = field(default_factory=MarketBriefUniverse)
 
     def handle(
         self,
@@ -70,6 +79,22 @@ class AnalysisApplication:
                 "status": "ready",
                 "asOf": _iso(self.clock()),
             }
+        if path == MARKET_BRIEF_PATH:
+            # Reads through the same AnalysisService a decision uses, and
+            # therefore the same shared evidence provider and collector — a
+            # repeated brief request never stands up a second collector for
+            # the poll coordinator to throttle separately from a decision's.
+            try:
+                return 200, headers, MarketBriefService(
+                    self.service, self.market_brief_universe
+                ).market_brief()
+            except Exception:
+                # Provider failures can carry credentials in their text;
+                # replace the message rather than forwarding it, exactly as
+                # the decision branch below does.
+                return 500, headers, _error(
+                    "ANALYSIS_FAILED", "The market brief could not be composed"
+                )
 
         try:
             symbol = _one(query, "symbol")
@@ -192,9 +217,18 @@ def build_server(
     config: AnalysisServerConfig | None = None,
     *,
     gate: DeviceGate | None = None,
+    market_brief_universe: MarketBriefUniverse | None = None,
 ) -> ThreadingHTTPServer:
     resolved = config or AnalysisServerConfig.from_environment()
-    application = AnalysisApplication(service)
+    # Defaults to the same inert "nothing configured" instance
+    # `AnalysisApplication` itself defaults to — this call site never reads
+    # the environment on its own. A deployment that wants breadth/sector-RS
+    # sourced from real configuration passes one explicitly (see
+    # `__main__.py`, which builds it from `MarketBriefUniverseConfig.
+    # from_environment()` alongside every other environment-driven provider).
+    application = AnalysisApplication(
+        service, market_brief_universe=market_brief_universe or MarketBriefUniverse()
+    )
     # Opened once, at startup, so a database this service cannot read stops the
     # deployment instead of surfacing as a refusal on the first phone's first
     # request. Every call afterwards opens its own connection, which is what

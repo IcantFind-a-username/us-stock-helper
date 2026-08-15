@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
 
-from information_layer import ClaimStatus
+from information_layer import CikTickerRegistry, ClaimStatus
 from information_layer.feeds import (
     FeedAccessError,
     GenericFeedAdapter,
@@ -25,6 +26,12 @@ from information_layer.feeds.registry import (
 
 
 CONTACT = "ops@example.test"
+
+
+def cik_registry() -> CikTickerRegistry:
+    return CikTickerRegistry.from_sec_payload(
+        json.dumps({"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple"}})
+    )
 
 
 class NullTransport:
@@ -219,12 +226,31 @@ class AdapterBuildTests(unittest.TestCase):
 
         self.assertEqual([item.adapter_id for item in adapters], ["example-official"])
 
+    def test_sec_sources_refuse_to_build_without_a_cik_registry(self) -> None:
+        # A filing without registry attribution never reaches any symbol's
+        # decision (its symbol_relevance is empty, so the scope filter drops
+        # it), and that happened silently in production because nothing
+        # stopped this construction from succeeding. Building the real public
+        # source set has to be impossible without a registry, not just
+        # degraded.
+        with self.assertRaises(FeedAccessError) as failure:
+            build_adapters(
+                transport=NullTransport(),
+                contact_email=CONTACT,
+            )
+
+        message = str(failure.exception)
+        self.assertIn("cik", message.lower())
+        self.assertIn("sec-current-8-k", message)
+        self.assertIn("sec-current-4", message)
+
     def test_every_declared_source_becomes_an_adapter_carrying_its_terms(
         self,
     ) -> None:
         adapters = build_adapters(
             transport=NullTransport(),
             contact_email=CONTACT,
+            cik_registry=cik_registry(),
         )
 
         by_id = {adapter.adapter_id: adapter for adapter in adapters}
@@ -247,6 +273,7 @@ class AdapterBuildTests(unittest.TestCase):
         adapters = build_adapters(
             transport=NullTransport(),
             contact_email=CONTACT,
+            cik_registry=cik_registry(),
         )
 
         filings = [
@@ -258,6 +285,7 @@ class AdapterBuildTests(unittest.TestCase):
         for adapter in filings:
             with self.subTest(adapter=adapter.adapter_id):
                 self.assertEqual(adapter.config.allowed_hosts, ("www.sec.gov",))
+                self.assertIsNotNone(adapter.cik_registry)
 
 
 if __name__ == "__main__":

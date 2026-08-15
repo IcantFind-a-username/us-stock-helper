@@ -26,3 +26,13 @@ jest.mock("expo-secure-store", () => {
     }),
   };
 });
+
+// The library's own SafeAreaProvider only resolves insets from a real native
+// event, which never fires under Jest — any tree that calls useSafeAreaInsets
+// without this would hang with insets stuck at null and throw. The package's
+// own jest mock resolves synchronously to a zero-inset default instead, and
+// leaves SafeAreaView itself untouched. A test after a specific device's
+// insets overrides this locally with its own jest.mock of the same module.
+jest.mock("react-native-safe-area-context", () =>
+  require("react-native-safe-area-context/jest/mock").default,
+);

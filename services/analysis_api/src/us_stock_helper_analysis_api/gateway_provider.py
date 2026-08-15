@@ -23,10 +23,17 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
 
-from us_stock_helper_core import OHLCVBar
+from us_stock_helper_core import (
+    CapitalFlowPoint,
+    OHLCVBar,
+    ParticipationBar,
+    build_participation_bars,
+)
 
 
 CANDLES_PATH = "/candles"
+WATCHLIST_PATH = "/watchlist"
+SNAPSHOT_PATH = "/v3/stock-snapshot"
 _INTERVALS = {
     "1m": timedelta(minutes=1),
     "5m": timedelta(minutes=5),
@@ -41,9 +48,78 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 # exists so a peer that never stops writing cannot exhaust this process.
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
+# The institutional-flow factor only ever reads the most recently completed
+# order-size participation bar. A short intraday window is enough to build
+# it — an hour of 5-minute candles plus the minute-level flow points that
+# cover them — without pulling a whole session's worth of payload for a
+# reading that discards everything but the newest bar.
+_PARTICIPATION_INTERVAL = "5m"
+_PARTICIPATION_COUNT = 12
+_HOLDINGS_SOURCE = "moomoo-delayed-institutional-disclosure"
+
 
 class MarketGatewayUnavailable(RuntimeError):
     """The gateway did not supply candles that can be trusted at a cutoff."""
+
+
+@dataclass(frozen=True, slots=True)
+class HoldingsDisclosure:
+    """One dated institutional-holdings disclosure row, already PIT-checked.
+
+    ``reported_at`` is the reporting-period end the row describes;
+    ``available_at`` is when the disclosure became public (its filing lag
+    already applied upstream by the market gateway). Only rows whose
+    ``available_at`` is at or before the requested cutoff ever reach here —
+    see ``MarketGatewayProvider._holdings``.
+    """
+
+    reported_at: datetime
+    available_at: datetime
+    institution_count_change: int
+    holding_percent: float
+    holding_percent_change: float
+
+
+@dataclass(frozen=True, slots=True)
+class SectionFailure:
+    """A v3 snapshot section the gateway itself declared unavailable.
+
+    Distinct from a genuinely empty section: a section the gateway reports as
+    ``live``/``delayed`` and ``validated`` with zero rows is quiet, not
+    broken, and carries no ``SectionFailure`` at all. This is only ever
+    populated when the section's own ``availabilityStatus`` says otherwise
+    (``unavailable``, ``stale``, ...) — the gateway's own admission that the
+    section could not be read, which the caller must not silently read the
+    same way as "nothing to report".
+
+    ``status`` is that raw ``availabilityStatus`` string; ``reason`` is the
+    gateway's own stated reason when it gave one.
+    """
+
+    status: str
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class InstitutionalFlowInputs:
+    """The two honest ingredients of the institutional-capital factor.
+
+    Either tuple may be empty: a symbol can have no live intraday flow (thin
+    trading, a session with no completed candle yet) or no holdings
+    disclosure on file, and it is the caller's job to decide what an empty
+    ingredient means — this boundary never invents a placeholder for it.
+
+    ``flow_section_failure``/``holdings_section_failure`` carry *why* the
+    corresponding tuple came back empty when the gateway itself declared the
+    section unavailable, as opposed to a genuinely empty but healthy section
+    — see ``SectionFailure``. Both default to ``None`` (no declared failure),
+    which is also what a healthy-but-empty section leaves them as.
+    """
+
+    participation_bars: tuple[ParticipationBar, ...]
+    holdings: tuple[HoldingsDisclosure, ...]
+    flow_section_failure: SectionFailure | None = None
+    holdings_section_failure: SectionFailure | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +170,255 @@ class MarketGatewayProvider:
                     "the gateway candle series is out of order"
                 )
         return bars
+
+    def watchlist_symbols(self) -> tuple[str, ...]:
+        """The operator's own watchlist, as plain US symbols, in gateway order.
+
+        This is the market-brief's default breadth universe when no explicit
+        `ANALYSIS_API_BREADTH_UNIVERSE` is configured — never a claim of
+        full-market coverage, only ever the caller's own selection. A gateway
+        that cannot answer this (offline, malformed, an empty watchlist) is
+        the caller's cue to leave breadth unavailable, not a reason for this
+        method to invent a universe.
+        """
+
+        payload = self._read_json(f"{self.base_url}{WATCHLIST_PATH}")
+        if payload.get("schemaVersion") != "1":
+            raise MarketGatewayUnavailable(
+                "the market gateway returned an unsupported watchlist contract"
+            )
+        if payload.get("source") != "moomoo":
+            raise MarketGatewayUnavailable(
+                "the market gateway returned an unknown watchlist source"
+            )
+        if payload.get("session") != "healthy":
+            failure = payload.get("error")
+            code = failure.get("code") if isinstance(failure, dict) else None
+            raise MarketGatewayUnavailable(
+                f"the market gateway reported {code or 'an error'}"
+            )
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise MarketGatewayUnavailable(
+                "the market gateway watchlist carries no items"
+            )
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise MarketGatewayUnavailable("a watchlist item is malformed")
+            code = item.get("code")
+            if not isinstance(code, str) or not code.strip():
+                raise MarketGatewayUnavailable(
+                    "a watchlist item is missing its code"
+                )
+            symbol = code.strip().upper()
+            if symbol.startswith("US."):
+                symbol = symbol[3:]
+            if symbol and symbol not in seen:
+                seen.add(symbol)
+                symbols.append(symbol)
+        return tuple(symbols)
+
+    def institutional_flow_inputs_for(
+        self, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowInputs:
+        """Fetch the v3 snapshot sections the institutional-flow factor blends.
+
+        The candles read here are a second, intraday-only fetch distinct
+        from ``bars_for``: order-size participation is only defined over
+        intraday candles, and a decision built on daily bars has no
+        minute-level series of its own to diff flow against.
+
+        Every row is re-checked against ``as_of`` locally rather than
+        trusted from the gateway's own envelope cutoff. The gateway stamps
+        that cutoff at the moment of *this* request, which lands at or after
+        the ``as_of`` this decision already committed to — trusting it would
+        let a row published in that gap answer for data the decision was not
+        yet entitled to see.
+        """
+
+        payload = self._snapshot(symbol, _PARTICIPATION_INTERVAL, _PARTICIPATION_COUNT)
+        sections = payload.get("sections")
+        if not isinstance(sections, dict):
+            raise MarketGatewayUnavailable(
+                "the gateway snapshot carries no sections"
+            )
+        flow_section = sections.get("currentSessionFlow")
+        holdings_section = sections.get("holdings")
+        flow_points = self._flow_points(symbol, flow_section, as_of)
+        bars = self._participation_candles(symbol, sections.get("candles"), as_of)
+        holdings = self._holdings(holdings_section, as_of)
+        participation_bars: tuple[ParticipationBar, ...] = ()
+        if flow_points and bars:
+            try:
+                participation_bars = build_participation_bars(
+                    flow_points, bars, as_of
+                )
+            except ValueError as error:
+                raise MarketGatewayUnavailable(
+                    f"order-size participation failed validation: {error}"
+                ) from error
+        return InstitutionalFlowInputs(
+            participation_bars=participation_bars,
+            holdings=holdings,
+            flow_section_failure=_section_failure(flow_section),
+            holdings_section_failure=_section_failure(holdings_section),
+        )
+
+    def _snapshot(self, symbol: str, interval: str, count: int) -> dict[str, Any]:
+        query = urlencode({"symbol": symbol, "interval": interval, "count": count})
+        payload = self._read_json(f"{self.base_url}{SNAPSHOT_PATH}?{query}")
+        if payload.get("schemaVersion") != "3":
+            raise MarketGatewayUnavailable(
+                "the market gateway returned an unsupported snapshot contract"
+            )
+        if payload.get("symbol") != symbol:
+            raise MarketGatewayUnavailable(
+                "the gateway answered for a different symbol"
+            )
+        return payload
+
+    def _flow_points(
+        self, symbol: str, section: Any, as_of: datetime
+    ) -> tuple[CapitalFlowPoint, ...]:
+        if (
+            not isinstance(section, dict)
+            or section.get("availabilityStatus") not in {"live", "delayed"}
+            or section.get("qualityStatus") != "validated"
+            or section.get("source") != "moomoo"
+        ):
+            return ()
+        rows = section.get("data")
+        if not isinstance(rows, list) or not rows:
+            return ()
+        points: list[CapitalFlowPoint] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise MarketGatewayUnavailable(
+                    "a currentSessionFlow row is malformed"
+                )
+            if row.get("institutionalIdentity") is not False:
+                raise MarketGatewayUnavailable(
+                    "a currentSessionFlow row claims institutional identity"
+                )
+            available_at = _timestamp(row, "availableAt")
+            if available_at > as_of:
+                # Not a PIT violation: the row simply postdates what this
+                # decision may see yet, same as any other future data.
+                continue
+            session = row.get("session")
+            if not isinstance(session, str) or not session.strip():
+                raise MarketGatewayUnavailable(
+                    "a currentSessionFlow row is missing its session"
+                )
+            try:
+                points.append(
+                    CapitalFlowPoint(
+                        symbol=symbol,
+                        timestamp=_timestamp(row, "timestamp"),
+                        available_at=available_at,
+                        total_net=_number(row, "totalNetFlow"),
+                        super_net=_number(row, "extraLargeOrderNetFlow"),
+                        big_net=_number(row, "largeOrderNetFlow"),
+                        mid_net=_number(row, "mediumOrderNetFlow"),
+                        small_net=_number(row, "smallOrderNetFlow"),
+                        session=session,
+                    )
+                )
+            except ValueError as error:
+                raise MarketGatewayUnavailable(
+                    f"a currentSessionFlow row failed validation: {error}"
+                ) from error
+        return tuple(points)
+
+    def _participation_candles(
+        self, symbol: str, section: Any, as_of: datetime
+    ) -> tuple[OHLCVBar, ...]:
+        if (
+            not isinstance(section, dict)
+            or section.get("availabilityStatus") not in {"live", "delayed"}
+            or section.get("qualityStatus") != "validated"
+        ):
+            return ()
+        data = section.get("data")
+        candles = data.get("candles") if isinstance(data, dict) else None
+        if not isinstance(candles, list) or not candles:
+            return ()
+        duration = _INTERVALS[_PARTICIPATION_INTERVAL]
+        bars: list[OHLCVBar] = []
+        for item in candles:
+            if not isinstance(item, dict):
+                raise MarketGatewayUnavailable(
+                    "a participation candle is malformed"
+                )
+            available_at = _timestamp(item, "availableAt")
+            if available_at > as_of:
+                # Same non-violation as a future flow row: simply not yet
+                # visible to this decision.
+                continue
+            bars.append(
+                _bar(
+                    symbol,
+                    _PARTICIPATION_INTERVAL,
+                    duration,
+                    item,
+                    as_of,
+                    as_of,
+                )
+            )
+        bars.sort(key=lambda bar: bar.closed_at)
+        return tuple(bars)
+
+    def _holdings(
+        self, section: Any, as_of: datetime
+    ) -> tuple[HoldingsDisclosure, ...]:
+        if (
+            not isinstance(section, dict)
+            or section.get("availabilityStatus") != "delayed"
+            or section.get("qualityStatus") not in {"validated", "anomalous"}
+            or section.get("source") != _HOLDINGS_SOURCE
+        ):
+            return ()
+        rows = section.get("data")
+        if not isinstance(rows, list) or not rows:
+            return ()
+        holdings: list[HoldingsDisclosure] = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("source") != _HOLDINGS_SOURCE:
+                raise MarketGatewayUnavailable(
+                    "an institutional holdings row is malformed"
+                )
+            reported_at = _timestamp(row, "reportedAt")
+            available_at = _timestamp(row, "availableAt")
+            if reported_at > available_at:
+                raise MarketGatewayUnavailable(
+                    "an institutional holdings row is reported after it "
+                    "was made available"
+                )
+            if available_at > as_of:
+                # PIT boundary: a filing this decision is not entitled to
+                # see yet, not a data-quality defect.
+                continue
+            try:
+                holdings.append(
+                    HoldingsDisclosure(
+                        reported_at=reported_at,
+                        available_at=available_at,
+                        institution_count_change=int(
+                            _number(row, "institutionCountChange")
+                        ),
+                        holding_percent=_number(row, "holdingPercent"),
+                        holding_percent_change=_number(
+                            row, "holdingPercentChange"
+                        ),
+                    )
+                )
+            except ValueError as error:
+                raise MarketGatewayUnavailable(
+                    f"an institutional holdings row failed validation: {error}"
+                ) from error
+        return tuple(holdings)
 
     def _candles(self, symbol: str, interval: str) -> dict[str, Any]:
         query = urlencode(
@@ -245,6 +570,30 @@ def _bar(
         raise MarketGatewayUnavailable(
             "a completed candle failed the bar model's own checks"
         ) from error
+
+
+def _section_failure(section: Any) -> SectionFailure | None:
+    """None for a healthy (possibly empty) section; the gateway's own
+    declared failure otherwise.
+
+    Deliberately keyed only on ``availabilityStatus``: ``live``/``delayed``
+    is the gateway's own claim that the section can be trusted, whatever its
+    row count; anything else (``unavailable``, ``stale``, a missing or
+    malformed section) is the gateway saying it could not answer, which is a
+    source problem rather than a quiet market and must not be reported the
+    same way.
+    """
+
+    if not isinstance(section, dict):
+        return None
+    status = section.get("availabilityStatus")
+    if status in {"live", "delayed"}:
+        return None
+    reason = section.get("reason")
+    return SectionFailure(
+        status=status if isinstance(status, str) and status.strip() else "unknown",
+        reason=reason if isinstance(reason, str) and reason.strip() else None,
+    )
 
 
 def _timestamp(item: Mapping[str, Any], key: str) -> datetime:

@@ -1,6 +1,7 @@
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { AdviserUsage, Decision } from "@/domain/models";
+import { serviceTextLabel } from "@/i18n/serverVocabulary";
 import { radius, spacing } from "@/theme/tokens";
 
 import type { NewsPalette } from "./newsPalette";
@@ -62,7 +63,11 @@ export function DecisionInterpretationCard({
         />
       ) : block.status === "not-requested" ? (
         <Notice
-          body={block.reason ?? "本次请求没有要求模型解读。"}
+          body={
+            block.reason
+              ? serviceTextLabel(block.reason)
+              : "本次请求没有要求模型解读。"
+          }
           footer="这不是模型失败，是本次没有调用模型。"
           palette={palette}
           testID="decision-interpretation-not-requested"
@@ -71,7 +76,11 @@ export function DecisionInterpretationCard({
         />
       ) : block.status === "unavailable" || block.value === null ? (
         <Notice
-          body={block.reason ?? "模型这次没有给出可用的解读。"}
+          body={
+            block.reason
+              ? serviceTextLabel(block.reason)
+              : "模型这次没有给出可用的解读。"
+          }
           footer="这是模型调用失败，不是「没有观点」；上面的原始报道仍然可读。"
           palette={palette}
           testID="decision-interpretation-unavailable"

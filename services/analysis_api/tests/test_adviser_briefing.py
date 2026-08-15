@@ -100,9 +100,16 @@ class FakeClient:
 
 
 def stale_bars() -> tuple[OHLCVBar, ...]:
-    """Candles that stopped arriving long enough ago to trip the stale gate."""
+    """Candles that stopped arriving long enough ago to trip the stale gate.
 
-    lag = timedelta(minutes=45)
+    These are daily bars, so the gate is budgeted against a daily-bar
+    cadence (a session close can be a holiday weekend away, not just
+    intraday-tight): the lag has to clear that wider, honest budget, not the
+    45 minutes that only tripped the gate back when it was mistakenly
+    budgeted for intraday data.
+    """
+
+    lag = timedelta(days=10)
     return tuple(
         replace(
             row,
@@ -321,6 +328,34 @@ class CostControlTests(unittest.TestCase):
 
 
 class DegradationTests(unittest.TestCase):
+    def test_no_citable_evidence_degrades_into_a_chinese_reason(self) -> None:
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): a decision
+        # was reached (bars exist), but nothing in the evidence feed could be
+        # quoted, so the model was never asked. Both the prose this service
+        # writes and the packet-builder's own ValueError it appends are
+        # Chinese, so the whole reason reaches the AdvisersScreen readable.
+        class NoEvidenceProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[Any, ...]:
+                return ()
+
+        # service() always builds a plain Provider(); this case needs the
+        # empty-evidence provider instead, so the service is built directly.
+        result = AnalysisService(
+            NoEvidenceProvider(),
+            clock=lambda: AS_OF,
+            adviser_factory=lambda: provider_with(
+                parse=[FakeMessage(news_answer())],
+                stream=[FakeMessage(council_answer())],
+            ),
+        ).decision("NVDA", "short", adviser=True)
+
+        reason = result["newsInterpretation"]["reason"]
+        self.assertTrue(
+            reason.startswith("决策截止时点没有可引用的证据，因此没有请求模型做任何解读："),
+            msg=reason,
+        )
+        self.assertNotRegex(reason, r"[a-z]{3,}")
+
     def test_a_missing_key_is_stated_rather_than_read_as_no_opinion(self) -> None:
         result = service(
             LlmAdviserProvider(environ={}, sleep=lambda _seconds: None)
@@ -423,7 +458,13 @@ class DegradationTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(result["newsInterpretation"]["status"], "unavailable")
-        self.assertTrue(result["newsInterpretation"]["reason"])
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): this
+        # reason reaches the AdvisersScreen and the stock page's model-
+        # interpretation card verbatim, with no client-side translation.
+        self.assertEqual(
+            result["newsInterpretation"]["reason"],
+            "决策链没有得出结论，因此没有召开顾问委员会，也没有产生任何花费。",
+        )
         self.assertIsNone(result["adviserUsage"])
 
 
@@ -480,9 +521,12 @@ class EvidencePacketTests(unittest.TestCase):
         result = service.decision("NVDA", "short", adviser=True)
 
         self.assertEqual(result["newsInterpretation"]["status"], "available")
-        self.assertTrue(
-            any("1 evidence item" in note for note in result["notes"]),
-            msg=result["notes"],
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): pinned
+        # exactly, consistent with the served-vocabulary conventions this
+        # note now follows.
+        self.assertIn(
+            "有 1 条证据没有可引用文本或没有可用链接，未纳入本次顾问材料包。",
+            result["notes"],
         )
 
 
@@ -503,6 +547,11 @@ class HardGateTests(unittest.TestCase):
         self.assertEqual(council["adjustedScore"], council["baselineScore"])
         self.assertFalse(council["actionable"])
         self.assertTrue(council["blockedBy"])
+        # A gated council still ran, so its (zeroed) adjustment folds through
+        # as a measured 0.0 -- not null, and not some stale value left over
+        # from a council that never spoke.
+        self.assertEqual(result["adviserAdjustment"], 0.0)
+        self.assertEqual(result["score"]["value"], result["baselineScore"]["value"])
 
     def test_an_ungated_council_stays_inside_the_published_cap(self) -> None:
         from us_stock_helper_core import ADVISER_SCORE_CAP
@@ -522,6 +571,77 @@ class HardGateTests(unittest.TestCase):
         self.assertEqual(
             council["objectiveDirection"], result["score"]["direction"]
         )
+
+
+class AdviserAdjustmentContractTests(unittest.TestCase):
+    """The top-level adviserAdjustment is the one adjustment authority.
+
+    It must never be a fake measured 0.0 for a council that never ran, and it
+    must never silently disagree with the council block sitting right next to
+    it in the same response.
+    """
+
+    def test_council_off_reports_null_not_a_fake_zero(self) -> None:
+        result = service().decision("NVDA", "short")
+
+        self.assertIsNone(result["adviserCouncil"]["value"])
+        self.assertIsNone(result["adviserAdjustment"])
+        # Pinned in Chinese, consistent with the served-vocabulary
+        # conventions and the note.py section of the adviser-adjustment
+        # contract: this note reaches a Chinese UI on every default-mode
+        # response, so English boilerplate here diluted the notes channel.
+        self.assertIn(
+            "本次没有召开顾问委员会，顾问调整为空，而非测得的零。",
+            result["notes"],
+        )
+
+    def test_council_unavailable_reports_null_not_a_fake_zero(self) -> None:
+        from us_stock_helper_analysis_api.adviser_provider import LlmAdviserProvider
+
+        result = service(
+            LlmAdviserProvider(environ={}, sleep=lambda _seconds: None)
+        ).decision("NVDA", "short", adviser=True)
+
+        self.assertEqual(result["adviserCouncil"]["status"], "unavailable")
+        self.assertIsNone(result["adviserCouncil"]["value"])
+        self.assertIsNone(result["adviserAdjustment"])
+
+    def test_news_only_mode_never_convenes_a_council_and_reports_null(self) -> None:
+        adviser = provider_with(
+            parse=[FakeMessage(news_answer())],
+            stream=[],
+        )
+
+        result = service(adviser).decision("NVDA", "short", adviser="news")
+
+        self.assertEqual(result["adviserCouncil"]["status"], "not-requested")
+        self.assertIsNone(result["adviserAdjustment"])
+
+    def test_an_available_council_is_the_sole_adjustment_authority(self) -> None:
+        from us_stock_helper_core import ADVISER_SCORE_CAP
+
+        adviser = provider_with(
+            parse=[FakeMessage(news_answer())],
+            stream=[FakeMessage(council_answer(stance="bullish"))],
+        )
+
+        result = service(adviser).decision("NVDA", "short", adviser=True)
+
+        council = result["adviserCouncil"]["value"]
+        # One bullish, high-confidence opinion pushes the full published cap.
+        self.assertEqual(council["scoreAdjustment"], ADVISER_SCORE_CAP)
+        self.assertIsNotNone(result["adviserAdjustment"])
+        self.assertLessEqual(abs(result["adviserAdjustment"]), ADVISER_SCORE_CAP)
+        # Exactly one adjustment authority: the top-level fields describe the
+        # same computation the council block does, not a second, disagreeing
+        # one.
+        self.assertEqual(result["adviserAdjustment"], council["scoreAdjustment"])
+        self.assertEqual(result["score"]["value"], council["adjustedScore"])
+        self.assertEqual(
+            result["score"]["value"],
+            result["baselineScore"]["value"] + result["adviserAdjustment"],
+        )
+        self.assertNotEqual(result["score"]["value"], result["baselineScore"]["value"])
 
 
 class HttpSwitchTests(unittest.TestCase):
@@ -634,7 +754,13 @@ class CredentialTests(unittest.TestCase):
         # Redacting must not turn into silence: the reader still has to learn
         # the model was asked and could not answer.
         self.assertEqual(result["newsInterpretation"]["status"], "unavailable")
-        self.assertTrue(result["newsInterpretation"]["reason"])
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): reaches
+        # the AdvisersScreen and the model-interpretation card verbatim.
+        self.assertEqual(
+            result["newsInterpretation"]["reason"],
+            "顾问层出现了本服务不会原样转述的失败，因为这类信息可能带有外发凭据。"
+            "没有产生解读。",
+        )
 
     def test_a_credential_shaped_reason_is_withheld_rather_than_forwarded(
         self,
@@ -691,7 +817,13 @@ class LazyImportTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(result[key]["status"], "unavailable")
                 self.assertIsNone(result[key]["value"])
-                self.assertTrue(result[key]["reason"])
+                # Investor-readable Chinese (2026-08-15 served-copy sweep):
+                # reaches the AdvisersScreen and the model-interpretation card
+                # verbatim, with no client-side translation.
+                self.assertEqual(
+                    result[key]["reason"],
+                    "本次部署没有安装顾问层（无法导入模型 SDK），因此没有产生解读。",
+                )
 
     def test_the_service_starts_and_answers_with_no_sdk_installed(self) -> None:
         """A top-level import of an optional dependency is how a whole product

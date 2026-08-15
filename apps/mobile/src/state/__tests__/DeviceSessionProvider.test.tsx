@@ -269,6 +269,50 @@ it("refuses to call itself paired when the token cannot be stored securely", asy
   expect(result.current.deviceToken).toBeNull();
 });
 
+it("refuses to spend a pairing code when the Keychain is already known to be unavailable", async () => {
+  // A backend whose reads reject the way expo-secure-store's absence does
+  // (the exact condition resolveSecureStoreBackend falls back for) already
+  // told the session "secure-store-unavailable" at mount. redeem_pairing_code
+  // marks a code consumed the instant the server answers pair(), so calling
+  // it here would burn the operator's single-use code for a token this
+  // build was never going to be able to keep.
+  const backend: SecureStoreBackend = {
+    readValue: async () => {
+      throw new Error("keychain module missing");
+    },
+    writeValue: async () => {
+      throw new Error("keychain module missing");
+    },
+    deleteValue: async () => {
+      throw new Error("keychain module missing");
+    },
+  };
+  let pairCalls = 0;
+  const client: PairingClient = {
+    pair: async () => {
+      pairCalls += 1;
+      return credential();
+    },
+  };
+
+  const { result } = await renderSession({ backend, pairingClient: client });
+  await waitFor(() =>
+    expect(result.current.session.failure?.reason).toBe(
+      "secure-store-unavailable",
+    ),
+  );
+
+  await act(async () => {
+    await result.current.pair("K7Q-4M2-88T");
+  });
+
+  expect(pairCalls).toBe(0);
+  expect(result.current.session.status).toBe("unpaired");
+  expect(result.current.session.failure?.reason).toBe(
+    "secure-store-unavailable",
+  );
+});
+
 it("distinguishes an unreadable secure store from an unpaired device", async () => {
   const { backend } = memoryBackend("{not json");
 

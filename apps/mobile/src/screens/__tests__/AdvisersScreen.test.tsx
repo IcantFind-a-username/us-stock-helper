@@ -1,12 +1,17 @@
 import { beforeEach, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import type { PropsWithChildren } from "react";
 
 import { AppStateProvider } from "@/state/AppStateProvider";
+import { DeviceSessionProvider } from "@/state/DeviceSessionProvider";
 
 import { AdvisersScreen } from "../AdvisersScreen";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
 import type { MarketRepository } from "@/data/marketRepository";
+import { AnalysisRequestError, type AnalysisSource } from "@/data/analysisGateway";
+import { adviserCouncilFixture, adviserUsageFixture, decisionFixture } from "@/data/__tests__/decision.fixture";
+import type { Decision } from "@/domain/models";
 
 const idleRepository = {
   loadWatchlist: async () => {
@@ -18,22 +23,67 @@ const idleRepository = {
 } as unknown as MarketRepository;
 
 
+let mockRouteSymbol = "NVDA";
+
 jest.mock("expo-router", () => ({
-  useLocalSearchParams: () => ({ symbol: "NVDA" }),
+  useLocalSearchParams: () => ({ symbol: mockRouteSymbol }),
   useRouter: () => ({ back: jest.fn() }),
 }));
 
 beforeEach(async () => {
   await AsyncStorage.clear();
+  mockRouteSymbol = "NVDA";
 });
+
+/**
+ * The device session gate every real-mode render now passes through to reach
+ * its own analysis client. `pairingRequired={false}` with no credential store
+ * settles it to "unpaired" (a null token) without touching the Keychain --
+ * harmless here because the tests below inject their own `analysis` source
+ * and never let the screen build one from runtime config.
+ */
+function Wrapper({ children }: PropsWithChildren) {
+  return (
+    <AppStateProvider>
+      <DeviceSessionProvider pairingRequired={false}>
+        {children}
+      </DeviceSessionProvider>
+    </AppStateProvider>
+  );
+}
+
+function deferredAnalysis() {
+  const calls: {
+    symbol: string;
+    horizon: string;
+    signal: AbortSignal | undefined;
+    resolve: (value: Decision) => void;
+    reject: (error: unknown) => void;
+  }[] = [];
+  const analysis: AnalysisSource = {
+    getDecision: (symbol, horizon, signal) =>
+      new Promise<Decision>((resolve, reject) => {
+        calls.push({ symbol, horizon, signal, resolve, reject });
+      }),
+  };
+  return { analysis, calls };
+}
+
+function availableCouncilDecision(): Decision {
+  return {
+    ...decisionFixture(),
+    adviserCouncil: adviserCouncilFixture(),
+    adviserUsage: adviserUsageFixture(),
+  } as unknown as Decision;
+}
 
 it("keeps the objective layer frozen while selecting deterministic long and short plans", async () => {
   const view = await render(
-    <AppStateProvider>
+    <Wrapper>
       <MarketDataProvider development initialDemoMode repository={idleRepository}>
       <AdvisersScreen />
     </MarketDataProvider>
-    </AppStateProvider>,
+    </Wrapper>,
   );
 
   await waitFor(() => expect(view.getByTestId("adviser-council")).toBeTruthy());
@@ -74,4 +124,251 @@ it("keeps the objective layer frozen while selecting deterministic long and shor
   expect(view.getByText("置信度 68%")).toBeTruthy();
   expect(view.getByText("仅供分析与建议，不连接券商，不会自动下单。")).toBeTruthy();
   expect(view.queryByText(/提交订单|自动交易|一键下单/)).toBeNull();
+});
+
+it("demo mode with a symbol outside the fixture set shows a graceful not-available state instead of throwing", async () => {
+  mockRouteSymbol = "SOFI";
+
+  const view = await render(
+    <Wrapper>
+      <MarketDataProvider development initialDemoMode repository={idleRepository}>
+        <AdvisersScreen />
+      </MarketDataProvider>
+    </Wrapper>,
+  );
+
+  await waitFor(() =>
+    expect(view.getByTestId("adviser-demo-fixture-missing")).toBeTruthy(),
+  );
+  expect(view.getByText("演示模式仅包含 NVDA")).toBeTruthy();
+  expect(view.queryByTestId("adviser-council")).toBeNull();
+  expect(view.queryByTestId("trade-plan-card")).toBeNull();
+});
+
+function renderRealMode(analysis: AnalysisSource) {
+  return render(
+    <Wrapper>
+      <MarketDataProvider development repository={idleRepository}>
+        <AdvisersScreen analysis={analysis} />
+      </MarketDataProvider>
+    </Wrapper>,
+  );
+}
+
+it("real mode shows an explicit invoke flow before anything is requested, not the demo grid", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council")).toBeTruthy());
+  expect(view.getByTestId("adviser-council-not-requested")).toBeTruthy();
+  expect(view.getByText(/预计花费约 US\$0\.10/)).toBeTruthy();
+  expect(view.getByText(/最长可能等待 5 分钟/)).toBeTruthy();
+  expect(view.getByText(/本周期满编 7 席/)).toBeTruthy();
+  expect(view.queryByTestId("adviser-council-not-deployed")).toBeNull();
+  expect(view.queryByTestId("analysis-not-connected")).toBeNull();
+  expect(view.queryByTestId("adviser-council-available")).toBeNull();
+  // Nothing about the demo's named-investor grid or its fixture score leaks
+  // into real mode.
+  expect(view.queryByText("演示数据 · 非实时行情")).toBeNull();
+  expect(calls).toHaveLength(0);
+});
+
+it("real mode with a symbol absent from the demo fixtures renders without throwing", async () => {
+  mockRouteSymbol = "SOFI";
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council")).toBeTruthy());
+  expect(view.getByTestId("adviser-council-not-requested")).toBeTruthy();
+  expect(view.getByText("SOFI · 顾问会诊")).toBeTruthy();
+  expect(view.getByText(/本周期满编 7 席/)).toBeTruthy();
+  expect(view.queryByTestId("adviser-demo-fixture-missing")).toBeNull();
+  expect(calls).toHaveLength(0);
+});
+
+it("makes exactly one network call per tap, ignores a repeat tap while loading, and aborts on unmount", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.symbol).toBe("NVDA");
+  expect(calls[0]?.horizon).toBe("short");
+  expect(view.getByTestId("adviser-council-loading")).toBeTruthy();
+
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  // The button disables itself while loading, so a repeat tap adds no call.
+  expect(calls).toHaveLength(1);
+
+  await view.unmount();
+  expect(calls[0]?.signal?.aborted).toBe(true);
+});
+
+it("tells the reader leaving won't cancel an already-started council run or refund its cost", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+
+  expect(calls).toHaveLength(1);
+  // The server-side council run keeps executing once started, and the
+  // ~US$0.10 is already committed -- leaving the page abandons waiting for
+  // the result, it does not cancel the run or get the money back.
+  expect(view.getByTestId("adviser-council-loading")).toHaveTextContent(
+    /离开本页会放弃等待结果；已开始的会诊费用不会退回/,
+  );
+  expect(view.queryByText(/离开本页会取消这次请求/)).toBeNull();
+});
+
+it("renders the available council with per-framework quotes, the score fold and usage cost", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  await act(async () => {
+    calls[0]?.resolve(availableCouncilDecision());
+  });
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-available")).toBeTruthy());
+  expect(calls).toHaveLength(1);
+  expect(view.getByText("各框架都读到同一条指引上调。")).toBeTruthy();
+  expect(view.getByText("基线 72.5 → 调整后 75.5（+3.0）")).toBeTruthy();
+  expect(view.queryByTestId("adviser-council-blocked")).toBeNull();
+  expect(view.getByText("技术结构框架")).toBeTruthy();
+  expect(view.getByText("立场：bullish")).toBeTruthy();
+  expect(view.getByText("已知盲区：对基本面突变无感。")).toBeTruthy();
+  expect(view.getByText("指引上调支持偏多的解读。")).toBeTruthy();
+  // Verbatim, quoted -- not paraphrased.
+  expect(view.getByText("「raises full-year revenue guidance」")).toBeTruthy();
+  expect(view.getByText(/实测花费 US\$0\.1630/)).toBeTruthy();
+  expect(view.getByText(/claude-opus-4-8/)).toBeTruthy();
+  expect(view.getByText(/风格模型，非本人意见/)).toBeTruthy();
+  // adviserUsageFixture: inputTokens 13000 + outputTokens 3900 +
+  // cacheCreationInputTokens 0 + cacheReadInputTokens 2000 = 18900. Summing
+  // only input+output (16900) silently drops the 2000 cache-read tokens the
+  // call actually spent.
+  expect(view.getByTestId("adviser-council-cost")).toHaveTextContent(
+    /本次模型调用 18900 tokens/,
+  );
+});
+
+it("shows the hard-gate banner instead of a fold when a hard gate voided the council", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+  const gatedCouncil = adviserCouncilFixture();
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  await act(async () => {
+    calls[0]?.resolve({
+      ...decisionFixture(),
+      adviserCouncil: {
+        ...gatedCouncil,
+        value: {
+          ...gatedCouncil.value,
+          scoreAdjustment: 0,
+          adjustedScore: 72.5,
+          blockedBy: ["liquidity_gate"],
+          actionable: false,
+        },
+      },
+      adviserUsage: adviserUsageFixture(),
+    } as unknown as Decision);
+  });
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-blocked")).toBeTruthy());
+  expect(view.getByText("liquidity_gate")).toBeTruthy();
+  expect(view.getByText("基线 72.5 → 调整后 72.5（+0.0）")).toBeTruthy();
+});
+
+it("shows the not-deployed copy when a live response carries no council field at all", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  await act(async () => {
+    calls[0]?.resolve({
+      ...decisionFixture(),
+      adviserCouncil: null,
+    } as unknown as Decision);
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("adviser-council-not-deployed")).toBeTruthy(),
+  );
+  expect(view.queryByTestId("adviser-council-invoke")).toBeNull();
+});
+
+it("keeps a model that was asked and could not answer distinct from one nobody asked", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  await act(async () => {
+    calls[0]?.resolve({
+      ...decisionFixture(),
+      adviserCouncil: {
+        status: "unavailable",
+        reason: "模型这次超时了，没有给出可用意见。",
+        value: null,
+      },
+    } as unknown as Decision);
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("adviser-council-model-unavailable")).toBeTruthy(),
+  );
+  expect(view.getByText("模型这次超时了，没有给出可用意见。")).toBeTruthy();
+  expect(view.queryByTestId("adviser-council-request-failed")).toBeNull();
+  expect(view.queryByTestId("adviser-council-not-requested")).toBeNull();
+});
+
+it("translates the council's own reason instead of showing it raw", async () => {
+  // Defense in depth (2026-08-15 served-copy sweep): `block.reason` used to
+  // render straight through with no translation pass, which is how English
+  // adviser-degradation reasons (SDK missing, unexpected failure) reached
+  // this screen before those server strings were translated at the source.
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  await act(async () => {
+    calls[0]?.resolve({
+      ...decisionFixture(),
+      adviserCouncil: {
+        status: "unavailable",
+        reason: "Realized volatility could not be measured, so no scenario range is offered.",
+        value: null,
+      },
+    } as unknown as Decision);
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("adviser-council-model-unavailable")).toBeTruthy(),
+  );
+  expect(view.getByText(/无法测得已实现波动率/)).toBeTruthy();
+  expect(view.queryByText(/Realized volatility/)).toBeNull();
+});
+
+it("shows the request-failed copy, distinct from a model refusal, when the call itself never lands", async () => {
+  const { analysis, calls } = deferredAnalysis();
+  const view = await renderRealMode(analysis);
+
+  await waitFor(() => expect(view.getByTestId("adviser-council-invoke")).toBeTruthy());
+  await fireEvent.press(view.getByTestId("adviser-council-invoke"));
+  await act(async () => {
+    calls[0]?.reject(new AnalysisRequestError("timeout", "analysis request timed out"));
+  });
+
+  await waitFor(() =>
+    expect(view.getByTestId("adviser-council-request-failed")).toBeTruthy(),
+  );
+  expect(view.queryByTestId("adviser-council-model-unavailable")).toBeNull();
 });

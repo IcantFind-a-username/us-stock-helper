@@ -25,6 +25,7 @@ import {
 } from "@/data/marketRepository";
 import { fixtureRepository } from "@/fixtures/repository";
 import { AppStateProvider } from "@/state/AppStateProvider";
+import { DeviceSessionProvider } from "@/state/DeviceSessionProvider";
 import { MarketDataProvider } from "@/state/MarketDataProvider";
 
 const demoRepository = createMarketRepository({
@@ -63,24 +64,28 @@ it("discloses demo and non-live status on every route", async () => {
       AppStateProvider,
       null,
       createElement(
-        MarketDataProvider,
-        {
-          demoWatchlist: fixtureRepository.getDashboard("short").watchlist,
-          development: true,
-          initialDemoMode: true,
-          repository: demoRepository,
-        },
+        DeviceSessionProvider,
+        { pairingRequired: false },
         createElement(
-          Fragment,
-          null,
-          createElement(DashboardRoute),
-          createElement(DiscoverRoute),
-          createElement(AlertsRoute),
-          createElement(JournalRoute),
-          createElement(AgentRoute),
-          createElement(StockDetailRoute),
-          createElement(ChartRoute),
-          createElement(AdvisersRoute),
+          MarketDataProvider,
+          {
+            demoWatchlist: fixtureRepository.getDashboard("short").watchlist,
+            development: true,
+            initialDemoMode: true,
+            repository: demoRepository,
+          },
+          createElement(
+            Fragment,
+            null,
+            createElement(DashboardRoute),
+            createElement(DiscoverRoute),
+            createElement(AlertsRoute),
+            createElement(JournalRoute),
+            createElement(AgentRoute),
+            createElement(StockDetailRoute),
+            createElement(ChartRoute),
+            createElement(AdvisersRoute),
+          ),
         ),
       ),
     ),

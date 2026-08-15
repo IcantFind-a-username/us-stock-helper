@@ -4,16 +4,23 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from information_layer import ClaimStatus, EvidenceEvent, SourceProvenance
+from information_layer.factors.base import FactorUnavailable
 from information_layer.feeds import (
     FRESHNESS_ATTRIBUTE,
     STALE_ATTRIBUTE,
     EvidenceUnavailable,
+    HttpRequest,
+    HttpResponse,
+    SecCurrentFilingsAdapter,
     SourceFailure,
 )
 from us_stock_helper_analysis_api.evidence_provider import (
     CompositeAnalysisProvider,
     FeedEvidenceProvider,
     evidence_provider_from_environment,
+)
+from us_stock_helper_analysis_api.institutional_flow_provider import (
+    InstitutionalFlowReading,
 )
 from us_stock_helper_core import OHLCVBar
 
@@ -78,6 +85,31 @@ class FakeBars:
         return ()
 
 
+class ServedBars:
+    """Enough completed daily candles for a decision to be served."""
+
+    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]:
+        rows = []
+        for index in range(40):
+            closed_at = AS_OF - timedelta(days=39 - index)
+            price = 100.0 + index * 0.5
+            rows.append(
+                OHLCVBar(
+                    symbol=symbol,
+                    interval=interval,
+                    opened_at=closed_at - timedelta(days=1),
+                    closed_at=closed_at,
+                    available_at=closed_at,
+                    open=price,
+                    high=price + 0.5,
+                    low=price - 0.5,
+                    close=price,
+                    volume=1_000_000.0,
+                )
+            )
+        return tuple(rows)
+
+
 class FakeFactors:
     def __init__(self) -> None:
         self.queries: list[tuple[str, datetime]] = []
@@ -88,16 +120,33 @@ class FakeFactors:
         return self.answer
 
 
+class FakeInstitutionalFlow:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, datetime]] = []
+        self.answer = InstitutionalFlowReading(
+            value=None,
+            unavailable_reason=FactorUnavailable.NO_DATA_AT_CUTOFF,
+            detail="test stub",
+        )
+
+    def reading(
+        self, *, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading:
+        self.queries.append((symbol, as_of))
+        return self.answer
+
+
 class EvidenceProviderTests(unittest.TestCase):
     def test_the_provider_scopes_the_collection_to_the_requested_symbol(
         self,
     ) -> None:
         collector = FakeCollector()
 
-        events = FeedEvidenceProvider(collector).evidence_for("NVDA")
+        result = FeedEvidenceProvider(collector).read_evidence("NVDA")
 
         self.assertEqual(collector.requests, [("NVDA",)])
-        self.assertEqual([item.event_id for item in events], ["e1"])
+        self.assertEqual([item.event_id for item in result.events], ["e1"])
+        self.assertEqual(result.gaps, ())
 
     def test_an_unreadable_source_reaches_the_caller_instead_of_an_empty_answer(
         self,
@@ -107,7 +156,7 @@ class EvidenceProviderTests(unittest.TestCase):
         )
 
         with self.assertRaises(EvidenceUnavailable):
-            FeedEvidenceProvider(collector).evidence_for("NVDA")
+            FeedEvidenceProvider(collector).read_evidence("NVDA")
 
 
 class CompositeProviderTests(unittest.TestCase):
@@ -115,20 +164,127 @@ class CompositeProviderTests(unittest.TestCase):
         bars = FakeBars()
         collector = FakeCollector()
         factors = FakeFactors()
+        institutional_flow = FakeInstitutionalFlow()
         provider = CompositeAnalysisProvider(
             bars=bars,
             evidence=FeedEvidenceProvider(collector),
             factors=factors,
+            institutional_flow=institutional_flow,
         )
 
         provider.bars_for("NVDA", "5m")
-        provider.evidence_for("NVDA")
+        provider.read_evidence("NVDA")
         answer = provider.factors_for("NVDA", AS_OF)
+        institutional_answer = provider.institutional_flow_for("NVDA", AS_OF)
 
         self.assertEqual(bars.queries, [("NVDA", "5m")])
         self.assertEqual(collector.requests, [("NVDA",)])
         self.assertIs(answer, factors.answer)
         self.assertEqual(factors.queries, [("NVDA", AS_OF)])
+        self.assertIs(institutional_answer, institutional_flow.answer)
+        self.assertEqual(institutional_flow.queries, [("NVDA", AS_OF)])
+
+    def test_watchlist_symbols_passes_straight_through_to_bars(self) -> None:
+        class WatchlistBars(FakeBars):
+            def watchlist_symbols(self) -> tuple[str, ...]:
+                return ("NVDA", "TSLA")
+
+        provider = CompositeAnalysisProvider(
+            bars=WatchlistBars(),
+            evidence=FeedEvidenceProvider(FakeCollector()),
+            factors=FakeFactors(),
+            institutional_flow=FakeInstitutionalFlow(),
+        )
+
+        self.assertEqual(provider.watchlist_symbols(), ("NVDA", "TSLA"))
+
+    def test_a_bars_source_without_a_watchlist_degrades_to_an_attribute_error(
+        self,
+    ) -> None:
+        # FakeBars never grew watchlist_symbols; the market-brief's own
+        # getattr-based detection treats this the same as "no default
+        # universe", so the passthrough must raise rather than pretend one
+        # exists.
+        provider = CompositeAnalysisProvider(
+            bars=FakeBars(),
+            evidence=FeedEvidenceProvider(FakeCollector()),
+            factors=FakeFactors(),
+            institutional_flow=FakeInstitutionalFlow(),
+        )
+
+        with self.assertRaises(AttributeError):
+            provider.watchlist_symbols()
+
+
+class RequestScopedGapTests(unittest.TestCase):
+    """A request's gap disclosure must survive a concurrent clean sweep.
+
+    The provider is one shared instance behind a threading server. A request
+    whose sweep was partial spends real time in factor reads and engine
+    evaluation before its notes are assembled; when the gaps lived on the
+    provider, a clean sweep for another symbol landing in that window erased
+    them, and the partial read was served as a complete one — the exact
+    mistake the gap notes exist to prevent.
+    """
+
+    @staticmethod
+    def sweep(provider: object, symbol: str) -> object:
+        # Mirrors the service's own bridging: prefer the request-scoped read,
+        # fall back to the legacy provider-state shape.
+        read = getattr(provider, "read_evidence", None)
+        if callable(read):
+            return read(symbol)
+        return provider.evidence_for(symbol)
+
+    def test_a_concurrent_clean_sweep_cannot_erase_a_gap_disclosure(
+        self,
+    ) -> None:
+        from us_stock_helper_analysis_api.service import AnalysisService
+
+        flaky = FakeCollector(
+            failures=(SourceFailure("sec-current-8-k", "unreachable"),)
+        )
+        shared = FeedEvidenceProvider(flaky)
+        run_sweep = self.sweep
+
+        class ConcurrentSweepFactors:
+            def snapshot(self, *, symbol: str, as_of: datetime) -> object:
+                # Request B lands while request A is inside its factor read;
+                # the source has recovered by then, so B's sweep is clean.
+                flaky.failures = ()
+                run_sweep(shared, "TSLA")
+                raise RuntimeError("factors are not what this test reads")
+
+        provider = CompositeAnalysisProvider(
+            bars=ServedBars(),
+            evidence=shared,
+            factors=ConcurrentSweepFactors(),
+            institutional_flow=FakeInstitutionalFlow(),
+        )
+
+        payload = AnalysisService(provider, clock=lambda: AS_OF).decision(
+            "NVDA", "short"
+        )
+
+        self.assertTrue(
+            any("sec-current-8-k" in note for note in payload["notes"]),
+            "request A's partial sweep was served as a complete one: "
+            f"{payload['notes']}",
+        )
+
+    def test_the_gaps_travel_with_the_read_not_with_the_provider(self) -> None:
+        collector = FakeCollector(
+            failures=(SourceFailure("sec-current-8-k", "HTTP 503"),)
+        )
+        provider = FeedEvidenceProvider(collector)
+
+        partial = provider.read_evidence("NVDA")
+        collector.failures = ()
+        clean = provider.read_evidence("NVDA")
+
+        self.assertEqual(partial.gaps, ("sec-current-8-k（HTTP 503）",))
+        self.assertEqual(clean.gaps, ())
+        self.assertEqual([item.event_id for item in partial.events], ["e1"])
 
 
 class ProviderConfigTests(unittest.TestCase):
@@ -144,6 +300,38 @@ class ProviderConfigTests(unittest.TestCase):
         provider = evidence_provider_from_environment(dict(CONTACT))
 
         self.assertGreater(len(provider.collector.adapters), 1)
+
+    def test_the_sec_adapters_are_wired_with_a_cik_registry(self) -> None:
+        # Without a registry every filing's symbol_relevance comes back
+        # empty, so the collector's scope filter drops it from every
+        # symbol-scoped read: the highest-reliability evidence this system
+        # can get (a verified 8-K or Form 4) silently never reaches any
+        # decision. Building the production provider must actually wire one.
+        provider = evidence_provider_from_environment(dict(CONTACT))
+
+        sec_adapters = [
+            adapter
+            for adapter in provider.collector.adapters
+            if isinstance(adapter, SecCurrentFilingsAdapter)
+        ]
+        self.assertTrue(sec_adapters, "no SEC filing adapters were built at all")
+        for adapter in sec_adapters:
+            with self.subTest(adapter=adapter.adapter_id):
+                self.assertIsNotNone(adapter.cik_registry)
+
+    def test_building_the_provider_performs_no_network_io(self) -> None:
+        # The registry is ~10 MB and network-backed; fetching it eagerly at
+        # wiring time would mean a slow SEC response keeps the whole process
+        # from starting even before any request needs it.
+        class ExplodingTransport:
+            def request(self, request: HttpRequest) -> HttpResponse:
+                raise AssertionError(
+                    "constructing the provider must not perform I/O"
+                )
+
+        evidence_provider_from_environment(
+            dict(CONTACT), transport=ExplodingTransport()
+        )
 
     def test_a_window_that_is_not_a_positive_number_is_refused(self) -> None:
         for value in ("", "0", "-1", "soon"):

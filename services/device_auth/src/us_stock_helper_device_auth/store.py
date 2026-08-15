@@ -364,16 +364,24 @@ class DeviceStore:
     ) -> tuple[PairingCodeRow, ...]:
         """Every code recent enough to still explain a refusal, expired or not.
 
-        Newest first, because the bound must never discard the code an operator
-        is in the middle of reading out; the rows it does discard are old dead
-        ones that could only have changed the wording of an audit entry.
+        Live rows sort before dead ones, because the bound must never discard
+        the code an operator is in the middle of reading out — and dead rows
+        kept only for the audit trail can pile up within the retention window
+        far past MAX_CANDIDATE_CODES while a long-lived code is still
+        outstanding. Ranking on recency alone would let enough of those dead
+        rows accumulate to outrank a live code and bury it past the LIMIT.
+        Ties within each group still fall back to newest first, so the rows
+        the cap does discard are the ones that could only have changed the
+        wording of an audit entry.
         """
+        stamp = to_storage(now)
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT code_id, salt, code_hash, kdf, label, expires_at, consumed_at"
                 " FROM pairing_codes WHERE expires_at >= ?"
-                " ORDER BY created_at DESC, code_id DESC LIMIT ?",
-                (to_storage(now - retain_codes_for), MAX_CANDIDATE_CODES),
+                " ORDER BY (consumed_at IS NULL AND expires_at > ?) DESC,"
+                " created_at DESC, code_id DESC LIMIT ?",
+                (to_storage(now - retain_codes_for), stamp, MAX_CANDIDATE_CODES),
             ).fetchall()
         return tuple(PairingCodeRow(*row) for row in rows)
 

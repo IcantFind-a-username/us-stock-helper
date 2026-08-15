@@ -10,10 +10,14 @@ import type {
   LiveStockSnapshot,
   CompletedTdSetup,
   LiveVolatilityIndicator,
+  LivePatternShapesIndicator,
   MagicNineSnapshot,
   MagicNineSeriesPoint,
   NormalizedCapitalFlowPoint,
   ParticipationBar,
+  PatternShapeBarRef,
+  PatternShapeDetection,
+  PatternShapeSignal,
   PriceAdjustment,
   SnapshotAvailability,
   SnapshotQuality,
@@ -652,31 +656,240 @@ function decodeSeriesArray(
   });
 }
 
+/**
+ * The gateway publishes MACD's three lines as bare arrays directly on the
+ * indicator record (`lineSeries`/`signalSeries`/`histogramSeries`), the same
+ * way it publishes every other series — there is no nested `series` envelope
+ * to unwrap, so `record` here is the `indicators.macd` object itself.
+ */
 function decodeMacdSeries(
-  value: unknown,
+  record: Record<string, unknown>,
   parent: { asOf: string; availableAt: string },
   qualityStatus: string,
   candleCount: number,
 ): ChartMacdSeries | null {
-  if (value === undefined || value === null) return null;
+  const { lineSeries, signalSeries, histogramSeries } = record;
+  if (
+    lineSeries === undefined &&
+    signalSeries === undefined &&
+    histogramSeries === undefined
+  ) {
+    return null;
+  }
   if (qualityStatus !== "live") return null;
   const label = "indicators.macd";
-  if (!isRecord(value)) {
-    throw new GatewayValidationError(`${label}.series must be an object`);
-  }
   return {
     asOf: parent.asOf,
     availableAt: parent.availableAt,
     source: "analysis-core",
-    line: decodeSeriesArray(value.line, `${label}.series.line`, candleCount),
-    signal: decodeSeriesArray(value.signal, `${label}.series.signal`, candleCount),
+    line: decodeSeriesArray(lineSeries, `${label}.lineSeries`, candleCount),
+    signal: decodeSeriesArray(signalSeries, `${label}.signalSeries`, candleCount),
     histogram: decodeSeriesArray(
-      value.histogram,
-      `${label}.series.histogram`,
+      histogramSeries,
+      `${label}.histogramSeries`,
       candleCount,
     ),
     methodVersion: "macd-12-26-9-v1",
     qualityStatus: "live",
+  };
+}
+
+const patternShapeKinds = new Set([
+  "fractal_top",
+  "fractal_bottom",
+  "double_bottom",
+  "double_top",
+  "head_shoulders_top",
+  "head_shoulders_bottom",
+  "ma5_pullback",
+]);
+
+const patternShapeStatuses = new Set(["forming", "confirmed", "invalidated"]);
+
+const patternShapeDetectors = new Set([
+  "fractal",
+  "double_extreme",
+  "head_and_shoulders",
+  "ma5_pullback",
+]);
+
+function decodePatternShapeBar(value: unknown, label: string): PatternShapeBarRef {
+  if (!isRecord(value)) throw new GatewayValidationError(`${label} must be an object`);
+  const index = requireFiniteNumber(value, "index");
+  if (!Number.isInteger(index) || index < 0) {
+    throw new GatewayValidationError(`${label}.index must be a non-negative integer`);
+  }
+  const closedAt = parseTimestamp(requireString(value, "closedAt"), `${label}.closedAt`);
+  return { index, closedAt: closedAt.toISOString() };
+}
+
+function decodePatternShapeSignal(
+  value: unknown,
+  label: string,
+  candleCount: number,
+): PatternShapeSignal {
+  if (!isRecord(value)) throw new GatewayValidationError(`${label} must be an object`);
+  const kind = requireString(value, "kind");
+  if (!patternShapeKinds.has(kind)) {
+    throw new GatewayValidationError(`${label}.kind is unsupported`);
+  }
+  const status = requireString(value, "status");
+  if (!patternShapeStatuses.has(status)) {
+    throw new GatewayValidationError(`${label}.status is unsupported`);
+  }
+  const direction = requireString(value, "direction");
+  if (direction !== "bullish" && direction !== "bearish") {
+    throw new GatewayValidationError(`${label}.direction must be bullish or bearish`);
+  }
+  if (!Array.isArray(value.bars) || value.bars.length === 0) {
+    throw new GatewayValidationError(`${label}.bars must be a non-empty array`);
+  }
+  const bars = value.bars.map((bar, index) =>
+    decodePatternShapeBar(bar, `${label}.bars[${index}]`),
+  );
+  for (let index = 1; index < bars.length; index += 1) {
+    if (bars[index]!.index <= bars[index - 1]!.index) {
+      throw new GatewayValidationError(`${label}.bars must be strictly increasing`);
+    }
+  }
+  const anchorIndex = requireFiniteNumber(value, "anchorIndex");
+  if (!bars.some((bar) => bar.index === anchorIndex)) {
+    throw new GatewayValidationError(`${label}.anchorIndex must match one of its bars`);
+  }
+  const eventIndex = requireFiniteNumber(value, "eventIndex");
+  if (!Number.isInteger(eventIndex) || eventIndex < 0 || eventIndex >= candleCount) {
+    throw new GatewayValidationError(`${label}.eventIndex is out of range`);
+  }
+  const name = requireString(value, "name");
+  const invalidation = requireString(value, "invalidation");
+  const explanation = requireString(value, "explanation");
+  if (!name.trim() || !invalidation.trim() || !explanation.trim()) {
+    throw new GatewayValidationError(`${label} carries an empty required field`);
+  }
+  const readingRecord = value.reading;
+  if (!isRecord(readingRecord)) {
+    throw new GatewayValidationError(`${label}.reading must be an object`);
+  }
+  const summary = requireString(readingRecord, "summary");
+  const detail = requireString(readingRecord, "detail");
+  const honesty = requireString(readingRecord, "honesty");
+  if (!summary.trim() || !detail.trim()) {
+    throw new GatewayValidationError(`${label}.reading carries an empty required field`);
+  }
+  if (honesty !== "历史胜率待回测") {
+    throw new GatewayValidationError(
+      `${label}.reading.honesty must carry the fixed disclosure`,
+    );
+  }
+  requireExpectedMethod(value, "patterns-shapes-v1", label);
+  return {
+    kind: kind as PatternShapeSignal["kind"],
+    name,
+    status: status as PatternShapeSignal["status"],
+    direction,
+    bars,
+    anchorIndex,
+    eventIndex,
+    invalidation,
+    explanation,
+    reading: { summary, detail, honesty },
+    methodVersion: "patterns-shapes-v1",
+  };
+}
+
+function decodePatternShapeDetection(
+  value: unknown,
+  index: number,
+  candleCount: number,
+): PatternShapeDetection {
+  const label = `indicators.patternShapes.detections[${index}]`;
+  if (!isRecord(value)) throw new GatewayValidationError(`${label} must be an object`);
+  const detector = requireString(value, "detector");
+  if (!patternShapeDetectors.has(detector)) {
+    throw new GatewayValidationError(`${label}.detector is unsupported`);
+  }
+  const minimumWindow = requireFiniteNumber(value, "minimumWindow");
+  if (!Number.isInteger(minimumWindow) || minimumWindow < 1) {
+    throw new GatewayValidationError(`${label}.minimumWindow must be a positive integer`);
+  }
+  const sampleSize = requireFiniteNumber(value, "sampleSize");
+  if (!Number.isInteger(sampleSize) || sampleSize < 0) {
+    throw new GatewayValidationError(`${label}.sampleSize must be a non-negative integer`);
+  }
+  const qualityStatus = requireStatus(value, "qualityStatus");
+  if (qualityStatus !== "live" && qualityStatus !== "unavailable") {
+    throw new GatewayValidationError(`${label} has an unsupported quality status`);
+  }
+  const missingReason = value.missingReason;
+  if (
+    missingReason !== null &&
+    (typeof missingReason !== "string" || missingReason.trim() === "")
+  ) {
+    throw new GatewayValidationError(
+      `${label}.missingReason must be a non-empty string or null`,
+    );
+  }
+  if (!Array.isArray(value.signals)) {
+    throw new GatewayValidationError(`${label}.signals must be an array`);
+  }
+  if (qualityStatus === "unavailable") {
+    if (value.signals.length !== 0 || missingReason === null) {
+      throw new GatewayValidationError(
+        `${label} unavailable detection carries no signals and requires a reason`,
+      );
+    }
+  } else if (missingReason !== null) {
+    throw new GatewayValidationError(`${label} a live detection cannot carry a missing reason`);
+  }
+  const signals = value.signals.map((signal, signalIndex) =>
+    decodePatternShapeSignal(signal, `${label}.signals[${signalIndex}]`, candleCount),
+  );
+  requireExpectedMethod(value, "patterns-shapes-v1", label);
+  return {
+    detector: detector as PatternShapeDetection["detector"],
+    minimumWindow,
+    sampleSize,
+    qualityStatus,
+    missingReason: missingReason as string | null,
+    methodVersion: "patterns-shapes-v1",
+    signals,
+  };
+}
+
+function decodePatternShapesIndicator(
+  value: unknown,
+  cutoff: Date,
+  candleCount: number,
+): LivePatternShapesIndicator {
+  if (!isRecord(value)) {
+    throw new GatewayValidationError("indicators.patternShapes must be an object");
+  }
+  const metadata = requireSnapshotMetadata(value, "indicators.patternShapes", cutoff);
+  if (metadata.source !== "analysis-core") {
+    throw new GatewayValidationError("indicators.patternShapes must identify analysis-core");
+  }
+  requireExpectedMethod(value, "patterns-shapes-v1", "indicators.patternShapes");
+  const qualityStatus = requireStatus(value, "qualityStatus");
+  if (qualityStatus !== "live" && qualityStatus !== "unavailable") {
+    throw new GatewayValidationError(
+      "indicators.patternShapes has an unsupported quality status",
+    );
+  }
+  if (!Array.isArray(value.detections)) {
+    throw new GatewayValidationError("indicators.patternShapes.detections must be an array");
+  }
+  if (qualityStatus === "unavailable" && value.detections.length !== 0) {
+    throw new GatewayValidationError("an unavailable patternShapes entry carries no detections");
+  }
+  const detections = value.detections.map((detection, index) =>
+    decodePatternShapeDetection(detection, index, candleCount),
+  );
+  return {
+    ...metadata,
+    source: "analysis-core",
+    methodVersion: "patterns-shapes-v1",
+    qualityStatus,
+    detections,
   };
 }
 
@@ -1007,6 +1220,11 @@ function unavailableTechnical(
         missingReason: "technical section unavailable",
         methodVersion: "close-to-close-realized-v1",
       },
+      patternShapes: {
+        ...metadata,
+        methodVersion: "patterns-shapes-v1",
+        detections: [],
+      },
     },
     magicNine: {
       ...metadata,
@@ -1022,7 +1240,171 @@ function unavailableTechnical(
   };
 }
 
-function v3ParticipationPlaceholders(candles: Candle[]): ParticipationBar[] {
+/** Window size, in minutes, backing each intraday candle interval. */
+const INTRADAY_INTERVAL_MINUTES: Record<string, number> = {
+  "1m": 1,
+  "5m": 5,
+  "15m": 15,
+  "30m": 30,
+  "60m": 60,
+};
+
+/**
+ * One candle's participation bar reported unavailable, mirroring
+ * analysis_core's own `_unavailable`
+ * (services/analysis_core/us_stock_helper_core/participation.py) so a
+ * client-side gap and a server-side gap read the same way.
+ */
+function unavailableParticipationBarForCandle(
+  candle: Candle,
+  reason: string,
+  coverage: number,
+): ParticipationBar {
+  return {
+    closedAt: candle.timestamp,
+    mainShare: null,
+    retailShare: null,
+    mainActivity: null,
+    retailActivity: null,
+    netFlow: null,
+    coverage,
+    source: "moomoo",
+    asOf: candle.timestamp,
+    availableAt: candle.availableAt,
+    methodVersion: "order-size-activity-share-v1",
+    qualityStatus: "unavailable",
+    missingReason: reason,
+  };
+}
+
+/**
+ * Builds one order-size participation bar per completed candle by diffing
+ * adjacent minute-cadence flow samples and aggregating the deltas that land
+ * inside each candle's window — the same minute-differencing analysis_core's
+ * reference implementation performs
+ * (services/analysis_core/us_stock_helper_core/participation.py, `_build_bar`;
+ * design doc §7.3/§7.4), not a single sample's session-cumulative magnitude.
+ * moomoo's buckets reset only at session open, so reading one sample's own
+ * magnitude as "this candle's activity" silently reports the whole
+ * session-to-date split on every candle after the first — the exact defect
+ * this function replaces.
+ *
+ * A minute whose predecessor is missing from the served series (including
+ * the session's very first sample, which has no baseline of its own)
+ * contributes no delta and is not interpolated; that shortfall shows up as
+ * reduced coverage and, once coverage is incomplete, as an honest
+ * "incomplete minute coverage" bar — never a fabricated split.
+ *
+ * Day and week candles are explicitly unsupported in v1 (design doc
+ * §2.1/§7.4): no validated same-source historical capital-flow feed backs
+ * them yet, so every bar for those intervals is reported unavailable rather
+ * than silently reusing an intraday-shaped split.
+ */
+function participationBarsFromCandlesAndFlow(
+  candles: Candle[],
+  flowPoints: NormalizedCapitalFlowPoint[],
+  interval: string,
+): ParticipationBar[] {
+  if (interval === "day" || interval === "week") {
+    return candles.map((candle) =>
+      unavailableParticipationBarForCandle(candle, "unsupported interval in v1", 0),
+    );
+  }
+  const windowMinutes = INTRADAY_INTERVAL_MINUTES[interval];
+  if (!windowMinutes) {
+    return candles.map((candle) =>
+      unavailableParticipationBarForCandle(candle, "unsupported intraday cadence", 0),
+    );
+  }
+
+  const byTimestamp = new Map(flowPoints.map((point) => [point.timestamp, point]));
+  const windowMs = windowMinutes * 60_000;
+  const ONE_MINUTE_MS = 60_000;
+
+  return candles.map((candle) => {
+    const closedAtMs = Date.parse(candle.timestamp);
+    const openedAtMs = closedAtMs - windowMs;
+
+    // Mirrors participation.py's own upfront session check: any distinct
+    // session tag among the points the window even touches disqualifies the
+    // bar, not only a mismatch between an adjacent delta pair.
+    const sessionsInWindow = new Set<string>();
+    let latestAvailableAt = candle.availableAt;
+    for (const point of flowPoints) {
+      const pointMs = Date.parse(point.timestamp);
+      if (pointMs < openedAtMs || pointMs > closedAtMs) continue;
+      sessionsInWindow.add(point.session);
+      if (Date.parse(point.availableAt) > Date.parse(latestAvailableAt)) {
+        latestAvailableAt = point.availableAt;
+      }
+    }
+    let mixedSession = sessionsInWindow.size > 1;
+
+    let mainActivity = 0;
+    let retailActivity = 0;
+    let netFlow = 0;
+    let observedMinutes = 0;
+    for (
+      let stepMs = openedAtMs + ONE_MINUTE_MS;
+      stepMs <= closedAtMs;
+      stepMs += ONE_MINUTE_MS
+    ) {
+      const current = byTimestamp.get(new Date(stepMs).toISOString());
+      const previous = byTimestamp.get(new Date(stepMs - ONE_MINUTE_MS).toISOString());
+      if (!current || !previous) continue;
+      if (current.session !== previous.session) {
+        mixedSession = true;
+        continue;
+      }
+      observedMinutes += 1;
+      mainActivity +=
+        Math.abs(current.extraLargeOrderNetFlow - previous.extraLargeOrderNetFlow) +
+        Math.abs(current.largeOrderNetFlow - previous.largeOrderNetFlow);
+      retailActivity +=
+        Math.abs(current.mediumOrderNetFlow - previous.mediumOrderNetFlow) +
+        Math.abs(current.smallOrderNetFlow - previous.smallOrderNetFlow);
+      netFlow += current.totalNetFlow - previous.totalNetFlow;
+    }
+
+    const coverage = observedMinutes / windowMinutes;
+    if (mixedSession) {
+      return unavailableParticipationBarForCandle(candle, "mixed session flow points", coverage);
+    }
+    if (observedMinutes !== windowMinutes) {
+      return unavailableParticipationBarForCandle(candle, "incomplete minute coverage", coverage);
+    }
+    const activityTotal = mainActivity + retailActivity;
+    if (!(activityTotal > 0)) {
+      return unavailableParticipationBarForCandle(candle, "zero activity denominator", coverage);
+    }
+    const mainShare = mainActivity / activityTotal;
+    return {
+      closedAt: candle.timestamp,
+      mainShare,
+      retailShare: 1 - mainShare,
+      mainActivity,
+      retailActivity,
+      netFlow,
+      coverage,
+      source: "moomoo",
+      asOf: candle.timestamp,
+      availableAt: latestAvailableAt,
+      methodVersion: "order-size-activity-share-v1",
+      qualityStatus: "live",
+      missingReason: null,
+    };
+  });
+}
+
+/**
+ * Mirrors the currentSessionFlow section's own unavailability instead of
+ * asserting one the server never made. One bar per completed candle keeps
+ * the chart's per-candle overlay slots filled, same as a live section would.
+ */
+function v3ParticipationUnavailable(
+  candles: Candle[],
+  reason: string | null,
+): ParticipationBar[] {
   return candles.map((candle) => ({
     closedAt: candle.timestamp,
     mainShare: null,
@@ -1036,7 +1418,7 @@ function v3ParticipationPlaceholders(candles: Candle[]): ParticipationBar[] {
     availableAt: candle.availableAt,
     methodVersion: "order-size-activity-share-v1",
     qualityStatus: "unavailable",
-    missingReason: "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
+    missingReason: reason,
   }));
 }
 
@@ -1317,6 +1699,11 @@ export function decodeStockSnapshotEnvelope(
     cutoff,
     candles.length,
   );
+  const patternShapes = decodePatternShapesIndicator(
+    value.indicators.patternShapes,
+    cutoff,
+    candles.length,
+  );
   const macdRecord = value.indicators.macd;
   if (!isRecord(macdRecord)) throw new GatewayValidationError("indicators.macd must be an object");
   const macdMetadata = requireSnapshotMetadata(macdRecord, "indicators.macd", cutoff);
@@ -1334,7 +1721,7 @@ export function decodeStockSnapshotEnvelope(
     signal: macdValues[1]!,
     histogram: macdValues[2]!,
     series: decodeMacdSeries(
-      macdRecord.series,
+      macdRecord,
       macdMetadata,
       macdStatus,
       candles.length,
@@ -1434,7 +1821,13 @@ export function decodeStockSnapshotEnvelope(
   if (!Array.isArray(value.warnings) || !value.warnings.every((warning) => typeof warning === "string")) {
     throw new GatewayValidationError("warnings must be an array of strings");
   }
-  const indicators: LiveTechnicalIndicators = { ma5, rsi, macd, volatility };
+  const indicators: LiveTechnicalIndicators = {
+    ma5,
+    rsi,
+    macd,
+    volatility,
+    patternShapes,
+  };
   const sections = legacyV2Sections({
     quote,
     candles,
@@ -1686,6 +2079,11 @@ function decodeV3TechnicalSection(
     cutoff,
     candleCount,
   );
+  const patternShapes = decodePatternShapesIndicator(
+    indicatorsRecord.patternShapes,
+    cutoff,
+    candleCount,
+  );
   const macdRecord = indicatorsRecord.macd;
   if (!isRecord(macdRecord)) {
     throw new GatewayValidationError("technical indicators.macd must be an object");
@@ -1715,7 +2113,7 @@ function decodeV3TechnicalSection(
     signal: macdValues[1]!,
     histogram: macdValues[2]!,
     series: decodeMacdSeries(
-      macdRecord.series,
+      macdRecord,
       macdMetadata,
       macdStatus,
       candleCount,
@@ -1793,6 +2191,7 @@ function decodeV3TechnicalSection(
     ["rsi", rsi],
     ["macd", macd],
     ["volatility", volatility],
+    ["patternShapes", patternShapes],
     ["magicNine", magicNine],
   ] as const) {
     if (
@@ -1806,7 +2205,7 @@ function decodeV3TechnicalSection(
     }
   }
   return withSectionData(section, {
-    indicators: { ma5, rsi, macd, volatility },
+    indicators: { ma5, rsi, macd, volatility, patternShapes },
     magicNine,
   });
 }
@@ -2174,6 +2573,14 @@ export function decodeStockSnapshotV3Envelope(
     flattenedCandles,
     cutoff.toISOString(),
   );
+  const participationBars =
+    sectionIsValidated(currentSessionFlow) && currentSessionFlow.data
+      ? participationBarsFromCandlesAndFlow(
+          flattenedCandles,
+          currentSessionFlow.data,
+          interval,
+        )
+      : v3ParticipationUnavailable(flattenedCandles, currentSessionFlow.reason);
   const technicalUsable =
     sectionIsValidated(technical) && technical.data !== null && candlesUsable;
   const institutionalHoldings =
@@ -2220,7 +2627,7 @@ export function decodeStockSnapshotV3Envelope(
     priceAdjustment: candlesUsable ? candles.data!.priceAdjustment : null,
     quote: quoteUsable ? quote.data : null,
     candles: flattenedCandles,
-    participationBars: v3ParticipationPlaceholders(flattenedCandles),
+    participationBars,
     indicators: technicalUsable
       ? technical.data!.indicators
       : fallbackTechnical.indicators,

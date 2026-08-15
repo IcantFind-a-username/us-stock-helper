@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Literal, Sequence
 from urllib.parse import urlparse
 
+from us_stock_helper_core import ADVISER_SCORE_CAP
+
 from .registry import ADVISER_PROFILES, AdviserProfile
 
 
@@ -189,7 +191,7 @@ def validate_opinion(
     opinion: AdviserOpinion,
     request: CouncilRequest,
     *,
-    per_adviser_cap: float = 3.0,
+    per_adviser_cap: float = ADVISER_SCORE_CAP,
     minimum_reliable_facts: int = 1,
     minimum_credibility: float = 0.5,
 ) -> AdviserOpinion:
@@ -218,8 +220,8 @@ def aggregate_opinions(
     baseline_score: float,
     baseline_direction: Direction,
     opinions: Sequence[AdviserOpinion],
-    council_cap: float = 4.0,
-    per_adviser_cap: float = 3.0,
+    council_cap: float = ADVISER_SCORE_CAP,
+    per_adviser_cap: float = ADVISER_SCORE_CAP,
     hard_gate_passed: bool,
 ) -> CouncilResult:
     if not 0 <= baseline_score <= 100:

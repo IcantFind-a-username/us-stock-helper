@@ -19,6 +19,7 @@ from information_layer import Citation, EvidenceEvent
 from information_layer.factors import FactorSnapshot
 from information_layer.feeds import FRESHNESS_ATTRIBUTE, STALE_ATTRIBUTE
 from us_stock_helper_core import (
+    ADVISER_SCORE_CAP,
     Horizon,
     OHLCVBar,
     RiskPreference,
@@ -35,6 +36,7 @@ from .adviser_provider import (
     provider_from_environment,
     unavailable_for_mode,
 )
+from .institutional_flow_provider import InstitutionalFlowReading
 
 
 SCHEMA_VERSION = "1"
@@ -54,9 +56,16 @@ _PREFERENCES = {value.value: value for value in RiskPreference}
 
 
 class AnalysisProvider(Protocol):
-    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]: ...
+    """Candles are required; evidence arrives through one of two shapes.
 
-    def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]: ...
+    Preferred: read_evidence(symbol) returning an object carrying request-
+    scoped .events and .gaps. Providers written before partial reads existed
+    — including the fakes several test modules inject — expose
+    evidence_for(symbol) instead, optionally with a provider-level
+    evidence_gaps(); _read_evidence bridges both.
+    """
+
+    def bars_for(self, symbol: str, interval: str) -> tuple[OHLCVBar, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,16 +81,44 @@ class AnalysisService:
     # route exactly as before and report only the adviser as unavailable.
     adviser_factory: Callable[[], AdviserSource] = provider_from_environment
 
-    def _evidence_gaps(self) -> tuple[str, ...]:
-        """Which sources the last read could not reach, if the provider says.
+    def _read_evidence(
+        self,
+        symbol: str,
+    ) -> tuple[tuple[EvidenceEvent, ...], tuple[str, ...]]:
+        """One request's evidence, with the sources that read could not reach.
 
+        The gaps travel with the call: the provider is one shared instance
+        behind a threading server, and reading them back from provider state
+        later let a concurrent clean sweep erase another request's disclosure.
         Providers written before partial reads existed — including the fakes
-        several test modules inject — have nothing to report, and a decision
-        with no gaps to name is the ordinary case rather than an error.
+        several test modules inject — still answer through evidence_for, with
+        anything their optional provider-level evidence_gaps() reports carried
+        along as before.
         """
 
+        read = getattr(self.provider, "read_evidence", None)
+        if callable(read):
+            result = read(symbol)
+            return tuple(result.events), tuple(result.gaps)
+        events = tuple(self.provider.evidence_for(symbol))
         report = getattr(self.provider, "evidence_gaps", None)
-        return tuple(report()) if callable(report) else ()
+        return events, (tuple(report()) if callable(report) else ())
+
+    def read_market_evidence(
+        self,
+    ) -> tuple[tuple[EvidenceEvent, ...], tuple[str, ...]]:
+        """Everything the shared evidence provider currently holds, unscoped.
+
+        Reuses `_read_evidence`'s bridging between the preferred
+        `read_evidence` shape and the legacy `evidence_for`/`evidence_gaps`
+        shape, but asks for no symbol. `EvidenceCollector.evidence`'s own
+        scope filter (`if not focus or ...`) already treats an empty focus as
+        "every symbol currently held", so a per-decision read with nothing to
+        focus on is what turns this into a market-wide read — not a second
+        fetch path, and not a second collector for the poll coordinator to
+        throttle separately from a decision's.
+        """
+        return self._read_evidence("")
 
     def _factor_snapshot(
         self,
@@ -102,10 +139,35 @@ class AnalysisService:
         try:
             snapshot = read(symbol, as_of)
         except Exception:  # noqa: BLE001 - this is the degradation boundary
-            return None, "Public factor sources could not be read for this decision."
+            return None, "本次未能读取公开因子数据源。"
         if not isinstance(snapshot, FactorSnapshot):
-            return None, "Public factor sources returned an unsupported snapshot."
+            return None, "公开因子数据源返回了不支持的快照格式。"
         return snapshot, None
+
+    def _institutional_flow_reading(
+        self,
+        symbol: str,
+        as_of: datetime,
+    ) -> tuple[InstitutionalFlowReading | None, str | None]:
+        """Read the gateway-derived institutional-capital factor, without failure.
+
+        Mirrors `_factor_snapshot`'s degradation shape exactly: a provider
+        that has not wired this in yet answers (None, None) and the decision
+        proceeds exactly as it always has; one that has wired it in but hits
+        an unexpected fault reports the fault in a note instead of taking
+        the whole decision down.
+        """
+
+        read = getattr(self.provider, "institutional_flow_for", None)
+        if not callable(read):
+            return None, None
+        try:
+            reading = read(symbol, as_of)
+        except Exception:  # noqa: BLE001 - this is the degradation boundary
+            return None, "本次未能读取机构资金数据源。"
+        if not isinstance(reading, InstitutionalFlowReading):
+            return None, "机构资金数据源返回了不支持的读数格式。"
+        return reading, None
 
     def decision(
         self,
@@ -124,16 +186,12 @@ class AnalysisService:
             raise InvalidRequest(f"unsupported risk preference: {risk_preference}")
         adviser_mode = _adviser_mode(adviser)
 
-        # Take the cutoff after the data is in hand. Sampling it first made
-        # any bar published during the round trip newer than the cutoff, and
-        # the chain's own point-in-time invariant then rejected the request.
         bars = self.provider.bars_for(normalized, self.interval)
-        as_of = self.clock()
         if not bars:
             return self._unavailable(
                 normalized,
                 horizon,
-                as_of,
+                self.clock(),
                 "No completed candles were available at the decision cutoff.",
                 # Nothing was scored, so there is no baseline for a council to
                 # move and no reason to spend anything finding that out.
@@ -144,8 +202,20 @@ class AnalysisService:
                 ),
             )
 
-        evidence = self.provider.evidence_for(normalized)
+        # Take the cutoff after ALL the data is in hand — evidence as well as
+        # bars. Sampling it before the bar fetch made any bar published during
+        # the round trip newer than the cutoff and failed the request; sampling
+        # it before the evidence fetch was quieter and worse: a live collector
+        # stamps available_at = retrieved_at, so every event first retrieved
+        # during the request fell after the cutoff and was silently filed as
+        # future — breaking news was invisible to precisely the request that
+        # fetched it, served as a measured-looking neutral.
+        evidence, gaps = self._read_evidence(normalized)
+        as_of = self.clock()
         factors, factor_failure = self._factor_snapshot(normalized, as_of)
+        institutional, institutional_failure = self._institutional_flow_reading(
+            normalized, as_of
+        )
         output = DecisionEngine().evaluate(
             DecisionInputs(
                 symbol=normalized,
@@ -162,14 +232,14 @@ class AnalysisService:
                     factors.geopolitics.measured_value if factors else None
                 ),
                 institutional_flow=(
-                    factors.institutional_flow.measured_value if factors else None
+                    institutional.value if institutional else None
                 ),
                 fundamentals=(
                     factors.fundamentals.measured_value if factors else None
                 ),
                 risk_preference=_PREFERENCES[risk_preference],
                 invalidation_conditions=(
-                    "The cited evidence is withdrawn or contradicted.",
+                    "引用的证据被撤回或被证伪。",
                 ),
             )
         )
@@ -184,6 +254,19 @@ class AnalysisService:
             notes.extend(
                 f"{name} unavailable ({reason.value})."
                 for name, reason in factors.unavailable_reasons()
+            )
+        if institutional_failure:
+            notes.append(institutional_failure)
+        if institutional and institutional.unavailable_reason is not None:
+            # Same raw, code-bearing shape as the public-factor notes above
+            # (mirrors "Hard gate active: <gate>,..."): apps/mobile's
+            # serverVocabulary.ts is what turns this into Chinese, not this
+            # service. This is the "named reason, not 未接入" the 2026-08-15
+            # institutional-capital factor wiring exists to serve — a
+            # symbol with neither ingredient still says exactly why.
+            notes.append(
+                "institutional_flow unavailable "
+                f"({institutional.unavailable_reason.value})."
             )
         stale_count = sum(1 for item in citations if item["stale"] is True)
         if stale_count:
@@ -204,11 +287,21 @@ class AnalysisService:
                 f"{output.adjusted_score.factor_coverage:.0%} of the factor "
                 "weight; the rest has no source yet."
             )
+        # The point-in-time invariant may still exclude an event stamped after
+        # even this honestly-taken cutoff (an embargo, a skewed publisher
+        # clock). The exclusion is legitimate; hiding it is not — an exclusion
+        # the reader cannot see patches the record instead of protecting it.
+        excluded = output.evidence_packet.excluded_future_event_ids
+        if excluded:
+            notes.append(
+                f"有 {len(excluded)} 条证据在决策截点之后才可用，"
+                "未纳入本次结论：" + "、".join(excluded)
+            )
         # A source that could not be read is stated rather than absorbed. The
         # decision is still served — one slow publisher used to fail every
         # symbol at once — but a reader must never mistake a partial sweep of
-        # the news for a complete one.
-        gaps = self._evidence_gaps()
+        # the news for a complete one. The gaps were captured with the fetch
+        # itself, so a neighbouring request's sweep cannot rewrite them.
         if gaps:
             notes.append(
                 f"本次未能读取 {len(gaps)} 个情报源，证据可能不完整：" + "、".join(gaps)
@@ -234,6 +327,29 @@ class AnalysisService:
         )
         notes.extend(briefing.notes)
 
+        # One adjustment authority: engine.evaluate is never handed adviser
+        # opinions (see the comment above), so output.adviser_adjustment is
+        # always 0.0 and is not what moved anything. The council's own
+        # verdict — already voided by any hard gate and clamped to
+        # ±ADVISER_SCORE_CAP inside apply_hard_gate — is the real adjustment
+        # when a council ran at all. A council that never ran (not
+        # requested, unreachable, or convened only for news) has no
+        # adjustment to report; 0.0 would be a measured neutral for a
+        # judgement nobody made.
+        served_score = _score(output.adjusted_score)
+        council_value = briefing.council.get("value")
+        if council_value is None:
+            adviser_adjustment: float | None = None
+            notes.append(
+                "本次没有召开顾问委员会，顾问调整为空，而非测得的零。"
+            )
+        else:
+            adviser_adjustment = council_value["scoreAdjustment"]
+            assert abs(adviser_adjustment) <= ADVISER_SCORE_CAP, (
+                "council scoreAdjustment exceeded the published cap"
+            )
+            served_score["value"] = council_value["adjustedScore"]
+
         return {
             "schemaVersion": SCHEMA_VERSION,
             "status": "live",
@@ -241,9 +357,9 @@ class AnalysisService:
             "horizon": horizon,
             "interval": self.interval,
             "decisionCutoff": _iso(as_of),
-            "score": _score(output.adjusted_score),
+            "score": served_score,
             "baselineScore": _score(output.baseline_score),
-            "adviserAdjustment": output.adviser_adjustment,
+            "adviserAdjustment": adviser_adjustment,
             "forecast": _forecast(output.forecast),
             "riskPlan": _risk_plan(output.risk_plan),
             "sentiment": {
@@ -279,7 +395,9 @@ class AnalysisService:
             "decisionCutoff": _iso(as_of),
             "score": None,
             "baselineScore": None,
-            "adviserAdjustment": 0.0,
+            # No decision was reached at all, so there is no council to have
+            # run and no baseline for it to have moved.
+            "adviserAdjustment": None,
             "forecast": None,
             "riskPlan": None,
             "sentiment": None,

@@ -1,3 +1,4 @@
+import { ADVISER_SCORE_CAP } from "@/domain/models";
 import type {
   AdviserBlock,
   AdviserBlockStatus,
@@ -5,6 +6,7 @@ import type {
   AdviserConclusion,
   AdviserUsage,
   CouncilFrameworkOpinion,
+  DataHealth,
   Decision,
   DecisionAdviserCouncil,
   DecisionForecast,
@@ -13,6 +15,11 @@ import type {
   DecisionScore,
   FactorContribution,
   Horizon,
+  MarketBrief,
+  MarketBriefCitation,
+  MarketBriefDriverCoverage,
+  MarketBriefSentiment,
+  MarketDriverCategory,
 } from "@/domain/models";
 
 /**
@@ -184,6 +191,35 @@ function decodeScore(value: unknown): DecisionScore {
   };
 }
 
+/** Same shape as `score`; null when the engine had nothing to baseline. */
+function decodeOptionalScore(value: unknown): DecisionScore | null {
+  if (value === null || value === undefined) return null;
+  return decodeScore(value);
+}
+
+/**
+ * Null is the whole point: it means no adviser council ran for this
+ * response, a fact the server states explicitly rather than folding into a
+ * measured zero. A council that ran and was voided by a hard gate reports
+ * 0.0, a real number distinct from "nobody asked" -- so this only rejects
+ * shapes that are neither null nor a number, or a number the server's own
+ * ±ADVISER_SCORE_CAP invariant forbids.
+ */
+function decodeAdviserAdjustment(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new DecisionValidationError(
+      "adviserAdjustment must be null or a finite number",
+    );
+  }
+  if (Math.abs(value) > ADVISER_SCORE_CAP) {
+    throw new DecisionValidationError(
+      `adviserAdjustment must not exceed the shared ±${ADVISER_SCORE_CAP} adviser cap`,
+    );
+  }
+  return value;
+}
+
 function decodeForecast(value: unknown): DecisionForecast | null {
   if (value === null || value === undefined) return null;
   if (!isRecord(value)) {
@@ -233,6 +269,42 @@ function decodeForecast(value: unknown): DecisionForecast | null {
   };
 }
 
+/**
+ * Null passes through unchanged; anything else must be exactly a two-element
+ * array of finite numbers, ordered low to high. There is no coercion path: a
+ * shape that does not already satisfy this is refused, not patched into one
+ * that does.
+ */
+function decodeOrderedRange(value: unknown, key: string): [number, number] | null {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.length !== 2) {
+    throw new DecisionValidationError(`${key} must be null or a two-element array`);
+  }
+  const [low, high] = value;
+  if (
+    typeof low !== "number" ||
+    !Number.isFinite(low) ||
+    typeof high !== "number" ||
+    !Number.isFinite(high)
+  ) {
+    throw new DecisionValidationError(`${key} must contain two finite numbers`);
+  }
+  if (low > high) {
+    throw new DecisionValidationError(`${key} bounds must be ordered low to high`);
+  }
+  return [low, high];
+}
+
+/** Null passes through unchanged; anything else must be a finite number. */
+function decodeOptionalFiniteNumber(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new DecisionValidationError(`${key} must be null or a finite number`);
+  }
+  return value;
+}
+
 function decodeRiskPlan(value: unknown): DecisionRiskPlan | null {
   if (value === null || value === undefined) return null;
   if (!isRecord(value)) {
@@ -248,14 +320,9 @@ function decodeRiskPlan(value: unknown): DecisionRiskPlan | null {
   return {
     action: action as DecisionRiskPlan["action"],
     direction: requireString(value, "direction"),
-    entryRange: Array.isArray(value.entryRange)
-      ? (value.entryRange.map(Number) as [number, number])
-      : null,
-    invalidationPrice:
-      typeof value.invalidationPrice === "number" ? value.invalidationPrice : null,
-    targetRange: Array.isArray(value.targetRange)
-      ? (value.targetRange.map(Number) as [number, number])
-      : null,
+    entryRange: decodeOrderedRange(value.entryRange, "entryRange"),
+    invalidationPrice: decodeOptionalFiniteNumber(value, "invalidationPrice"),
+    targetRange: decodeOrderedRange(value.targetRange, "targetRange"),
     maxPositionPercent: requireFiniteNumber(value, "maxPositionPercent"),
     leverage: requireFiniteNumber(value, "leverage"),
     warnings: value.warnings.map(String),
@@ -454,6 +521,282 @@ function decodeAdviserUsage(value: unknown): AdviserUsage | null {
   };
 }
 
+const MARKET_SESSIONS = ["premarket", "regular", "afterhours", "closed"];
+const DATA_HEALTH_VALUES = ["fresh", "stale", "conflict", "insufficient"];
+const MARKET_DRIVER_CATEGORIES = [
+  "news-sentiment",
+  "breadth",
+  "volatility-options",
+  "sector",
+  "rates-dollar",
+  "macro-credit-energy",
+  "liquidity-correlation",
+  "broad-market-trend",
+  "geopolitics",
+];
+
+function decodeMarketBriefSentiment(value: unknown): MarketBriefSentiment {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("market brief sentiment must be an object");
+  }
+  if (!Array.isArray(value.uncertainty)) {
+    throw new DecisionValidationError("sentiment uncertainty must be an array");
+  }
+  return {
+    conclusion: requireString(value, "conclusion"),
+    // Always a measured float, never null, exactly like a decision's
+    // sentiment: 0.0 means unmeasured, and the "情绪未测量" string inside
+    // uncertainty -- not a null value here -- is what says so.
+    actionScore: requireFiniteNumber(value, "actionScore"),
+    uncertainty: value.uncertainty.map(String),
+  };
+}
+
+function decodeMarketBriefDriverCoverage(
+  value: unknown,
+): MarketBriefDriverCoverage {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("driver coverage entry must be an object");
+  }
+  const category = requireString(value, "category");
+  if (!MARKET_DRIVER_CATEGORIES.includes(category)) {
+    throw new DecisionValidationError(
+      `unsupported market driver category: ${category}`,
+    );
+  }
+  if (typeof value.available !== "boolean") {
+    throw new DecisionValidationError("driver coverage available must be boolean");
+  }
+  const conclusion = value.conclusion;
+  if (conclusion !== null && typeof conclusion !== "string") {
+    throw new DecisionValidationError(
+      "driver coverage conclusion must be a string or null",
+    );
+  }
+  const actionScore = decodeOptionalFiniteNumber(value, "actionScore");
+  const missingReason = value.missingReason;
+  if (missingReason !== null && typeof missingReason !== "string") {
+    throw new DecisionValidationError(
+      "driver coverage missingReason must be a string or null",
+    );
+  }
+  if (value.available) {
+    // A sourced category must carry the values it claims to have; an
+    // "available: true" entry with nothing inside it is exactly the kind of
+    // fabricated-looking gap this envelope exists to avoid.
+    if (conclusion === null || actionScore === null) {
+      throw new DecisionValidationError(
+        "an available driver category must carry its conclusion and score",
+      );
+    }
+    if (missingReason !== null) {
+      throw new DecisionValidationError(
+        "an available driver category must not carry a missing reason",
+      );
+    }
+  } else {
+    if (conclusion !== null || actionScore !== null) {
+      throw new DecisionValidationError(
+        "an unavailable driver category must not carry a conclusion or score",
+      );
+    }
+    // Silence here is the failure mode this whole disclosure exists to
+    // prevent: a category with no source and no stated reason reads as an
+    // oversight, not an honest gap.
+    if (typeof missingReason !== "string" || missingReason.trim() === "") {
+      throw new DecisionValidationError(
+        "an unavailable driver category must say why",
+      );
+    }
+  }
+  return {
+    category: category as MarketDriverCategory,
+    available: value.available,
+    conclusion,
+    actionScore,
+    missingReason,
+  };
+}
+
+function decodeMarketBriefCitation(value: unknown): MarketBriefCitation {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("market brief citation must be an object");
+  }
+  const url = requireString(value, "url");
+  if (!url.startsWith("https://")) {
+    throw new DecisionValidationError("market brief citation url must be https");
+  }
+  const freshnessSeconds = decodeOptionalFiniteNumber(value, "freshnessSeconds");
+  const stale = value.stale;
+  if (stale !== null && typeof stale !== "boolean") {
+    throw new DecisionValidationError(
+      "market brief citation stale must be boolean or null",
+    );
+  }
+  return {
+    id: requireString(value, "id"),
+    headline: requireString(value, "headline"),
+    publisher: requireString(value, "publisher"),
+    url,
+    availableAt: requireString(value, "availableAt"),
+    freshnessSeconds,
+    stale,
+  };
+}
+
+/**
+ * Decodes `GET /market-brief`'s envelope with the same strictness discipline
+ * `decodeDecisionEnvelope` already uses: null means an honest absence, never
+ * a coerced zero; an order or credential field anywhere in the payload
+ * rejects the whole response; a citation is refused rather than served over
+ * plain http; the cutoff tolerates the same few minutes of clock skew a
+ * decision's does. The wire shape is frozen by
+ * `.superpowers/sdd/2026-08-15-stage5-objective-review/market-brief-contract.md`.
+ */
+export function decodeMarketBriefEnvelope(
+  value: unknown,
+  { now = new Date() }: { now?: Date } = {},
+): MarketBrief {
+  if (!isRecord(value)) {
+    throw new DecisionValidationError("market brief must be an object");
+  }
+  rejectOrderFields(value);
+  if (value.schemaVersion !== "1") {
+    throw new DecisionValidationError("unsupported market brief schemaVersion");
+  }
+  const status = requireString(value, "status");
+  if (status !== "available" && status !== "unavailable") {
+    throw new DecisionValidationError("market brief status is unsupported");
+  }
+  const cutoff = parseTimestamp(
+    requireString(value, "decisionCutoff"),
+    "decisionCutoff",
+  );
+  // Same tolerance as a decision's cutoff, for the same reason: the service
+  // stamps this the instant it answers, so a few milliseconds of latency --
+  // or of this device's clock lagging -- is not the service claiming to know
+  // the future. That claim is measured in minutes.
+  if (cutoff.getTime() - now.getTime() > CLOCK_SKEW_TOLERANCE_MS) {
+    throw new DecisionValidationError("market brief cutoff is in the future");
+  }
+  const marketSession = requireString(value, "marketSession");
+  if (!MARKET_SESSIONS.includes(marketSession)) {
+    throw new DecisionValidationError("market brief session is unsupported");
+  }
+  const reason = value.reason;
+  if (reason !== null && typeof reason !== "string") {
+    throw new DecisionValidationError(
+      "market brief reason must be a string or null",
+    );
+  }
+  if (!Array.isArray(value.driverCoverage) || value.driverCoverage.length !== 9) {
+    throw new DecisionValidationError(
+      "market brief must name all nine driver categories",
+    );
+  }
+  const driverCoverage = value.driverCoverage.map(decodeMarketBriefDriverCoverage);
+  if (new Set(driverCoverage.map((item) => item.category)).size !== 9) {
+    // Nine entries by count alone lets a duplicate category silently stand
+    // in for a dropped one -- the reader would see nine rows and never
+    // notice one of the nine designed categories never actually showed up.
+    throw new DecisionValidationError(
+      "market brief driver categories must be nine distinct categories",
+    );
+  }
+  if (!Array.isArray(value.citations)) {
+    throw new DecisionValidationError("market brief citations must be an array");
+  }
+  if (!Array.isArray(value.sourceGaps)) {
+    throw new DecisionValidationError("market brief sourceGaps must be an array");
+  }
+  if (!Array.isArray(value.notes)) {
+    throw new DecisionValidationError("market brief notes must be an array");
+  }
+  const notes = value.notes.map((note) => {
+    if (typeof note !== "string" || note.trim() === "") {
+      throw new DecisionValidationError(
+        "market brief notes must contain non-empty strings",
+      );
+    }
+    return note;
+  });
+
+  let dataHealth: DataHealth | null;
+  let sentiment: MarketBriefSentiment | null;
+  if (status === "unavailable") {
+    // The fail-closed path: every configured source failed, so an outage
+    // must never be served looking like a quiet market. The reason names
+    // every failed source, and none of the readings a real sweep would have
+    // produced may ride along with it.
+    if (typeof reason !== "string" || reason.trim() === "") {
+      throw new DecisionValidationError(
+        "an unavailable market brief must say why",
+      );
+    }
+    if (value.dataHealth !== null) {
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry a data health reading",
+      );
+    }
+    if (value.sentiment !== null) {
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry a sentiment reading",
+      );
+    }
+    if (value.citations.length !== 0) {
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry citations",
+      );
+    }
+    if (driverCoverage.some((item) => item.available)) {
+      // Same rule decodeDecisionEnvelope already holds for a decision's own
+      // score: the two states render differently, so a payload claiming
+      // both -- the whole brief unavailable, one driver category available
+      // -- reads as sourced on one screen and as an outage on another.
+      throw new DecisionValidationError(
+        "an unavailable market brief must not carry an available driver category",
+      );
+    }
+    dataHealth = null;
+    sentiment = null;
+  } else {
+    if (reason !== null) {
+      throw new DecisionValidationError(
+        "an available market brief must not carry a reason",
+      );
+    }
+    const dataHealthRaw = value.dataHealth;
+    if (
+      typeof dataHealthRaw !== "string" ||
+      !DATA_HEALTH_VALUES.includes(dataHealthRaw)
+    ) {
+      throw new DecisionValidationError(
+        "market brief data health is unsupported",
+      );
+    }
+    if (value.sentiment === null || value.sentiment === undefined) {
+      throw new DecisionValidationError(
+        "an available market brief must carry a sentiment reading",
+      );
+    }
+    dataHealth = dataHealthRaw as DataHealth;
+    sentiment = decodeMarketBriefSentiment(value.sentiment);
+  }
+
+  return {
+    status,
+    reason: reason ?? null,
+    decisionCutoff: cutoff.toISOString(),
+    marketSession: marketSession as MarketBrief["marketSession"],
+    dataHealth,
+    sentiment,
+    driverCoverage,
+    citations: value.citations.map(decodeMarketBriefCitation),
+    sourceGaps: value.sourceGaps.map(String),
+    notes,
+  };
+}
+
 export function decodeDecisionEnvelope(
   value: unknown,
   { now = new Date() }: { now?: Date } = {},
@@ -495,6 +838,8 @@ export function decodeDecisionEnvelope(
   if (!Array.isArray(value.notes) || !Array.isArray(value.citations)) {
     throw new DecisionValidationError("notes and citations must be arrays");
   }
+  const baselineScore = decodeOptionalScore(value.baselineScore);
+  const adviserAdjustment = decodeAdviserAdjustment(value.adviserAdjustment);
   return {
     status,
     symbol: requireString(value, "symbol"),
@@ -502,6 +847,8 @@ export function decodeDecisionEnvelope(
     interval: requireString(value, "interval"),
     decisionCutoff: cutoff.toISOString(),
     score,
+    baselineScore,
+    adviserAdjustment,
     forecast: decodeForecast(value.forecast),
     riskPlan: decodeRiskPlan(value.riskPlan),
     citations: value.citations.map((item) => {
@@ -571,12 +918,36 @@ export type AnalysisSource = {
     signal?: AbortSignal,
     options?: AnalysisRequestOptions,
   ): Promise<Decision>;
+  /**
+   * Optional because the fakes elsewhere in this codebase only ever exercise
+   * `getDecision`; the real client below always implements it. `GET
+   * /market-brief` takes no symbol or horizon -- it is the Dashboard's
+   * real-mode market hero, safe to call on every load.
+   */
+  getMarketBrief?(signal?: AbortSignal): Promise<MarketBrief>;
 };
 
 export type AnalysisRequestOptions = {
-  /** One explicit, single-stock model call. Never set this on list requests. */
-  adviser?: "news";
+  /**
+   * One explicit, single-stock model call. Never set this on list requests.
+   *
+   * `"news"` asks for the single-report interpretation and rides the
+   * client's normal deadline. `"full"` asks for the thirteen-seat council: on
+   * the wire it becomes `&adviser=true`, not the literal word "full" -- the
+   * server's `_flag` parser only knows `1/true/yes/0/false/no/news`, and
+   * `_adviser_mode` already resolves the boolean `True` to the full council --
+   * and it gets the longer `COUNCIL_TIMEOUT_MS` deadline instead.
+   */
+  adviser?: "news" | "full";
 };
+
+/**
+ * The server's own ceiling for a full council run (up to 300s, ~$0.10/run —
+ * services/analysis_api/README.md). A plain decision or a single-report news
+ * call answers in a few seconds and keeps the client's normal `timeoutMs`;
+ * only the thirteen-seat council needs a deadline this long.
+ */
+const COUNCIL_TIMEOUT_MS = 300_000;
 
 type AnalysisClientOptions = {
   baseUrl: string;
@@ -627,7 +998,11 @@ export function createAnalysisClient({
     );
   }
 
-  async function fetchJson(path: string, callerSignal?: AbortSignal) {
+  async function fetchJson(
+    path: string,
+    callerSignal?: AbortSignal,
+    timeoutOverrideMs?: number,
+  ) {
     if (callerSignal?.aborted) {
       const error = new Error("analysis request was aborted by caller");
       error.name = "AbortError";
@@ -643,7 +1018,10 @@ export function createAnalysisClient({
     };
     const abortFromCaller = () => abortOnce("caller");
     callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
-    const timeout = setTimeout(() => abortOnce("timeout"), timeoutMs);
+    const timeout = setTimeout(
+      () => abortOnce("timeout"),
+      timeoutOverrideMs ?? timeoutMs,
+    );
     try {
       const response = await fetchImpl(`${normalizedBaseUrl}${path}`, {
         method: "GET",
@@ -732,9 +1110,20 @@ export function createAnalysisClient({
         symbol: normalizedSymbol,
         horizon,
       });
-      if (options?.adviser) query.set("adviser", options.adviser);
+      // "full" is this client's name for the mode; the wire only understands
+      // the boolean switch the server's `_flag` parser accepts, which
+      // `_adviser_mode` then resolves to the full council.
+      if (options?.adviser === "full") {
+        query.set("adviser", "true");
+      } else if (options?.adviser) {
+        query.set("adviser", options.adviser);
+      }
       try {
-        const payload = await fetchJson(`/decision?${query.toString()}`, signal);
+        const payload = await fetchJson(
+          `/decision?${query.toString()}`,
+          signal,
+          options?.adviser === "full" ? COUNCIL_TIMEOUT_MS : undefined,
+        );
         const decision = decodeDecisionEnvelope(payload, { now: now() });
         if (
           decision.symbol !== normalizedSymbol ||
@@ -745,6 +1134,15 @@ export function createAnalysisClient({
           );
         }
         return decision;
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        throw toAnalysisRequestError(error);
+      }
+    },
+    async getMarketBrief(signal) {
+      try {
+        const payload = await fetchJson("/market-brief", signal);
+        return decodeMarketBriefEnvelope(payload, { now: now() });
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
         throw toAnalysisRequestError(error);

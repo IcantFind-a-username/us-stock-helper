@@ -42,12 +42,39 @@ def bars() -> tuple[OHLCVBar, ...]:
     return tuple(rows)
 
 
+def daily_bars(*, newest_available_at: datetime) -> tuple[OHLCVBar, ...]:
+    # Production feeds every horizon completed daily candles (see
+    # analysis_api's AnalysisService.interval). A daily bar's available_at is
+    # a session close, not the request instant, so this models the shape live
+    # data actually takes instead of the always-zero-age fixture in bars().
+    rows = []
+    for index in range(40):
+        closed_at = newest_available_at - timedelta(days=(39 - index))
+        price = 100 + index * 0.5
+        rows.append(
+            OHLCVBar(
+                symbol="NVDA",
+                interval="day",
+                opened_at=closed_at - timedelta(hours=6),
+                closed_at=closed_at,
+                available_at=closed_at,
+                open=price - 0.2,
+                high=price + 0.5,
+                low=price - 0.5,
+                close=price,
+                volume=1_000_000,
+            )
+        )
+    return tuple(rows)
+
+
 def event(
     event_id: str,
     *,
     status: ClaimStatus,
     publisher: str = "sec",
     sentiment: float = 0.7,
+    sentiment_measured: bool = True,
     available_at: datetime = AS_OF - timedelta(minutes=2),
     symbols: tuple[tuple[str, float], ...] = (("NVDA", 0.9),),
 ) -> EvidenceEvent:
@@ -71,6 +98,7 @@ def event(
         retrieved_at=available_at,
         claim_status=status,
         sentiment=sentiment,
+        sentiment_measured=sentiment_measured,
         confidence=0.95,
         symbol_relevance=symbols,
     )
@@ -262,6 +290,46 @@ class DecisionEngineTests(unittest.TestCase):
         self.assertIn(HardGate.STALE_DATA, output.adjusted_score.blocked_by)
         self.assertEqual(output.risk_plan.action, AnalyticalAction.AVOID)
 
+    def test_a_daily_bar_from_yesterdays_close_does_not_stale_gate_short_horizon(
+        self,
+    ) -> None:
+        # Reproduces the production shape: SHORT horizon fed daily candles,
+        # queried mid-session so the newest completed bar is yesterday's
+        # close, roughly 22 hours old. A 20-minute intraday budget applied to
+        # this data stale-gates every SHORT decision outside a 20-minute
+        # window after the close.
+        filing = event("filing", status=ClaimStatus.VERIFIED)
+        newest_close = AS_OF - timedelta(hours=22)
+
+        output = DecisionEngine().evaluate(
+            replace(
+                inputs((filing,)),
+                bars=daily_bars(newest_available_at=newest_close),
+                current_price_available_at=newest_close,
+            )
+        )
+
+        self.assertNotIn(HardGate.STALE_DATA, output.adjusted_score.blocked_by)
+
+    def test_a_daily_bar_many_days_old_still_stale_gates_short_horizon(
+        self,
+    ) -> None:
+        # Widening the budget for the daily cadence must not stop catching a
+        # feed that has genuinely gone quiet.
+        filing = event("filing", status=ClaimStatus.VERIFIED)
+        newest_close = AS_OF - timedelta(days=10)
+
+        output = DecisionEngine().evaluate(
+            replace(
+                inputs((filing,)),
+                bars=daily_bars(newest_available_at=newest_close),
+                current_price_available_at=newest_close,
+            )
+        )
+
+        self.assertIn(HardGate.STALE_DATA, output.adjusted_score.blocked_by)
+        self.assertEqual(output.risk_plan.action, AnalyticalAction.AVOID)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -318,6 +386,81 @@ class LiveInputAvailabilityTests(unittest.TestCase):
         # Passing zeros for macro, geopolitics and institutional flow would
         # state neutral judgements no source made.
         self.assertIn("float | None", source)
+
+
+class UnmeasuredSentimentScoringTests(unittest.TestCase):
+    """A news window nobody measured must not score as a measured neutral.
+
+    market_sentiment used to enter the score as 0.0 at full (renormalized)
+    weight whenever the packet was empty or nothing could read it — the
+    factor's weight scaled UP exactly when the system was most blind. An
+    unmeasured reading is factor-unavailable; a measured zero is a reading.
+    """
+
+    def contribution(self, output) -> object:
+        return next(
+            item
+            for item in output.adjusted_score.contributions
+            if item.name == "market_sentiment"
+        )
+
+    def test_an_empty_news_window_reports_the_sentiment_factor_unavailable(
+        self,
+    ) -> None:
+        output = DecisionEngine().evaluate(inputs(()))
+
+        score = output.adjusted_score
+        self.assertIn("market_sentiment", score.unavailable_factors)
+        self.assertIsNone(self.contribution(output).raw_value)
+        self.assertEqual(self.contribution(output).weight, 0.0)
+        # SHORT weights minus the 0.20 sentiment weight: the coverage must
+        # say how blind the score was, not absorb the blindness.
+        self.assertAlmostEqual(score.factor_coverage, 0.8)
+
+    def test_a_window_nothing_could_read_is_unavailable_not_neutral(
+        self,
+    ) -> None:
+        unread = (
+            event(
+                "filing-a",
+                status=ClaimStatus.VERIFIED,
+                sentiment=0.0,
+                sentiment_measured=False,
+            ),
+            event(
+                "filing-b",
+                status=ClaimStatus.VERIFIED,
+                sentiment=0.0,
+                sentiment_measured=False,
+            ),
+        )
+
+        output = DecisionEngine().evaluate(inputs(unread))
+
+        # The information layer itself flags the window as unmeasured; the
+        # score must agree with it rather than call the same window neutral.
+        self.assertIn(
+            "情绪未测量", output.evidence_packet.sentiment.uncertainty
+        )
+        self.assertIn(
+            "market_sentiment", output.adjusted_score.unavailable_factors
+        )
+        self.assertIsNone(self.contribution(output).raw_value)
+
+    def test_a_measured_neutral_still_scores_as_an_available_factor(
+        self,
+    ) -> None:
+        # 测得中性 is a reading. It must keep its weight and its zero, or the
+        # fix for unmeasured windows would erase genuinely neutral ones.
+        neutral = event("filing", status=ClaimStatus.VERIFIED, sentiment=0.0)
+
+        output = DecisionEngine().evaluate(inputs((neutral,)))
+
+        self.assertNotIn(
+            "market_sentiment", output.adjusted_score.unavailable_factors
+        )
+        self.assertEqual(self.contribution(output).raw_value, 0.0)
+        self.assertGreater(self.contribution(output).weight, 0.0)
 
 
 class LivePathEndToEndTests(unittest.TestCase):

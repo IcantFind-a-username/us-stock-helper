@@ -10,10 +10,7 @@ from information_layer.factors.provider import (
     FactorSnapshot,
     PublicFactorProvider,
 )
-from information_layer.factors.unsupported import (
-    geopolitics_reading,
-    institutional_flow_reading,
-)
+from information_layer.factors.unsupported import geopolitics_reading
 from information_layer.feeds import HttpRequest, HttpResponse
 
 
@@ -70,19 +67,6 @@ def _input(**overrides: object):
 
 
 class AbstentionTests(unittest.TestCase):
-    def test_institutional_flow_abstains_and_says_why_in_words(self) -> None:
-        reading = institutional_flow_reading(as_of=AS_OF)
-
-        self.assertIsNone(reading.value)
-        self.assertEqual(
-            reading.unavailable_reason, FactorUnavailable.NO_QUALIFIED_SOURCE
-        )
-        # An operator reading this has to learn the reason is timeliness, not
-        # a broken fetch, or they will go looking for a bug that is a design
-        # decision.
-        self.assertIn("13F", reading.detail)
-        self.assertIn("45", reading.detail)
-
     def test_geopolitics_abstains_and_says_why_in_words(self) -> None:
         reading = geopolitics_reading(as_of=AS_OF)
 
@@ -93,17 +77,14 @@ class AbstentionTests(unittest.TestCase):
         self.assertTrue(len(reading.detail.strip()) > 40)
 
     def test_an_abstention_is_not_a_neutral_opinion(self) -> None:
-        for reading in (
-            institutional_flow_reading(as_of=AS_OF),
-            geopolitics_reading(as_of=AS_OF),
-        ):
-            with self.subTest(factor=reading.factor):
-                self.assertIsNot(reading.value, 0.0)
-                self.assertIsNone(reading.value)
+        reading = geopolitics_reading(as_of=AS_OF)
+
+        self.assertIsNot(reading.value, 0.0)
+        self.assertIsNone(reading.value)
 
 
 class ProviderTests(unittest.TestCase):
-    def test_a_snapshot_answers_for_all_four_missing_factors(self) -> None:
+    def test_a_snapshot_answers_for_all_three_missing_factors(self) -> None:
         provider = PublicFactorProvider(
             fundamentals=StubFactor(measured("fundamentals")),
             macro=StubFactor(measured("macro")),
@@ -115,7 +96,6 @@ class ProviderTests(unittest.TestCase):
         self.assertIsInstance(snapshot, FactorSnapshot)
         self.assertEqual(snapshot.fundamentals.value, 0.25)
         self.assertEqual(snapshot.macro.value, 0.25)
-        self.assertIsNone(snapshot.institutional_flow.value)
         self.assertIsNone(snapshot.geopolitics.value)
 
     def test_one_broken_factor_does_not_take_the_other_down(self) -> None:
@@ -171,7 +151,6 @@ class ProviderTests(unittest.TestCase):
             dict(snapshot.unavailable_reasons()),
             {
                 "geopolitics": FactorUnavailable.NO_QUALIFIED_SOURCE,
-                "institutional_flow": FactorUnavailable.NO_QUALIFIED_SOURCE,
             },
         )
 

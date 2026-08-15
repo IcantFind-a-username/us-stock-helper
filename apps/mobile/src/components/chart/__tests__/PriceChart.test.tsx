@@ -1,6 +1,7 @@
 import { expect, it } from "@jest/globals";
 import {
   act,
+  fireEvent,
   render,
   userEvent,
 } from "@testing-library/react-native";
@@ -390,6 +391,79 @@ it("keeps following the newest bar when a refresh brings two more", async () => 
   expect(visibleBodies(view)).toHaveLength(drawn);
 });
 
+it("keeps a parked window on the same bars when a refresh rolls a fixed-count series", async () => {
+  // Unlike the growing series above, the server can just as well publish "the
+  // last N bars": total stays the same, but the oldest bars drop off the
+  // front as new ones close. A bare offset cannot tell that apart from having
+  // not moved at all, so a window parked in history used to silently end up
+  // showing bars shifted newer by however many rolled off — same offset,
+  // different candles, no signal to the reader that anything had changed.
+  const view = await render(<PriceChart stock={deep} />);
+
+  await dragBy(120);
+  const drawn = visibleBodies(view).length;
+  const oldestBefore = await selectedTimestamp(view, 0);
+  const newestBefore = await selectedTimestamp(view, 10_000);
+  // Confirms the parked window landed well clear of both ends of the 240-bar
+  // series, so a 3-bar roll cannot possibly run the anchor off the front.
+  expect(oldestBefore).not.toContain(deepCandles[0]!.timestamp);
+  expect(newestBefore).not.toContain(deepCandles.at(-1)!.timestamp);
+
+  const rolledCandles = [
+    ...deepCandles.slice(3),
+    candleAt(240),
+    candleAt(241),
+    candleAt(242),
+  ];
+  await act(async () => {
+    view.rerender(
+      <PriceChart
+        stock={deepSnapshot(rolledCandles, "2026-07-25T16:05:00.000Z")}
+      />,
+    );
+  });
+
+  // Same bars, same zoom — just re-found in a series that shifted under them.
+  expect(await selectedTimestamp(view, 0)).toBe(oldestBefore);
+  expect(await selectedTimestamp(view, 10_000)).toBe(newestBefore);
+  expect(visibleBodies(view)).toHaveLength(drawn);
+});
+
+it("resets a parked window instead of showing a slice of a different series when the interval changes", async () => {
+  const dayCandles: Candle[] = Array.from({ length: 250 }, (_, index) =>
+    candleAt(index),
+  );
+  const daySnapshot: ChartSnapshot = {
+    ...deepSnapshot(dayCandles, "2026-07-25T20:00:00.000Z"),
+    interval: "day",
+  };
+  const view = await render(<PriceChart stock={daySnapshot} />);
+
+  // Park the window off the live edge, the way a reader dragging back into
+  // history would before switching intervals and back.
+  await dragBy(90_000);
+  expect(await selectedTimestamp(view, 0)).toContain(dayCandles[0]!.timestamp);
+
+  const intradayCandles: Candle[] = Array.from({ length: 240 }, (_, index) =>
+    candleAt(index),
+  );
+  const intradaySnapshot: ChartSnapshot = {
+    ...deepSnapshot(intradayCandles, "2026-07-25T20:05:00.000Z"),
+    interval: "15m",
+  };
+  await act(async () => {
+    view.rerender(<PriceChart stock={intradaySnapshot} />);
+  });
+
+  // A window measured against the day series must not be re-applied to a
+  // completely different series just because the bar counts still fit; the
+  // chart opens on the new series' own live edge instead of a mid-history
+  // slice left over from the one the reader was looking at before.
+  expect(await selectedTimestamp(view, 10_000)).toContain(
+    intradayCandles.at(-1)!.timestamp,
+  );
+});
+
 it("moves the volume, MACD, RSI and participation panels with the same drag", async () => {
   const view = await render(<PriceChart stock={deep} />);
   const labelsAt = () =>
@@ -616,6 +690,142 @@ it("marks the exact bar the server confirmed a nine on", async () => {
   expect(firstX).toBeLessThan(lastX);
 });
 
+it("marks each pattern signal's anchor bar with its own small glyph", async () => {
+  const view = await render(
+    <PriceChart
+      patternShapes={[
+        {
+          kind: "double_bottom",
+          name: "W底",
+          status: "confirmed",
+          direction: "bullish",
+          bars: [{ index: 0, closedAt: "2026-07-25T15:50:00.000Z" }],
+          anchorIndex: 1,
+          eventIndex: 1,
+          invalidation: "收盘跌破颈线 104.00",
+          explanation: "两个低点幅度接近；颈线 104.00。",
+          reading: {
+            summary: "W底已确认。",
+            detail: "两个相近的低点之间夹着一个反弹高点。",
+            honesty: "历史胜率待回测",
+          },
+          methodVersion: "patterns-shapes-v1",
+        },
+      ]}
+      stock={snapshot}
+    />,
+  );
+
+  const markers = view.getAllByTestId("pattern-shape-marker", hidden);
+  expect(markers).toHaveLength(1);
+  const label = view.getByTestId("pattern-shape-marker-label", hidden);
+  expect(label.props.children.props.children).toBe("W");
+});
+
+it("hides pattern markers with the showPatternShapes toggle", async () => {
+  const view = await render(
+    <PriceChart
+      patternShapes={[
+        {
+          kind: "fractal_bottom",
+          name: "底分型",
+          status: "confirmed",
+          direction: "bullish",
+          bars: [{ index: 0, closedAt: "2026-07-25T15:50:00.000Z" }],
+          anchorIndex: 0,
+          eventIndex: 1,
+          invalidation: "收盘价跌破分型低点 90.00",
+          explanation: "中间K线的最低价同时低于左右两根K线。",
+          reading: {
+            summary: "底分型。",
+            detail: "第三根K线收盘后才能确认。",
+            honesty: "历史胜率待回测",
+          },
+          methodVersion: "patterns-shapes-v1",
+        },
+      ]}
+      showPatternShapes={false}
+      stock={snapshot}
+    />,
+  );
+
+  expect(view.queryByTestId("pattern-shape-marker", hidden)).toBeNull();
+});
+
+it("bounds each pattern kind's chart markers to its most recent few, not the full fractal history", async () => {
+  const candles = Array.from({ length: 9 }, (_, index) => ({
+    ...snapshot.candles[0]!,
+    timestamp: `2026-07-25T15:${String(5 + index * 5).padStart(2, "0")}:00.000Z`,
+    availableAt: `2026-07-25T15:${String(5 + index * 5).padStart(2, "0")}:01.000Z`,
+    close: 132 + index,
+  }));
+  const fractalAt = (anchorIndex: number) => ({
+    kind: "fractal_bottom" as const,
+    name: "底分型",
+    status: "confirmed" as const,
+    direction: "bullish" as const,
+    bars: [{ index: anchorIndex, closedAt: candles[anchorIndex]!.timestamp }],
+    anchorIndex,
+    eventIndex: anchorIndex,
+    invalidation: "收盘价跌破分型低点 90.00",
+    explanation: "中间K线的最低价同时低于左右两根K线。",
+    reading: {
+      summary: "底分型。",
+      detail: "第三根K线收盘后才能确认。",
+      honesty: "历史胜率待回测",
+    },
+    methodVersion: "patterns-shapes-v1" as const,
+  });
+
+  const view = await render(
+    <PriceChart
+      patternShapes={[
+        fractalAt(0),
+        fractalAt(1),
+        fractalAt(2),
+        fractalAt(3),
+        fractalAt(4),
+        fractalAt(5),
+        fractalAt(6),
+        {
+          kind: "double_bottom",
+          name: "W底",
+          status: "confirmed",
+          direction: "bullish",
+          bars: [{ index: 7, closedAt: candles[7]!.timestamp }],
+          anchorIndex: 7,
+          eventIndex: 7,
+          invalidation: "收盘跌破颈线 104.00",
+          explanation: "两个低点幅度接近；颈线 104.00。",
+          reading: {
+            summary: "W底已确认。",
+            detail: "两个相近的低点之间夹着一个反弹高点。",
+            honesty: "历史胜率待回测",
+          },
+          methodVersion: "patterns-shapes-v1",
+        },
+      ]}
+      stock={{ ...snapshot, candles, participationBars: [] }}
+    />,
+  );
+
+  const labels = view
+    .getAllByTestId("pattern-shape-marker-label", hidden)
+    .map(
+      (node) =>
+        (node.props.children as { props: { children: string } }).props
+          .children,
+    );
+
+  // Seven fractal_bottom instances fired, but only the most recent ones still
+  // get a glyph -- the rest of that kind's history is dropped from the
+  // canvas (PatternHintsCard, not the chart, is where the full log lives).
+  expect(labels.filter((label) => label === "分").length).toBeLessThan(7);
+  expect(labels.filter((label) => label === "分").length).toBeGreaterThan(0);
+  // A kind with only one instance is never dropped by the same bound.
+  expect(labels.filter((label) => label === "W")).toHaveLength(1);
+});
+
 it("draws every published TD count across a complete run", async () => {
   const candles = Array.from({ length: 9 }, (_, index) => ({
     ...snapshot.candles[0]!,
@@ -758,6 +968,33 @@ it("uses locationX to select both candles", async () => {
   expect(view.getByLabelText(/NVDA 收盘时间/).props.accessibilityLabel).toContain(
     snapshot.candles[1]!.timestamp,
   );
+});
+
+it("aligns a tap with the viewBox once the Pressable measures wider than the width geometry assumed", async () => {
+  // The card's own padding can shrink out from under resolveChartWidth's
+  // guess (exactly what happened in the finding this regresses), so the
+  // Pressable the touch actually lands in is wider than the chart's viewBox.
+  // Without correcting for that gap, a tap square on a candle's centre picks
+  // its neighbour instead.
+  const view = await render(<PriceChart stock={deep} />);
+  const selector = view.getByRole("button", { name: /NVDA 图表摘要/ });
+
+  const chartWidth = resolveChartWidth(viewportWidth);
+  const renderedWidth = chartWidth + 20;
+  await act(async () => {
+    fireEvent(selector, "layout", {
+      nativeEvent: { layout: { x: 0, y: 0, width: renderedWidth, height: 460 } },
+    });
+  });
+
+  const targetIndex = 10;
+  const target = visibleBodies(view)[targetIndex]!;
+  const targetTimestamp = deepCandles.slice(-defaultWindowSize)[targetIndex]!.timestamp;
+  const centreX = (target.x as number) + (target.width as number) / 2;
+  const offset = (renderedWidth - chartWidth) / 2;
+
+  const label = await selectedTimestamp(view, centreX + offset);
+  expect(label).toContain(targetTimestamp);
 });
 
 it("selects a missing nearest candle by long press without inventing shares", async () => {

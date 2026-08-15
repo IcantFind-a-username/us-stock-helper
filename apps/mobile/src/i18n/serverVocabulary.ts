@@ -29,6 +29,23 @@ const FACTOR_NAMES: Record<string, string> = {
   geopolitics: "地缘政治",
   institutional_flow: "机构资金",
   fundamentals: "基本面",
+  // Not a FeatureSet member: scoring.py appends this as a ninth
+  // FactorContribution for the style-adviser soft factor, so its card title
+  // needs the same lookup as the other eight (2026-08-15 served-copy sweep).
+  adviser: "顾问软因子",
+};
+
+/**
+ * Why a public factor (macro/geopolitics/institutional_flow/fundamentals)
+ * produced no number, as named by information_layer's FactorUnavailable enum.
+ */
+const FACTOR_UNAVAILABLE_REASONS: Record<string, string> = {
+  source_unreachable: "数据源不可达",
+  source_malformed: "数据源格式异常",
+  no_data_at_cutoff: "截止时点无数据",
+  insufficient_history: "历史数据不足",
+  stale_beyond_window: "超出时效窗口",
+  no_qualified_source: "无合规数据源",
 };
 
 /** Hard gates: the reasons the engine refuses to call a score actionable. */
@@ -138,6 +155,17 @@ const SERVICE_PATTERNS: {
         .split(",")
         .map((gate) => gateLabel(gate.trim()))
         .join("、")}`,
+  },
+  {
+    // service.py assembles this from FactorSnapshot.unavailable_reasons():
+    // a factor id and a FactorUnavailable code, glued with English boilerplate
+    // exactly like the hard-gate line above. This is the "geopolitics
+    // unavailable (no_qualified_source)." note Franz's real-mode QA reported.
+    pattern: /^(\w+) unavailable \((\w+)\)\.$/,
+    translate: (match) =>
+      `${factorLabel(match[1]!)}暂无数据（${
+        FACTOR_UNAVAILABLE_REASONS[match[2]!] ?? match[2]!
+      }）。`,
   },
   {
     pattern:

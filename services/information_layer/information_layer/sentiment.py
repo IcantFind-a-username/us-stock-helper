@@ -25,8 +25,13 @@ def assess_sentiment(
         if cluster.sentiment < -0.05 or cluster.has_conflict
     )
     actionable = tuple(cluster for cluster in clusters if cluster.actionable)
-    action_score = _weighted_score(actionable, action_only=True)
-    observed_score = _weighted_score(clusters, action_only=False)
+    action_measurement = _weighted_score(actionable, action_only=True)
+    observed_measurement = _weighted_score(clusters, action_only=False)
+    # The conclusion text still reads 中性 either way; the flag is what keeps
+    # "no reading was taken" distinct from "a reading of zero was taken" for
+    # consumers that must not score an unmeasured window.
+    action_score = 0.0 if action_measurement is None else action_measurement
+    observed_score = 0.0 if observed_measurement is None else observed_measurement
     uncertainty: list[str] = []
     if any(cluster.has_conflict for cluster in clusters):
         uncertainty.append("来源冲突")
@@ -36,9 +41,12 @@ def assess_sentiment(
         cluster.action_independent_source_count < 2 for cluster in actionable
     ):
         uncertainty.append("独立来源不足")
-    if clusters and not any(cluster.sentiment_measured for cluster in clusters):
+    if not any(cluster.sentiment_measured for cluster in clusters):
         # Reporting a plain "中性" with nothing read claims a reading that was
-        # never taken; the reader has to know the difference.
+        # never taken; the reader has to know the difference. `any()` on an
+        # empty sequence is already False, so a zero-cluster window (no
+        # evidence at all) carries this marker too -- it is not only the
+        # all-unmeasured case that must say so.
         uncertainty.append("情绪未测量")
 
     confidence = (
@@ -59,6 +67,7 @@ def assess_sentiment(
     return MarketSentiment(
         conclusion=conclusion,
         action_score=round(action_score, 6),
+        action_score_measured=action_measurement is not None,
         observed_score=round(observed_score, 6),
         confidence=round(max(0.0, min(confidence, 1.0)), 6),
         decision_signal=signal,
@@ -114,7 +123,7 @@ def _weighted_score(
     clusters: Sequence[EvidenceCluster],
     *,
     action_only: bool,
-) -> float:
+) -> float | None:
     weighted: list[tuple[float, float]] = []
     # Clusters nothing could read carry no opinion. Averaging their 0.0 in at
     # full weight would undo the exclusion done when the cluster was built.
@@ -147,7 +156,9 @@ def _weighted_score(
         weighted.append((sentiment, weight))
     denominator = sum(weight for _, weight in weighted)
     if denominator == 0:
-        return 0.0
+        # No measured cluster carried any weight: there is no reading here to
+        # report, which is a different claim from a reading of zero.
+        return None
     return sum(score * weight for score, weight in weighted) / denominator
 
 

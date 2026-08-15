@@ -70,6 +70,30 @@ it("names the unscored factors in Chinese instead of printing field names", asyn
   expect(missing).not.toHaveTextContent(/fundamentals/);
 });
 
+it("names the adviser soft factor's card title in Chinese, not the bare identifier", async () => {
+  // Franz's 2026-08-15 real-mode QA: the "adviser" contribution scoring.py
+  // appends outside the FeatureSet rendered as the bare identifier "adviser"
+  // on the stock page because FACTOR_NAMES had no entry for it.
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        const score = value.score as Record<string, unknown>;
+        (score.contributions as unknown[]).push({
+          name: "adviser",
+          rawValue: 0.4,
+          weight: 0,
+          points: 1.2,
+          explanation: "顾问软因子设有上限：最多影响 ±3 分，且不能绕过任何硬性拦截。",
+        });
+      })}
+    />,
+  );
+
+  const factors = view.getByTestId("decision-factor-breakdown");
+  expect(factors).toHaveTextContent(/顾问软因子/);
+  expect(factors).not.toHaveTextContent(/^adviser$/);
+});
+
 it("keeps a factor it has no Chinese name for", async () => {
   const view = await render(
     <DecisionCard
@@ -133,6 +157,26 @@ it("translates the note about partial factor coverage", async () => {
   const card = view.getByTestId("decision-card");
   expect(card).toHaveTextContent(/70% 的因子权重/);
   expect(card).not.toHaveTextContent(/the rest has no source yet/);
+});
+
+it("translates the unavailable-factor-with-reason note, the exact string Franz's QA reported", async () => {
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        value.notes = [
+          "geopolitics unavailable (no_qualified_source).",
+          "institutional_flow unavailable (no_qualified_source).",
+        ];
+      })}
+    />,
+  );
+
+  const card = view.getByTestId("decision-card");
+  expect(card).toHaveTextContent(/地缘政治/);
+  expect(card).toHaveTextContent(/机构资金/);
+  expect(card).toHaveTextContent(/无合规数据源/);
+  expect(card).not.toHaveTextContent(/no_qualified_source/);
+  expect(card).not.toHaveTextContent(/unavailable \(/);
 });
 
 it("shows a note and a warning it cannot translate, word for word", async () => {
@@ -217,4 +261,68 @@ it("does not cry blocked when nothing is blocking", async () => {
   const view = await render(<DecisionCard decision={decision()} />);
 
   expect(view.queryByTestId("decision-blocked")).toBeNull();
+});
+
+it("says nothing about an adviser when no council ran for this response", async () => {
+  // decisionFixture()'s default: adviserCouncil is not-requested and
+  // adviserAdjustment is null. A watchlist-style score with no council input
+  // must not read as if an adviser had a say.
+  const view = await render(<DecisionCard decision={decision()} />);
+
+  expect(view.queryByTestId("decision-adviser-fold")).toBeNull();
+});
+
+it("shows the baseline-vs-adjusted split only once the council actually ran", async () => {
+  const view = await render(
+    <DecisionCard
+      decision={decision((value) => {
+        (value.score as Record<string, unknown>).value = 75.5;
+        value.adviserAdjustment = 3;
+        value.adviserCouncil = {
+          status: "available",
+          reason: null,
+          value: {
+            summary: "各框架都读到同一条指引上调。",
+            opinions: [
+              {
+                frameworkId: "technical",
+                displayName: "技术结构框架",
+                stance: "bullish",
+                blindSpot: "对基本面突变无感。",
+                conclusions: [
+                  {
+                    statement: "指引上调支持偏多的解读。",
+                    confidence: "medium",
+                    citations: [
+                      {
+                        evidenceId: "a",
+                        quote: "raises full-year revenue guidance",
+                        url: "https://reuters.example/a",
+                        publisher: "reuters",
+                        availableAt: "2026-07-25T15:41:00Z",
+                        isCounterEvidence: false,
+                      },
+                    ],
+                    counterEvidence: [],
+                  },
+                ],
+              },
+            ],
+            baselineScore: 72.5,
+            adjustedScore: 75.5,
+            scoreAdjustment: 3,
+            objectiveDirection: "bullish",
+            actionable: true,
+            blockedBy: [] as string[],
+            disclaimer:
+              "顾问观点是分析建议，不是操作指令；其影响有上限，且任一硬门未通过时一律作废。",
+          },
+        };
+      })}
+    />,
+  );
+
+  const fold = view.getByTestId("decision-adviser-fold");
+  expect(fold).toHaveTextContent(/72\.5/);
+  expect(fold).toHaveTextContent(/\+3\.0/);
 });

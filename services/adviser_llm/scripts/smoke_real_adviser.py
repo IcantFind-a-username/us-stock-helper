@@ -60,6 +60,25 @@ def _packet(as_of):
     )
 
 
+_CACHE_NOT_ENABLED_NOTE = (
+    "本服务未启用 prompt caching（council 系统前缀约 1059 token，低于 Opus 4.8 "
+    "的 4096 token 最小可缓存长度）；再跑一次费用相同。"
+)
+
+
+def _cache_note(usage) -> str | None:
+    """cache_read_input_tokens == 0 never means "the first call primed the
+    cache": no request this service sends sets cache_control, so nothing is
+    ever written to a cache in the first place. Commit 092be7a measured the
+    council's stable prefix at 1059 tokens, below Opus 4.8's 4096-token
+    minimum, and found enabling caching would not have helped either — a
+    rerun costs exactly the same as the first call, every time.
+    """
+    if usage.cache_read_input_tokens == 0:
+        return _CACHE_NOT_ENABLED_NOTE
+    return None
+
+
 def _price(usage) -> float:
     return (
         getattr(usage, "input_tokens", 0) / 1e6 * PRICE["input"]
@@ -110,8 +129,9 @@ def main() -> int:
         f"缓存读取 {usage.cache_read_input_tokens}"
     )
     print(f"这两次调用实测花费 ${usage.cost_usd():.4f}")
-    if usage.cache_read_input_tokens == 0:
-        print("首次调用写入缓存；再跑一次就能看到缓存后的价格")
+    note = _cache_note(usage)
+    if note:
+        print(note)
     return 0
 
 

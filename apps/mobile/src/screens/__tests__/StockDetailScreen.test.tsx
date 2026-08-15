@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   act,
@@ -6,6 +6,7 @@ import {
   render,
   userEvent,
   waitFor,
+  within,
 } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
@@ -82,7 +83,12 @@ function liveV3Snapshot(
   {
     holdingsAvailable = true,
     priceMode = "both",
-  }: { holdingsAvailable?: boolean; priceMode?: V3PriceMode } = {},
+    currentSessionFlowAvailable = true,
+  }: {
+    holdingsAvailable?: boolean;
+    priceMode?: V3PriceMode;
+    currentSessionFlowAvailable?: boolean;
+  } = {},
 ) {
   const payload = stockSnapshotV3Fixture();
   payload.symbol = symbol;
@@ -104,6 +110,12 @@ function liveV3Snapshot(
     sections.technical = unavailableV3Section(
       "CANDLES_UNAVAILABLE",
       "技术指标需要已验证的蜡烛图数据",
+    );
+  }
+  if (!currentSessionFlowAvailable) {
+    sections.currentSessionFlow = unavailableV3Section(
+      "CURRENT_SESSION_FLOW_PROVIDER_ERROR",
+      "当前交易时段资金流数据不可用",
     );
   }
   if (!holdingsAvailable) {
@@ -379,6 +391,42 @@ it("keeps the typed full-page unavailable state when neither price source exists
   expect(view.queryByText(/演示数据/)).toBeNull();
 });
 
+it("keeps the day-interval participation gap honest instead of reusing an intraday-shaped split", async () => {
+  // liveV3Snapshot always requests the day interval (the screen's default),
+  // and design doc §2.1/§7.4 has no validated same-source historical
+  // capital-flow feed backing day/week bars in v1 -- so even though
+  // currentSessionFlow itself is live/validated, every participation bar
+  // must read as unsupported for this interval, never silently reuse
+  // whatever intraday-shaped split the same served flow data would
+  // otherwise produce, and never fall back to the placeholder reason the
+  // server itself never asserted.
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () => liveV3Snapshot("NVDA")),
+  });
+
+  await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+  expect(view.getByText("暂无可用活动占比")).toBeTruthy();
+  expect(view.getByText(/v1 尚不支持该周期/)).toBeTruthy();
+  expect(view.toJSON()).not.toHaveTextContent(
+    /CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED/,
+  );
+});
+
+it("shows the server's own reason when v3 current-session flow is genuinely unavailable", async () => {
+  const view = await renderDetail({
+    repository: repositoryWithSnapshot(async () =>
+      liveV3Snapshot("NVDA", { currentSessionFlowAvailable: false }),
+    ),
+  });
+
+  await waitFor(() => expect(view.getByText("$142.25")).toBeTruthy());
+  expect(view.getByText("暂无可用活动占比")).toBeTruthy();
+  expect(view.getByText(/当前交易时段资金流数据不可用/)).toBeTruthy();
+  expect(view.toJSON()).not.toHaveTextContent(
+    /CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED/,
+  );
+});
+
 it("calls Claude only after a single-stock button press", async () => {
   const calls: Array<{ symbol: string; adviser: string | undefined }> = [];
   const analysis = analysisWith(async (symbol, _horizon, _signal, options) => {
@@ -417,6 +465,33 @@ it("calls Claude only after a single-stock button press", async () => {
     view.getByTestId("decision-interpretation-reading").props.children,
   ).toContain("两条报道指向同一件事");
   expect(view.getByText(/4900 tokens/)).toBeTruthy();
+});
+
+it("shows the mapped Chinese error copy when the adviser button call fails", async () => {
+  const analysis = analysisWith(async (symbol, _horizon, _signal, options) => {
+    if (options?.adviser === "news") {
+      throw new AnalysisRequestError("timeout", "analysis request timed out");
+    }
+    return liveDecision();
+  });
+  const view = await renderDetail({ analysis });
+
+  await waitFor(() =>
+    expect(
+      view.getByRole("button", { name: "为 NVDA 生成一次 Claude 新闻解读" }),
+    ).toBeTruthy(),
+  );
+  await userEvent.setup().press(
+    view.getByRole("button", { name: "为 NVDA 生成一次 Claude 新闻解读" }),
+  );
+
+  // The reader has no use for the transport-layer English message; the
+  // mapped Chinese copy exists precisely so every other failure surface on
+  // this screen does not have to print the wire text raw.
+  await waitFor(() =>
+    expect(view.getByText("本次未生成：超时")).toBeTruthy(),
+  );
+  expect(view.queryByText(/analysis request timed out/)).toBeNull();
 });
 
 it("hides and restores every participation chart surface with one tool", async () => {
@@ -636,6 +711,89 @@ it("keeps a finished nine visible after the count restarts", async () => {
       /九转 2 · 尚未完成 · 最近完成 看跌九转 · 完美 · 1 根前/,
     ),
   );
+});
+
+// 2026-08-15 Task 7: the chart badge ("九转 看涨 2/9") stays jargon; its full
+// plain-language reading lives beside it, one tap away.
+describe("the Magic Nine plain-language reading", () => {
+  it("shows the badge's plain-language headline for the current in-progress count", async () => {
+    const view = await renderDetail();
+
+    // Fixture default: direction bullish, count 2, not completed -- the
+    // "early" bucket, matching Franz's own worked example (just bullish
+    // instead of bearish).
+    await waitFor(() =>
+      expect(
+        view.getByText(
+          "上涨方向的九转刚数到 2——离『警惕反转』的 9 还早，当前只是记录趋势的持续性。",
+        ),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("reveals the explanation and numbers layers on tap", async () => {
+    const view = await renderDetail();
+    await waitFor(() => expect(view.getByText("九转 看涨 2/9")).toBeTruthy());
+
+    const card = view.getByTestId("plain-reading-card-magic-nine");
+    await userEvent.setup().press(within(card).getByRole("button"));
+
+    expect(within(card).getByTestId("plain-reading-explanation")).toHaveTextContent(
+      /TD Setup/,
+    );
+    expect(within(card).getByTestId("plain-reading-numbers")).toHaveTextContent(
+      /2\/9/,
+    );
+  });
+
+  it("reads the unavailable state too, not just the live one", async () => {
+    const view = await renderDetail({
+      repository: repositoryWithSnapshot(async () => unavailableMagicSnapshot()),
+    });
+
+    await waitFor(() =>
+      expect(
+        view.getByText("神奇九转暂不可用：这次没有足够的K线数据来计数。"),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("carries the most recently completed run as a supplementary note", async () => {
+    const payload = stockSnapshotFixture();
+    payload.indicators.magicNine.lastCompleted = {
+      direction: "bearish",
+      confirmedAtIndex: 0,
+      perfected: true,
+      barsSince: 1,
+    };
+    const snapshot = decodeStockSnapshotEnvelope(payload, {
+      now: new Date("2026-07-25T16:00:00.000Z"),
+    });
+
+    const view = await renderDetail({
+      repository: repositoryWithSnapshot(async () => snapshot),
+    });
+    await waitFor(() => expect(view.getByText("九转 看涨 2/9")).toBeTruthy());
+
+    const card = view.getByTestId("plain-reading-card-magic-nine");
+    await userEvent.setup().press(within(card).getByRole("button"));
+
+    expect(within(card).getByTestId("plain-reading-note")).toHaveTextContent(
+      /最近一次数满 9 的九转方向是下跌，并且通过了『完美』确认/,
+    );
+  });
+
+  it("hides with the 神奇九转 tool toggle, same as the badge it explains", async () => {
+    const view = await renderDetail();
+    await waitFor(() => expect(view.getByText("九转 看涨 2/9")).toBeTruthy());
+    expect(view.getByTestId("plain-reading-card-magic-nine")).toBeTruthy();
+
+    await userEvent.setup().press(
+      view.getByRole("button", { name: "神奇九转，已显示" }),
+    );
+
+    expect(view.queryByTestId("plain-reading-card-magic-nine")).toBeNull();
+  });
 });
 
 it("preserves the original timestamp when cached live data becomes stale", async () => {
@@ -1045,4 +1203,20 @@ it("carries the same explanation into the news surface", async () => {
   expect(view.getByTestId("decision-news-unavailable")).not.toHaveTextContent(
     /analysis-failed/,
   );
+});
+
+it("navigates to the adviser council screen when the adviser button is pressed", async () => {
+  const view = await renderDetail();
+
+  await waitFor(() =>
+    expect(view.getByRole("button", { name: "顾问会诊" })).toBeTruthy(),
+  );
+  await userEvent.setup().press(
+    view.getByRole("button", { name: "顾问会诊" }),
+  );
+
+  expect(mockPush).toHaveBeenCalledWith({
+    pathname: "/stocks/[symbol]/advisers",
+    params: { symbol: "NVDA" },
+  });
 });

@@ -4,11 +4,15 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_stock_helper_core import (
+    PATTERNS_SHAPES_VERSION,
     TD_SETUP_VERSION,
     CapitalFlowPoint,
     OHLCVBar,
+    PatternShapeDetection,
+    PatternShapeSignal,
     TDSetupResult,
     build_participation_bars,
+    detect_pattern_shapes,
     estimate_annualized_volatility,
     macd_series,
     moving_average_series,
@@ -386,6 +390,68 @@ def _indicators(
             # completed setup the series still carried.
             "qualityStatus": "live" if setup is not None else "unavailable",
         },
+        "patternShapes": _pattern_shapes_entry(base, bars),
+    }
+
+
+def _pattern_shapes_entry(
+    base: dict[str, Any], bars: tuple[OHLCVBar, ...]
+) -> dict[str, Any]:
+    """顶分型/底分型/W底/双头/头肩顶/头肩底/回踩五日线 -- see patterns_shapes.py.
+
+    Each of the four detectors carries its own minimum-window honesty, so this
+    entry is only "unavailable" when there are no completed bars to hand any
+    detector at all; below that, every individual detector still reports its
+    own typed-unavailable reason inside ``detections``.
+    """
+
+    if not bars:
+        return {
+            **base,
+            "detections": [],
+            "methodVersion": PATTERNS_SHAPES_VERSION,
+            "qualityStatus": "unavailable",
+        }
+    detections = detect_pattern_shapes(bars)
+    return {
+        **base,
+        "detections": [_detection_payload(detection) for detection in detections],
+        "methodVersion": PATTERNS_SHAPES_VERSION,
+        "qualityStatus": "live",
+    }
+
+
+def _detection_payload(detection: PatternShapeDetection) -> dict[str, Any]:
+    return {
+        "detector": detection.detector,
+        "minimumWindow": detection.minimum_window,
+        "sampleSize": detection.sample_size,
+        "qualityStatus": detection.quality_status,
+        "missingReason": detection.missing_reason,
+        "methodVersion": detection.algorithm_version,
+        "signals": [_signal_payload(signal) for signal in detection.signals],
+    }
+
+
+def _signal_payload(signal: PatternShapeSignal) -> dict[str, Any]:
+    return {
+        "kind": signal.kind.value,
+        "name": signal.name,
+        "status": signal.status.value,
+        "direction": signal.direction.value,
+        "bars": [
+            {"index": bar.index, "closedAt": iso_z(bar.closed_at)} for bar in signal.bars
+        ],
+        "anchorIndex": signal.anchor.index,
+        "eventIndex": signal.event_index,
+        "invalidation": signal.invalidation,
+        "explanation": signal.explanation,
+        "reading": {
+            "summary": signal.reading_summary,
+            "detail": signal.reading_detail,
+            "honesty": signal.reading_honesty,
+        },
+        "methodVersion": signal.algorithm_version,
     }
 
 

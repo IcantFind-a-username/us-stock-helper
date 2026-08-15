@@ -329,9 +329,11 @@ class CaddyfileTests(unittest.TestCase):
         expected = {
             ("GET", "/health"): "api",
             ("GET", "/decision"): "api",
+            ("GET", "/market-brief"): "api",
             ("POST", PAIRING_PATH): "pairing",
             ("POST", "/health"): "disallowed_method",
             ("DELETE", "/decision"): "disallowed_method",
+            ("POST", "/market-brief"): "disallowed_method",
             ("POST", "/orders"): "disallowed_method",
             ("GET", PAIRING_PATH): None,
             ("PUT", PAIRING_PATH): None,

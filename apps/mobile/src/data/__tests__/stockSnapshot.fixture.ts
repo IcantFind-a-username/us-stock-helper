@@ -11,22 +11,14 @@ const cutoff = "2026-07-25T15:59:50.000Z";
  */
 export type SeriesPayload = (number | null)[];
 
-export type MacdSeriesPayload = {
-  line: (number | null)[];
-  signal: (number | null)[];
-  histogram: (number | null)[];
-};
-
 /** The same fixture once the gateway also publishes the drawable series. */
 export function stockSnapshotWithSeriesFixture() {
   const payload = stockSnapshotFixture();
   payload.indicators.ma5.series = [null, 140.8];
   payload.indicators.rsi.series = [48.5, 56.2];
-  payload.indicators.macd.series = {
-    line: [0.3, 0.45],
-    signal: [0.25, 0.3],
-    histogram: [0.05, 0.15],
-  };
+  payload.indicators.macd.lineSeries = [0.3, 0.45];
+  payload.indicators.macd.signalSeries = [0.25, 0.3];
+  payload.indicators.macd.histogramSeries = [0.05, 0.15];
   return payload;
 }
 
@@ -142,7 +134,9 @@ export function stockSnapshotFixture() {
         availableAt: cutoff,
         methodVersion: "macd-12-26-9-v1",
         qualityStatus: "live",
-        series: undefined as MacdSeriesPayload | undefined,
+        lineSeries: undefined as SeriesPayload | undefined,
+        signalSeries: undefined as SeriesPayload | undefined,
+        histogramSeries: undefined as SeriesPayload | undefined,
       },
       volatility: {
         value: 0.42 as number | null,
@@ -175,6 +169,54 @@ export function stockSnapshotFixture() {
         availableAt: cutoff,
         methodVersion: "td-setup-close-4-v2",
         qualityStatus: "live",
+      },
+      patternShapes: {
+        source: "analysis-core",
+        asOf: "2026-07-25T15:55:00.000Z",
+        availableAt: cutoff,
+        methodVersion: "patterns-shapes-v1",
+        qualityStatus: "live",
+        // Two candles is below every detector's own minimum window, so each
+        // one reports its own typed-unavailable reason -- the same honesty
+        // the analysis_core detectors themselves apply.
+        detections: [
+          {
+            detector: "fractal",
+            minimumWindow: 3,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 3 根，暂无法识别分型" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+          {
+            detector: "double_extreme",
+            minimumWindow: 7,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 7 根，暂无法识别双重顶/底" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+          {
+            detector: "head_and_shoulders",
+            minimumWindow: 8,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 8 根，暂无法识别头肩形态" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+          {
+            detector: "ma5_pullback",
+            minimumWindow: 8,
+            sampleSize: 2,
+            qualityStatus: "unavailable" as string,
+            missingReason: "完整K线不足 8 根，暂无法识别回踩五日线形态" as string | null,
+            methodVersion: "patterns-shapes-v1",
+            signals: [] as unknown[],
+          },
+        ],
       },
     },
     institutionalHoldings: [

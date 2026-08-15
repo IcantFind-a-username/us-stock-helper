@@ -11,6 +11,7 @@ import {
 import { DecisionNewsSection } from "@/components/news/DecisionNewsSection";
 import { DecisionCard } from "@/components/stock/DecisionCard";
 import { IndicatorFactRow } from "@/components/stock/IndicatorFactRow";
+import { PatternHintsCard } from "@/components/stock/PatternHintsCard";
 import {
   adaptDemoHoldingsSection,
   InstitutionalHoldingsCard,
@@ -20,6 +21,7 @@ import { StockHeader } from "@/components/stock/StockHeader";
 import { getChartDataStatus } from "@/components/stock/chartDataStatus";
 import { Disclosure } from "@/components/ui/Disclosure";
 import { HorizonSwitch } from "@/components/ui/HorizonSwitch";
+import { PlainReadingCard } from "@/components/ui/PlainReadingCard";
 import { Screen } from "@/components/ui/Screen";
 import {
   toDemoChartSnapshot,
@@ -29,6 +31,7 @@ import {
 } from "@/domain/models";
 import { fixtureRepository } from "@/fixtures/repository";
 import { describeMarketError } from "@/i18n/marketErrorCopy";
+import { readMagicNine } from "@/i18n/plainLanguage";
 import { serviceTextLabel, snapshotSourceLabel } from "@/i18n/serverVocabulary";
 import { useAppState } from "@/state/AppStateProvider";
 import {
@@ -303,6 +306,13 @@ export function StockDetailScreen() {
       <PriceChart
         compact
         dataStatus={dataStatus}
+        patternShapes={
+          stock.demoData
+            ? []
+            : liveStock!.indicators.patternShapes.detections.flatMap(
+                (detection) => detection.signals,
+              )
+        }
         showForecast={visibleTools.forecast}
         showMacd={visibleTools.macd}
         showMagicNine={visibleTools.magicNine}
@@ -397,6 +407,19 @@ export function StockDetailScreen() {
         ) : null}
       </View>
 
+      {visibleTools.magicNine ? (
+        <PlainReadingCard
+          {...readMagicNine(stock.magicNine, stock.magicNine.lastCompleted)}
+          testID="plain-reading-card-magic-nine"
+        />
+      ) : null}
+
+      {/* Demo snapshots carry no server-computed shapes -- patternShapes only
+          ever arrives on a real gateway response. */}
+      {stock.demoData ? null : (
+        <PatternHintsCard detections={liveStock!.indicators.patternShapes.detections} />
+      )}
+
       {visibleTools.participation ? (
         <ParticipationCard bars={stock.participationBars} />
       ) : null}
@@ -430,6 +453,24 @@ export function StockDetailScreen() {
           symbol={symbol}
         />
       )}
+      <Pressable
+        accessibilityLabel="顾问会诊"
+        accessibilityRole="button"
+        onPress={() =>
+          router.push({
+            pathname: "/stocks/[symbol]/advisers",
+            params: { symbol },
+          })
+        }
+        style={({ pressed }) => [
+          styles.adviserCouncilButton,
+          pressed && styles.pressed,
+        ]}>
+        <Text style={styles.adviserCouncilButtonTitle}>顾问会诊</Text>
+        <Text style={styles.adviserCouncilButtonText}>
+          风格模型，非本人意见
+        </Text>
+      </Pressable>
       <Pressable
         accessibilityLabel="查看完整图表"
         accessibilityRole="button"
@@ -472,7 +513,7 @@ export function StockDetailScreen() {
           </Text>
           {adviserDecision.error ? (
             <Text style={styles.adviserButtonError}>
-              本次未生成：{adviserDecision.error.message}
+              本次未生成：{describeMarketError(adviserDecision.error.category).label}
             </Text>
           ) : null}
         </Pressable>
@@ -656,4 +697,24 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   retryText: { color: colors.card, fontSize: 12, fontWeight: "900" },
+  adviserCouncilButton: {
+    alignItems: "center",
+    backgroundColor: colors.blueSoft,
+    borderRadius: radius.md,
+    gap: 2,
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  adviserCouncilButtonTitle: {
+    color: colors.blue,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  adviserCouncilButtonText: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "600",
+  },
 });

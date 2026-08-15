@@ -16,7 +16,10 @@ import {
   stockSnapshotFixture,
   stockSnapshotWithSeriesFixture,
 } from "./stockSnapshot.fixture";
-import { stockSnapshotV3Fixture } from "./stockSnapshotV3.fixture";
+import {
+  stockSnapshotV3Fixture,
+  stockSnapshotV3ParticipationDeltaFixture,
+} from "./stockSnapshotV3.fixture";
 
 const now = new Date("2026-07-25T16:00:00.000Z");
 const aggregateHoldingsReason =
@@ -640,12 +643,12 @@ describe("schema-v3 stock snapshot validation", () => {
     }
     payload.sections.technical.data.indicators.macd.asOf =
       payload.sections.technical.asOf;
-    payload.sections.technical.data.indicators.macd.series = {
-      line: [],
-      signal: [],
-      histogram: [],
-    };
+    payload.sections.technical.data.indicators.macd.lineSeries = [];
+    payload.sections.technical.data.indicators.macd.signalSeries = [];
+    payload.sections.technical.data.indicators.macd.histogramSeries = [];
     payload.sections.technical.data.indicators.volatility.asOf =
+      payload.sections.technical.asOf;
+    payload.sections.technical.data.indicators.patternShapes.asOf =
       payload.sections.technical.asOf;
     payload.sections.technical.data.magicNine.asOf =
       payload.sections.technical.asOf;
@@ -683,6 +686,16 @@ describe("schema-v3 stock snapshot validation", () => {
     expect(snapshot.snapshotStatus).toBe("live");
     expect(snapshot.source.status).toBe("live");
     expect(snapshot.compatibility).toBe("v3");
+    // The gateway publishes MACD's three lines as bare arrays beside the
+    // indicator, not nested under a separate `series` envelope; decoding the
+    // wrong shape silently drew nothing while the server was already live.
+    expect(snapshot.indicators.rsi.series?.values).toEqual([48.5, 56.2]);
+    expect(snapshot.indicators.macd.series).toMatchObject({
+      line: [0.3, 0.45],
+      signal: [0.25, 0.3],
+      histogram: [0.05, 0.15],
+      methodVersion: "macd-12-26-9-v1",
+    });
   });
 
   it("keeps a quote-only partial snapshot honest", () => {
@@ -710,24 +723,163 @@ describe("schema-v3 stock snapshot validation", () => {
     expect(snapshot.priceAdjustment).toBe("forward-adjusted");
   });
 
-  it("keeps direct current-session flow independent of the requested chart interval", () => {
-    const fiveMinute = stockSnapshotV3Fixture();
-    const daily = stockSnapshotV3Fixture();
-    daily.interval = "day";
+  it.each(["day", "week"] as const)(
+    "reports %s-interval participation as explicitly unsupported instead of reusing an intraday-shaped split",
+    (interval) => {
+      const payload = stockSnapshotV3Fixture();
+      payload.interval = interval;
 
-    const fiveMinuteSnapshot = decodeStockSnapshotV3Envelope(fiveMinute, { now });
-    const dailySnapshot = decodeStockSnapshotV3Envelope(daily, { now });
+      const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
 
-    expect(dailySnapshot.sections.currentSessionFlow.data).toEqual(
-      fiveMinuteSnapshot.sections.currentSessionFlow.data,
-    );
-    expect(fiveMinuteSnapshot.participationBars).toHaveLength(2);
+      // Design doc §2.1/§7.4: no validated same-source historical capital-flow
+      // feed backs day/week bars in v1, so they must read "unsupported", never
+      // silently reuse whatever intraday-shaped bars the same flow data would
+      // otherwise produce.
+      expect(snapshot.participationBars).toHaveLength(2);
+      expect(
+        snapshot.participationBars.every(
+          (bar) =>
+            bar.qualityStatus === "unavailable" &&
+            bar.mainShare === null &&
+            bar.retailShare === null &&
+            bar.netFlow === null &&
+            bar.coverage === 0 &&
+            bar.missingReason === "unsupported interval in v1",
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("diffs adjacent minute flow samples per candle window instead of reading one sample's session-cumulative magnitude", () => {
+    // Regression fixture for a real defect: the previous implementation read
+    // each candle's participation split off a single flow sample's raw
+    // cumulative-since-open magnitude, which silently reports the whole
+    // session-to-date split on every candle after the first. These four
+    // points are monotonically increasing cumulative magnitudes across three
+    // one-minute candles, chosen so the per-candle *delta* gives an opposite
+    // lean from the *cumulative* magnitude on two of the three candles: see
+    // the fixture's own doc comment for the hand-verified numbers.
+    const payload = stockSnapshotV3ParticipationDeltaFixture();
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
     expect(
-      fiveMinuteSnapshot.participationBars.every(
-        (bar) => bar.qualityStatus === "unavailable" && bar.netFlow === null,
+      snapshot.participationBars.some(
+        (bar) => bar.missingReason === "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
+      ),
+    ).toBe(false);
+    expect(snapshot.participationBars).toEqual([
+      {
+        closedAt: "2026-07-25T15:51:00.000Z",
+        asOf: "2026-07-25T15:51:00.000Z",
+        availableAt: "2026-07-25T15:51:01.000Z",
+        mainShare: 1,
+        retailShare: 0,
+        mainActivity: 100,
+        retailActivity: 0,
+        netFlow: 100,
+        coverage: 1,
+        source: "moomoo",
+        methodVersion: "order-size-activity-share-v1",
+        qualityStatus: "live",
+        missingReason: null,
+      },
+      {
+        closedAt: "2026-07-25T15:52:00.000Z",
+        asOf: "2026-07-25T15:52:00.000Z",
+        availableAt: "2026-07-25T15:52:01.000Z",
+        // The cumulative point at :52 alone (extraLarge=100, medium=200) would
+        // wrongly read as 33.3% main. The correct per-minute delta (Δmedium
+        // only) is 0% main -- the opposite lean.
+        mainShare: 0,
+        retailShare: 1,
+        mainActivity: 0,
+        retailActivity: 200,
+        netFlow: 200,
+        coverage: 1,
+        source: "moomoo",
+        methodVersion: "order-size-activity-share-v1",
+        qualityStatus: "live",
+        missingReason: null,
+      },
+      {
+        closedAt: "2026-07-25T15:53:00.000Z",
+        asOf: "2026-07-25T15:53:00.000Z",
+        availableAt: "2026-07-25T15:53:01.000Z",
+        // The cumulative point at :53 alone (extraLarge=300, medium=200) would
+        // wrongly read as 60% main. The correct per-minute delta (Δextra-large
+        // only) is 100% main -- again the opposite lean.
+        mainShare: 1,
+        retailShare: 0,
+        mainActivity: 200,
+        retailActivity: 0,
+        netFlow: 200,
+        coverage: 1,
+        source: "moomoo",
+        methodVersion: "order-size-activity-share-v1",
+        qualityStatus: "live",
+        missingReason: null,
+      },
+    ]);
+  });
+
+  it("reports a zero-activity flow sample as unavailable rather than a fabricated split", () => {
+    const payload = stockSnapshotV3ParticipationDeltaFixture();
+    for (const row of payload.sections.currentSessionFlow.data) {
+      row.extraLargeOrderNetFlow = 0;
+      row.largeOrderNetFlow = 0;
+      row.mediumOrderNetFlow = 0;
+      row.smallOrderNetFlow = 0;
+      row.totalNetFlow = 0;
+      row.largeOrderProxyNetFlow = 0;
+    }
+
+    const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+    expect(snapshot.participationBars).toHaveLength(3);
+    expect(
+      snapshot.participationBars.every(
+        (bar) =>
+          bar.qualityStatus === "unavailable" &&
+          bar.mainShare === null &&
+          bar.netFlow === null &&
+          bar.coverage === 1 &&
+          bar.missingReason === "zero activity denominator",
       ),
     ).toBe(true);
   });
+
+  it.each(["unavailable", "stale"] as const)(
+    "shows the server's own reason when currentSessionFlow is genuinely %s, never the candle-alignment placeholder",
+    (kind) => {
+      const payload = stockSnapshotV3Fixture();
+      if (kind === "unavailable") {
+        makeSectionUnavailable(payload, "currentSessionFlow", "CURRENT_SESSION_FLOW_PROVIDER_ERROR");
+      } else {
+        makeSectionStale(payload, "currentSessionFlow");
+      }
+
+      const snapshot = decodeStockSnapshotV3Envelope(payload, { now });
+
+      expect(snapshot.candles).toHaveLength(2);
+      expect(snapshot.participationBars).toHaveLength(2);
+      expect(
+        snapshot.participationBars.every((bar) => bar.qualityStatus === "unavailable"),
+      ).toBe(true);
+      const expectedReason = payload.sections.currentSessionFlow.reason;
+      expect(expectedReason).toEqual(expect.any(String));
+      expect(
+        snapshot.participationBars.every(
+          (bar) => bar.missingReason === expectedReason,
+        ),
+      ).toBe(true);
+      expect(
+        snapshot.participationBars.some(
+          (bar) => bar.missingReason === "CURRENT_SESSION_FLOW_NOT_CANDLE_ALIGNED",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it.each([
     ["institutional identity", (payload: ReturnType<typeof stockSnapshotV3Fixture>) => {
@@ -1882,7 +2034,7 @@ describe("indicator series", () => {
       value.indicators.ma5.series = { values: [140.2, 140.8] } as never;
     }],
     ["ragged macd series", (value: ReturnType<typeof stockSnapshotWithSeriesFixture>) => {
-      value.indicators.macd.series!.signal = [0.25];
+      value.indicators.macd.signalSeries = [0.25];
     }],
   ])("rejects a series that cannot be drawn on the candles: %s", (_label, mutate) => {
     // A series one bar out of step draws every point against the wrong
@@ -1891,6 +2043,97 @@ describe("indicator series", () => {
     mutate(payload);
 
     expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/series/);
+  });
+});
+
+describe("patternShapes indicator", () => {
+  function confirmedSignal() {
+    return {
+      kind: "double_bottom",
+      name: "W底",
+      status: "confirmed",
+      direction: "bullish",
+      bars: [
+        { index: 0, closedAt: "2026-07-25T15:50:00.000Z" },
+        { index: 1, closedAt: "2026-07-25T15:55:00.000Z" },
+      ],
+      anchorIndex: 1,
+      eventIndex: 1,
+      invalidation: "收盘跌破颈线 104.00",
+      explanation: "两个低点幅度接近；颈线 104.00。",
+      reading: {
+        summary: "W底已确认：价格两次探底后，收盘站上了颈线，短线动能转强的信号出现了。",
+        detail: "两个相近的低点之间夹着一个反弹高点，即颈线；收盘价升破颈线视为形态确认。",
+        honesty: "历史胜率待回测",
+      },
+      methodVersion: "patterns-shapes-v1",
+    };
+  }
+
+  it("decodes the typed-unavailable envelope every detector carries below its window", () => {
+    const snapshot = decodeStockSnapshotEnvelope(stockSnapshotFixture(), { now });
+
+    const patternShapes = snapshot.indicators.patternShapes;
+    expect(patternShapes.qualityStatus).toBe("live");
+    expect(patternShapes.detections).toHaveLength(4);
+    for (const detection of patternShapes.detections) {
+      expect(detection.qualityStatus).toBe("unavailable");
+      expect(detection.signals).toEqual([]);
+      expect(detection.missingReason).toBeTruthy();
+    }
+  });
+
+  it("decodes a confirmed signal with its full three-layer reading", () => {
+    const payload = stockSnapshotFixture();
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [confirmedSignal()];
+
+    const snapshot = decodeStockSnapshotEnvelope(payload, { now });
+
+    const doubleExtreme = snapshot.indicators.patternShapes.detections.find(
+      (detection) => detection.detector === "double_extreme",
+    );
+    expect(doubleExtreme?.signals).toHaveLength(1);
+    const signal = doubleExtreme!.signals[0]!;
+    expect(signal.name).toBe("W底");
+    expect(signal.status).toBe("confirmed");
+    expect(signal.invalidation).toBe("收盘跌破颈线 104.00");
+    expect(signal.reading.honesty).toBe("历史胜率待回测");
+    expect(signal.bars.map((bar) => bar.index)).toEqual([0, 1]);
+  });
+
+  it("rejects a reading that drops the fixed backtest-honesty disclosure", () => {
+    const payload = stockSnapshotFixture();
+    const signal = confirmedSignal();
+    signal.reading.honesty = "胜率 80%";
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [signal];
+
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/honesty/);
+  });
+
+  it("rejects an eventIndex outside the completed candle range", () => {
+    const payload = stockSnapshotFixture();
+    const signal = confirmedSignal();
+    signal.eventIndex = 99;
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [signal];
+
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/eventIndex/);
+  });
+
+  it("rejects an unknown pattern kind rather than passing it through", () => {
+    const payload = stockSnapshotFixture();
+    const signal = confirmedSignal();
+    (signal as { kind: string }).kind = "flying_saucer";
+    payload.indicators.patternShapes.detections[1]!.qualityStatus = "live";
+    payload.indicators.patternShapes.detections[1]!.missingReason = null;
+    payload.indicators.patternShapes.detections[1]!.signals = [signal];
+
+    expect(() => decodeStockSnapshotEnvelope(payload, { now })).toThrow(/kind/);
   });
 });
 

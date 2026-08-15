@@ -5,12 +5,14 @@ import type { Candle, ForecastSnapshot, ParticipationBar } from "@/domain/models
 import {
   buildChartGeometry,
   clampChartWindow,
+  decidedCandleTimestamps,
   focusRatioForX,
   maxWindowBarsFor,
   minReadableBodyWidth,
   minWindowBars,
   minZoomedOutBodyWidth,
   panChartWindow,
+  reanchorChartWindow,
   resolveChartWidth,
   zoomChartWindow,
   type ChartGeometryInput,
@@ -435,6 +437,96 @@ it("leaves a window parked in history on the bars it was showing", () => {
   expect(after.candles[0]!.sourceIndex).toBe(100);
   expect(after.candles.at(-1)!.sourceIndex).toBe(139);
   expect(after.forecastPoints).toEqual([]);
+});
+
+// A growing series (candles above) never moves the bars already in it — only
+// appends past the old end — so a bare offset happens to still name the same
+// bars after it grows. A fixed-count series that rolls (server keeps "last
+// 300 bars", drops the oldest as new ones close) shifts every bar behind the
+// drop, which the same bare offset cannot tell apart from having not moved at
+// all: it is this shift, not growth, that timestamp-based reanchoring exists
+// for.
+const rolledTimestamps = (dropped: number, added: number) =>
+  decidedCandleTimestamps(
+    [
+      ...manyCandles.slice(dropped),
+      ...Array.from({ length: added }, (_, index) => candleAt(total + index)),
+    ],
+    cutoff,
+  );
+
+it("relocates a parked window by the bar it was anchored on when the series rolls", () => {
+  const previousTimestamps = decidedCandleTimestamps(manyCandles, cutoff);
+  const window = { size: 40, offset: 100, total };
+  const anchor = {
+    timestamp: previousTimestamps[window.offset]!,
+    timestamps: rolledTimestamps(5, 5),
+  };
+
+  const after = reanchorChartWindow(window, total, anchor);
+
+  // Five bars rolled off the front, so the same window shifts five bars
+  // earlier in the new array — not literally unchanged, which is what the
+  // bare offset used to do and is exactly the bug: an unmoved offset landed
+  // on five-bars-newer candles than what was on screen before the refresh.
+  expect(after).toEqual({ size: 40, offset: 95, total });
+  expect(anchor.timestamps.slice(after.offset, after.offset + after.size)).toEqual(
+    previousTimestamps.slice(window.offset, window.offset + window.size),
+  );
+});
+
+it("keeps following the live edge across a roll regardless of any anchor supplied", () => {
+  const previousTimestamps = decidedCandleTimestamps(manyCandles, cutoff);
+  // offset + size === total: this window was standing at the live edge.
+  const window = { size: 40, offset: total - 40, total };
+  const anchor = {
+    timestamp: previousTimestamps[window.offset]!,
+    timestamps: rolledTimestamps(2, 2),
+  };
+
+  const after = reanchorChartWindow(window, total, anchor);
+
+  // A live-edge window keeps ending on the newest bar; the anchor lookup
+  // must never override that, roll or no roll.
+  expect(after.offset + after.size).toBe(total);
+  expect(after).toEqual({ size: 40, offset: total - 40, total });
+});
+
+it("snaps to the oldest bar still available when the anchor rolled off the front entirely", () => {
+  const previousTimestamps = decidedCandleTimestamps(manyCandles, cutoff);
+  const window = { size: 40, offset: 50, total };
+  const anchor = {
+    timestamp: previousTimestamps[window.offset]!,
+    // 60 bars rolled off the front — more than the window's own offset, so
+    // the bar it was anchored on is not merely shifted, it is gone.
+    timestamps: rolledTimestamps(60, 60),
+  };
+  expect(anchor.timestamps).not.toContain(anchor.timestamp);
+
+  const after = reanchorChartWindow(window, total, anchor);
+
+  // Nothing honest is left to anchor on, so the window parks on the oldest
+  // bar the new series still has — a deterministic, visible landing spot
+  // instead of silently keeping the stale numeric offset against a series
+  // that no longer describes it.
+  expect(after).toEqual({ size: 40, offset: 0, total });
+});
+
+it("matches the point-in-time order buildChartGeometry itself decides from", () => {
+  // decidedCandleTimestamps exists so a caller holding a window across a
+  // refresh can relocate its anchor without duplicating the cutoff filter;
+  // this pins it to the one buildChartGeometry actually draws from. A wide
+  // enough width that the zoomed-out ceiling does not clip the window is
+  // what makes `candles` the full series instead of just its newest slice.
+  const wide = resolveChartWidth(5_000);
+  const geometry = geometryFor({
+    width: wide,
+    window: { size: total, offset: 0, total },
+  });
+  expect(geometry.candles).toHaveLength(total);
+  expect(decidedCandleTimestamps(manyCandles, cutoff)).toEqual(
+    geometry.candles.map((candle) => candle.timestamp),
+  );
 });
 
 it("re-clamps a window whose series came back shorter", () => {

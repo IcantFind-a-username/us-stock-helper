@@ -27,6 +27,9 @@ UNIT_FILES="opend.service market-gateway.service analysis-api.service"
 # OpenD's control port, the market gateway and the analysis API. None of the
 # three may answer on anything but loopback.
 INTERNAL_PORTS="11111 8765 8770"
+# 22/OpenSSH cover the common case; a host whose sshd was moved elsewhere
+# (bootstrap.sh supports this deliberately) gets its real port added at
+# check time by determine_ssh_port, below.
 PUBLIC_RULES="443/tcp 443 OpenSSH 22/tcp 22 ssh"
 
 failures=0
@@ -44,7 +47,25 @@ file_owner() { stat -c '%U' "$1" 2>/dev/null || stat -f '%Su' "$1" 2>/dev/null |
 # The last assignment wins, matching both systemd and the environment file
 # format: a key repeated later in a file overrides the earlier one, so reading
 # the first would check a line the service does not use.
-read_setting() { sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -n 1; }
+#
+# sed exits non-zero when $1 is missing or unreadable, and under pipefail
+# that status would otherwise propagate straight through the command
+# substitution at every call site and kill the whole script mid-run — the
+# `|| true` keeps a missing file a matter for the caller to report, not a
+# reason for every later check to go unrun and unmentioned.
+read_setting() { { sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null || true; } | tail -n 1; }
+
+# Mirrors bootstrap.sh's own detection so the firewall rule bootstrap opens
+# for a relocated sshd reads as legitimate here too, rather than as a leak.
+determine_ssh_port() {
+	if [ -n "${PREFLIGHT_SSH_PORT:-}" ]; then
+		printf '%s\n' "$PREFLIGHT_SSH_PORT"
+		return
+	fi
+	if command -v sshd >/dev/null 2>&1; then
+		sshd -T 2>/dev/null | awk '/^port /{print $2; exit}' || true
+	fi
+}
 
 check_environment_files() {
 	local name path mode owner
@@ -74,6 +95,10 @@ check_environment_files() {
 check_credential_database() {
 	local path value
 	path="$ENV_DIR/analysis-api.env"
+	if [ ! -r "$path" ]; then
+		fail environment-file-credential "$path is missing or unreadable"
+		return
+	fi
 	if grep -Eq '^ANALYSIS_API_TOKEN=' "$path" 2>/dev/null; then
 		# The service refuses to start on this rather than ignoring it, but
 		# saying so here turns a crash loop into a sentence.
@@ -100,6 +125,10 @@ check_state_directory() {
 	env_path="$ENV_DIR/analysis-api.env"
 	if [ ! -f "$unit" ]; then
 		fail state-directory "$unit is missing"
+		return
+	fi
+	if [ ! -r "$env_path" ]; then
+		fail state-directory "$env_path is missing or unreadable, so its DEVICE_AUTH_DATABASE cannot be checked"
 		return
 	fi
 	state="$(read_setting "$unit" StateDirectory)"
@@ -224,7 +253,7 @@ EOF
 }
 
 check_firewall() {
-	local status opened rule
+	local status opened rule ssh_port public_rules
 	if ! command -v ufw >/dev/null 2>&1; then
 		unknown firewall "ufw is not installed, so the firewall was not verified"
 		return
@@ -260,9 +289,15 @@ check_firewall() {
 		return
 		;;
 	esac
+	# bootstrap.sh opens whatever port sshd itself reports, not always 22, so
+	# the whitelist has to include that same port rather than only the
+	# default — otherwise it fails the very rule bootstrap just opened.
+	ssh_port="$(determine_ssh_port)"
+	ssh_port="${ssh_port:-22}"
+	public_rules="$PUBLIC_RULES ${ssh_port}/tcp ${ssh_port}"
 	opened="$(printf '%s\n' "$status" | awk '/ALLOW/ {print $1}' | sort -u)"
 	for rule in $opened; do
-		case " $PUBLIC_RULES " in
+		case " $public_rules " in
 		*" $rule "*) ;;
 		*)
 			fail firewall "the firewall opens $rule, which belongs to no public service here"

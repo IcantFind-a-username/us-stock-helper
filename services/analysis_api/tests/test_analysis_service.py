@@ -11,6 +11,9 @@ from information_layer.factors import (
     FactorSnapshot,
     FactorUnavailable,
 )
+from us_stock_helper_analysis_api.institutional_flow_provider import (
+    InstitutionalFlowReading,
+)
 from us_stock_helper_analysis_api.service import AnalysisService
 from us_stock_helper_core import OHLCVBar
 
@@ -18,10 +21,15 @@ from us_stock_helper_core import OHLCVBar
 AS_OF = datetime(2026, 7, 25, 16, tzinfo=UTC)
 
 
-def bars(count: int = 40, *, flat: bool = False) -> tuple[OHLCVBar, ...]:
+def bars(
+    count: int = 40,
+    *,
+    flat: bool = False,
+    newest_available_at: datetime = AS_OF,
+) -> tuple[OHLCVBar, ...]:
     rows = []
     for index in range(count):
-        closed_at = AS_OF - timedelta(days=count - 1 - index)
+        closed_at = newest_available_at - timedelta(days=count - 1 - index)
         price = 100.0 if flat else 100.0 + index * 0.5
         rows.append(
             OHLCVBar(
@@ -150,15 +158,51 @@ class ProviderWithFactors(Provider):
                 reason=FactorUnavailable.NO_QUALIFIED_SOURCE,
                 detail="No qualified source.",
             ),
-            institutional_flow=FactorReading.unavailable(
-                factor="institutional_flow",
-                method_version="abstained-v1",
-                as_of=as_of,
-                reason=FactorUnavailable.NO_QUALIFIED_SOURCE,
-                detail="No timely source.",
-            ),
             fundamentals=measured_factor("fundamentals", 0.6),
         )
+
+
+class ProviderWithBrokenFactors(Provider):
+    """`factors_for` exists but raises — the whole factor layer is down."""
+
+    def factors_for(self, symbol: str, as_of: datetime) -> FactorSnapshot:
+        raise RuntimeError("factor source unreachable")
+
+
+class ProviderWithMalformedFactors(Provider):
+    """`factors_for` exists but hands back something that is not a snapshot."""
+
+    def factors_for(self, symbol: str, as_of: datetime) -> object:
+        return {"not": "a snapshot"}
+
+
+class ProviderWithInstitutionalFlow(Provider):
+    def __init__(self, reading: InstitutionalFlowReading) -> None:
+        super().__init__()
+        self.reading_value = reading
+        self.institutional_flow_queries: list[tuple[str, datetime]] = []
+
+    def institutional_flow_for(
+        self, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading:
+        self.institutional_flow_queries.append((symbol, as_of))
+        return self.reading_value
+
+
+class ProviderWithBrokenInstitutionalFlow(Provider):
+    """`institutional_flow_for` exists but raises — one source is down."""
+
+    def institutional_flow_for(
+        self, symbol: str, as_of: datetime
+    ) -> InstitutionalFlowReading:
+        raise RuntimeError("institutional flow source unreachable")
+
+
+class ProviderWithMalformedInstitutionalFlow(Provider):
+    """`institutional_flow_for` exists but hands back the wrong shape."""
+
+    def institutional_flow_for(self, symbol: str, as_of: datetime) -> object:
+        return {"not": "a reading"}
 
 
 def service(provider: Provider | None = None) -> AnalysisService:
@@ -227,6 +271,110 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertEqual(contributions["macro"]["rawValue"], 0.2)
         self.assertEqual(contributions["fundamentals"]["rawValue"], 0.6)
 
+    def test_unavailable_factor_notes_name_the_factor_and_the_reason_code(
+        self,
+    ) -> None:
+        # Pinned deliberately in this raw, code-bearing shape: `name` and
+        # `reason.value` are stable wire identifiers (mirrors "Hard gate
+        # active: <gate>,<gate>"), and apps/mobile/src/i18n/serverVocabulary.ts
+        # is what turns this into Chinese for the screen, not this service.
+        # This is the exact note Franz's 2026-08-15 real-mode QA reported as
+        # unreadable code-log English on the stock page.
+        provider = ProviderWithFactors()
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertIn(
+            "geopolitics unavailable (no_qualified_source).", result["notes"]
+        )
+
+    def test_a_broken_factor_source_degrades_into_a_chinese_note(self) -> None:
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): this is
+        # pure server-authored prose with no embedded machine identifier, so
+        # unlike the note pinned above it is translated at the source.
+        result = service(ProviderWithBrokenFactors()).decision("NVDA", "short")
+
+        self.assertIn("本次未能读取公开因子数据源。", result["notes"])
+        self.assertFalse(
+            any("Public factor sources" in note for note in result["notes"])
+        )
+
+    def test_a_malformed_factor_snapshot_degrades_into_a_chinese_note(self) -> None:
+        result = service(ProviderWithMalformedFactors()).decision("NVDA", "short")
+
+        self.assertIn("公开因子数据源返回了不支持的快照格式。", result["notes"])
+
+    def test_institutional_flow_reaches_the_score_when_the_provider_supplies_it(
+        self,
+    ) -> None:
+        # 2026-08-15 institutional-capital factor wiring: this factor used to
+        # be permanently unavailable everywhere. A provider that actually
+        # supplies data must lift factor_coverage and land a real
+        # contribution, not stay stuck in unavailableFactors.
+        provider = ProviderWithInstitutionalFlow(
+            InstitutionalFlowReading(
+                value=0.42, unavailable_reason=None, detail="blended"
+            )
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertEqual(provider.institutional_flow_queries, [("NVDA", AS_OF)])
+        self.assertNotIn(
+            "institutional_flow", result["score"]["unavailableFactors"]
+        )
+        contributions = {
+            item["name"]: item for item in result["score"]["contributions"]
+        }
+        self.assertEqual(contributions["institutional_flow"]["rawValue"], 0.42)
+        self.assertFalse(
+            any("institutional_flow unavailable" in note for note in result["notes"])
+        )
+
+    def test_institutional_flow_stays_honestly_unavailable_with_a_named_reason(
+        self,
+    ) -> None:
+        # The named reason distinguishes "no data for this symbol today"
+        # from the old blanket "未接入" — the exact semantics the plan asked
+        # for: symbols without data show *why*, not a generic never-wired
+        # label.
+        provider = ProviderWithInstitutionalFlow(
+            InstitutionalFlowReading(
+                value=None,
+                unavailable_reason=FactorUnavailable.NO_DATA_AT_CUTOFF,
+                detail="neither ingredient was available",
+            )
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertIn("institutional_flow", result["score"]["unavailableFactors"])
+        self.assertIn(
+            "institutional_flow unavailable (no_data_at_cutoff).",
+            result["notes"],
+        )
+
+    def test_a_broken_institutional_flow_source_degrades_into_a_chinese_note(
+        self,
+    ) -> None:
+        result = service(ProviderWithBrokenInstitutionalFlow()).decision(
+            "NVDA", "short"
+        )
+
+        self.assertIn("本次未能读取机构资金数据源。", result["notes"])
+        self.assertIn(
+            "institutional_flow", result["score"]["unavailableFactors"]
+        )
+
+    def test_a_malformed_institutional_flow_reading_degrades_into_a_chinese_note(
+        self,
+    ) -> None:
+        result = service(ProviderWithMalformedInstitutionalFlow()).decision(
+            "NVDA", "short"
+        )
+
+        self.assertIn("机构资金数据源返回了不支持的读数格式。", result["notes"])
+
     def test_the_forecast_carries_three_scenarios_and_its_disclaimer(self) -> None:
         forecast = service().decision("NVDA", "short")["forecast"]
 
@@ -239,6 +387,18 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertTrue(forecast["disclaimer"])
         self.assertEqual(forecast["calibrationStatus"], "uncalibrated")
         self.assertTrue(forecast["invalidationConditions"])
+
+    def test_the_forecast_invalidation_condition_and_scenarios_are_chinese(
+        self,
+    ) -> None:
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): both ride
+        # the wire verbatim with no client-side translation table.
+        forecast = service().decision("NVDA", "short")["forecast"]
+
+        self.assertIn("引用的证据被撤回或被证伪。", forecast["invalidationConditions"])
+        explanations = {case["kind"]: case["explanation"] for case in forecast["cases"]}
+        for explanation in explanations.values():
+            self.assertNotRegex(explanation, r"[a-z]{3,}")
 
     def test_an_unmeasurable_volatility_yields_no_forecast_and_says_why(
         self,
@@ -309,6 +469,24 @@ class AnalysisContractTests(unittest.TestCase):
             self.assertIs(citation["stale"], True)
         self.assertTrue(any("stale" in note.lower() for note in result["notes"]))
 
+    def test_a_symbol_with_zero_evidence_serves_an_unmeasured_sentiment(
+        self,
+    ) -> None:
+        # sentiment.py's uncertainty marker used to be gated on `clusters`
+        # being non-empty, so a symbol with no evidence at all -- the
+        # simplest way to be unmeasured -- served conclusion 中性 with an
+        # empty uncertainty array, indistinguishable from a measured neutral
+        # read straight off the wire.
+        class NoEvidenceProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                return ()
+
+        result = service(NoEvidenceProvider()).decision("NVDA", "short")
+
+        self.assertEqual(result["citations"], [])
+        self.assertIn("情绪未测量", result["sentiment"]["uncertainty"])
+        self.assertIn("market_sentiment", result["score"]["unavailableFactors"])
+
     def test_an_unknown_horizon_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             service().decision("NVDA", "forever")
@@ -340,6 +518,39 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "live")
         self.assertEqual(result["interval"], "day")
         self.assertIsInstance(result["score"]["value"], float)
+
+    def test_a_short_horizon_decision_on_yesterdays_close_is_not_stale_gated(
+        self,
+    ) -> None:
+        # This is the shape live data actually takes: every horizon is fed
+        # completed daily bars, and mid-session the newest one is yesterday's
+        # close (~22h old). A freshness gate budgeted for intraday cadence
+        # stale-gated this every request outside the 20 minutes after a
+        # session's close.
+        provider = Provider(
+            rows=bars(newest_available_at=AS_OF - timedelta(hours=22))
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertNotIn("stale_data", result["score"]["blockedBy"])
+        self.assertTrue(result["score"]["actionable"])
+        self.assertNotEqual(result["riskPlan"]["action"], "avoid")
+
+    def test_a_short_horizon_decision_on_a_many_day_old_close_is_still_stale_gated(
+        self,
+    ) -> None:
+        # The wider daily-cadence budget must not stop catching a feed that
+        # has genuinely stopped publishing.
+        provider = Provider(
+            rows=bars(newest_available_at=AS_OF - timedelta(days=10))
+        )
+
+        result = service(provider).decision("NVDA", "short")
+
+        self.assertIn("stale_data", result["score"]["blockedBy"])
+        self.assertFalse(result["score"]["actionable"])
+        self.assertEqual(result["riskPlan"]["action"], "avoid")
 
 
 if __name__ == "__main__":
@@ -374,6 +585,101 @@ class CutoffRaceTests(unittest.TestCase):
         ).decision("NVDA", "short")
 
         self.assertEqual(result["status"], "live")
+
+
+class EvidenceCutoffRaceTests(unittest.TestCase):
+    """Evidence the request itself fetched must reach the conclusion.
+
+    The bar-side race was fixed by taking the cutoff after the bars were in
+    hand; the evidence fetch had the same race with a quieter failure. A live
+    collector stamps available_at = retrieved_at, so every event first
+    retrieved during the request landed after a cutoff sampled before the
+    fetch and was silently filed as future — the request a user makes on
+    seeing breaking news was served a measured-looking neutral built on
+    nothing, with no disclosure.
+    """
+
+    @staticmethod
+    def retrieved_now(retrieved: datetime) -> tuple[EvidenceEvent, ...]:
+        # The warm-store steady state: a collector polled by the request
+        # stamps what it fetched with the moment of the fetch itself.
+        return tuple(
+            replace(
+                item,
+                published_at=retrieved - timedelta(minutes=1),
+                first_seen_at=retrieved,
+                available_at=retrieved,
+                retrieved_at=retrieved,
+            )
+            for item in evidence()
+        )
+
+    def test_evidence_fetched_during_the_request_reaches_the_conclusion(
+        self,
+    ) -> None:
+        now = {"value": AS_OF}
+        make = self.retrieved_now
+
+        class BreakingNewsProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                # The fetch takes time, and everything it returns was
+                # retrieved at the end of that time.
+                now["value"] += timedelta(seconds=2)
+                return make(now["value"])
+
+        raced = AnalysisService(
+            BreakingNewsProvider(), clock=lambda: now["value"]
+        ).decision("NVDA", "short")
+        settled = service().decision("NVDA", "short")
+
+        # Identical evidence, retrieved during the request instead of before
+        # it, must not flip the served conclusion.
+        self.assertEqual(
+            [item["id"] for item in raced["citations"]],
+            [item["id"] for item in settled["citations"]],
+        )
+        self.assertEqual(
+            raced["sentiment"]["conclusion"],
+            settled["sentiment"]["conclusion"],
+        )
+        self.assertEqual(
+            raced["sentiment"]["actionScore"],
+            settled["sentiment"]["actionScore"],
+        )
+        self.assertEqual(raced["score"]["value"], settled["score"]["value"])
+
+    def test_evidence_still_future_at_the_cutoff_is_named_in_the_notes(
+        self,
+    ) -> None:
+        # An event stamped after even the honestly-taken cutoff (an embargo,
+        # a skewed publisher clock) is excluded by the point-in-time
+        # invariant — but never silently: an exclusion the reader cannot see
+        # is a patched record, not a protected one.
+        embargoed = tuple(
+            replace(
+                item,
+                event_id=f"embargoed-{item.event_id}",
+                published_at=AS_OF + timedelta(minutes=5),
+                first_seen_at=AS_OF + timedelta(minutes=5),
+                available_at=AS_OF + timedelta(minutes=5),
+                retrieved_at=AS_OF + timedelta(minutes=5),
+            )
+            for item in evidence()
+        )
+
+        class EmbargoedProvider(Provider):
+            def evidence_for(self, symbol: str) -> tuple[EvidenceEvent, ...]:
+                return embargoed
+
+        payload = service(EmbargoedProvider()).decision("NVDA", "short")
+
+        self.assertTrue(
+            any(
+                "embargoed-a" in note and "embargoed-b" in note
+                for note in payload["notes"]
+            ),
+            f"the excluded evidence was not disclosed: {payload['notes']}",
+        )
 
 
 class UnreadableSourceTests(unittest.TestCase):

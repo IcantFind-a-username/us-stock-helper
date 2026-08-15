@@ -265,5 +265,62 @@ class OutputSafetyTests(unittest.TestCase):
             )
 
 
+class AdviserCapAuthorityTests(unittest.TestCase):
+    """council.py must not repeat the ADVISER_SCORE_CAP literal: commit
+    71bfd8f made analysis_core the single authority for the engine and the
+    app, but left this module's own defaults hardcoded and diverging."""
+
+    def test_council_cap_default_matches_the_shared_authority(self) -> None:
+        from us_stock_helper_core import ADVISER_SCORE_CAP
+
+        opinions = (
+            AdviserOpinion(
+                adviser_id="taleb",
+                direction="bearish",
+                confidence=1,
+                score_adjustment=-3,
+                thesis="x",
+                counterargument="y",
+                citation_ids=("f1",),
+                missing_evidence=(),
+                abstained=False,
+            ),
+            AdviserOpinion(
+                adviser_id="druckenmiller",
+                direction="bearish",
+                confidence=1,
+                score_adjustment=-3,
+                thesis="x",
+                counterargument="y",
+                citation_ids=("f2",),
+                missing_evidence=(),
+                abstained=False,
+            ),
+        )
+
+        # Raw adjustment is -6; only the module's old stray default of 4.0
+        # would clamp it to -4. The shared authority is 3.0.
+        result = aggregate_opinions(
+            baseline_score=67,
+            baseline_direction="bullish",
+            opinions=opinions,
+            hard_gate_passed=True,
+        )
+        self.assertEqual(ADVISER_SCORE_CAP, 3.0)
+        self.assertEqual(result.adjustment, -ADVISER_SCORE_CAP)
+        self.assertEqual(result.adjusted_score, 67 - ADVISER_SCORE_CAP)
+
+    def test_per_adviser_cap_defaults_are_sourced_from_the_shared_authority(
+        self,
+    ) -> None:
+        import inspect
+
+        from us_stock_helper_core import ADVISER_SCORE_CAP
+
+        for func in (validate_opinion, aggregate_opinions):
+            default = inspect.signature(func).parameters["per_adviser_cap"].default
+            self.assertEqual(default, ADVISER_SCORE_CAP)
+
+
 if __name__ == "__main__":
     unittest.main()

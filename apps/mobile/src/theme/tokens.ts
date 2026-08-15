@@ -40,6 +40,17 @@ export const radius = {
   pill: 999,
 } as const;
 
+export const layout = {
+  /**
+   * The tab bar's own `tabBarStyle.height` in `app/(tabs)/_layout.tsx`.
+   *
+   * Anything absolutely positioned near the bottom of the screen that has to
+   * stay clear of the tab bar reads this instead of a second literal 66 that
+   * could drift from the one the navigator actually renders at.
+   */
+  tabBarHeight: 66,
+} as const;
+
 export const shadow = {
   card: {
     shadowColor: "#23324A",

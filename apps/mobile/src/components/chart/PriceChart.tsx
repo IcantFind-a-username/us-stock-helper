@@ -13,13 +13,18 @@ import {
   toDemoChartSnapshot,
   type ChartMacdIndicator,
   type ChartSnapshot,
+  type PatternShapeSignal,
   type StockSnapshot,
 } from "@/domain/models";
 import {
+  alignTouchXToViewBox,
   buildChartGeometry,
+  decidedCandleTimestamps,
   findNearestByX,
   focusRatioForX,
   panChartWindow,
+  reanchorChartWindow,
+  recentPatternSignalsPerKind,
   resolveChartWidth,
   zoomChartWindow,
   type ChartOverlaySeries,
@@ -49,6 +54,30 @@ type PriceChartProps = {
   showParticipation?: boolean;
   showMacd?: boolean;
   showRsi?: boolean;
+  /** Anchor-bar markers for served 形态 detections (patterns_shapes.py); demo has none. */
+  patternShapes?: PatternShapeSignal[];
+  showPatternShapes?: boolean;
+};
+
+/**
+ * Chart markers are anchors, not the historical detection log -- that log is
+ * PatternHintsCard's job, in full. A detector that fires on almost every
+ * third bar (fractals) can otherwise paint the whole visible history with
+ * repeated glyphs, which is exactly what overwhelmed the canvas before this
+ * bound existed. Kept in line with how Magic Nine's own bounded marker set
+ * behaves: never the full run, only a handful of the most recent instances.
+ */
+const RECENT_MARKERS_PER_KIND = 3;
+
+/** One glyph per pattern kind -- short enough to sit off the price text, same idea as Magic Nine's own count label. */
+const PATTERN_MARKER_GLYPH: Record<PatternShapeSignal["kind"], string> = {
+  fractal_top: "分",
+  fractal_bottom: "分",
+  double_bottom: "W",
+  double_top: "双",
+  head_shoulders_top: "头",
+  head_shoulders_bottom: "头",
+  ma5_pullback: "回",
 };
 
 /**
@@ -81,6 +110,8 @@ export const PriceChart = memo(function PriceChart({
   showParticipation = true,
   showMacd = true,
   showRsi = true,
+  patternShapes = [],
+  showPatternShapes = true,
 }: PriceChartProps) {
   const { width: viewportWidth } = useWindowDimensions();
   const chartWidth = resolveChartWidth(viewportWidth);
@@ -102,6 +133,66 @@ export const PriceChart = memo(function PriceChart({
   // null means nobody has touched the chart yet, so it keeps following the
   // newest bar as refreshes arrive. A gesture takes that over.
   const [visibleWindow, setVisibleWindow] = useState<ChartWindow | null>(null);
+  // null until the Pressable's own onLayout fires. chartWidth is only ever a
+  // guess made before that; hit-testing falls back to trusting it verbatim
+  // until the real number is known.
+  const [renderedWidth, setRenderedWidth] = useState<number | null>(null);
+
+  // ChartWindow names bars by bare offset/total, with no series identity of
+  // its own, so a window parked off the live edge survives a prop change
+  // that swaps in a whole different series — a symbol switch, or an interval
+  // toggle handed back a cached snapshot without ever unmounting this
+  // component. Re-applying that window to the new series would silently show
+  // an arbitrary mid-history slice of it as if it were live. Resetting here,
+  // during render rather than in an effect, means the very first geometry
+  // built for the new series is already the one the reader asked for.
+  const seriesIdentity = `${snapshot.symbol}|${snapshot.interval}`;
+  const [priorSeriesIdentity, setPriorSeriesIdentity] = useState(seriesIdentity);
+  const [priorCandles, setPriorCandles] = useState(snapshot.candles);
+  const [priorDecisionCutoff, setPriorDecisionCutoff] = useState(
+    snapshot.source.decisionCutoff,
+  );
+  const seriesChanged = seriesIdentity !== priorSeriesIdentity;
+  // Not a series switch, but the candle list (or the cutoff cutting it) is a
+  // new reference: a refresh replaced the data under the same symbol and
+  // interval. A series that only grows never moves the bars already in it, so
+  // the window's bare offset happens to still name them — but a server that
+  // instead publishes a fixed-count series ("last 300 bars") rolls, dropping
+  // its oldest bars as new ones close, which shifts every offset behind the
+  // drop with `total` unchanged: the one case that bare offset cannot tell
+  // apart from not having moved at all.
+  const dataRefreshed =
+    !seriesChanged &&
+    (snapshot.candles !== priorCandles ||
+      snapshot.source.decisionCutoff !== priorDecisionCutoff);
+  if (seriesChanged) {
+    setPriorSeriesIdentity(seriesIdentity);
+    setVisibleWindow(null);
+    setSelectedTimestamp(null);
+  } else if (dataRefreshed && visibleWindow) {
+    // Relocate the bar the window was anchored on (its own `offset`, in the
+    // series it was last resolved against) inside the freshly refreshed
+    // series, and re-offset to it — keeping the same bars on screen through
+    // either kind of refresh instead of a slice quietly shifted by however
+    // many bars rolled off the front. reanchorChartWindow leaves a live-edge
+    // window following the newest bar regardless, and snaps a window whose
+    // anchor rolled off entirely to the oldest bar still available.
+    const previousTimestamps = decidedCandleTimestamps(priorCandles, priorDecisionCutoff);
+    const nextTimestamps = decidedCandleTimestamps(
+      snapshot.candles,
+      snapshot.source.decisionCutoff,
+    );
+    setVisibleWindow(
+      reanchorChartWindow(visibleWindow, nextTimestamps.length, {
+        timestamp: previousTimestamps[visibleWindow.offset] ?? null,
+        timestamps: nextTimestamps,
+      }),
+    );
+  }
+  if (seriesChanged || dataRefreshed) {
+    setPriorCandles(snapshot.candles);
+    setPriorDecisionCutoff(snapshot.source.decisionCutoff);
+  }
   const hasForecast = showForecast && snapshot.forecast !== null;
 
   const panels = useMemo(() => {
@@ -165,6 +256,9 @@ export const PriceChart = memo(function PriceChart({
     // The zoom ceiling is solved from the drawing span, so it moves with the
     // width the chart was actually laid out at.
     width: chartWidth,
+    // The Pressable's own measured width, for turning a focal x back into
+    // viewBox coordinates before it is compared against plot bounds.
+    renderedWidth,
   });
   useEffect(() => {
     viewport.current = {
@@ -173,6 +267,7 @@ export const PriceChart = memo(function PriceChart({
       plotLeft: geometry.plotLeft,
       plotRight: geometry.plotRight,
       width: chartWidth,
+      renderedWidth,
     };
   });
 
@@ -243,9 +338,16 @@ export const PriceChart = memo(function PriceChart({
           window: viewport.current.window,
           scale: event.scale > 0 ? event.scale : 1,
           // The anchor is where the fingers landed; letting it follow their
-          // drifting midpoint would pan and zoom at the same time.
+          // drifting midpoint would pan and zoom at the same time. focalX
+          // arrives in the Pressable's own layout frame, same as it, so it
+          // needs the same realignment before it means anything against
+          // viewBox-space plot bounds.
           focusRatio: focusRatioForX({
-            x: event.focalX,
+            x: alignTouchXToViewBox({
+              x: event.focalX,
+              renderedWidth: viewport.current.renderedWidth ?? viewport.current.width,
+              chartWidth: viewport.current.width,
+            }),
             plotLeft: viewport.current.plotLeft,
             plotRight: viewport.current.plotRight,
           }),
@@ -346,6 +448,50 @@ export const PriceChart = memo(function PriceChart({
     snapshot.magicNine.lastCompleted,
     snapshot.magicNine.series,
   ]);
+
+  // 形态 anchor-bar markers: same small off-candle placement Magic Nine uses,
+  // pushed a little further out so the two systems never overlap the same
+  // spot on a shared bar, and never sit on top of the price text they mark.
+  const patternMarkers = useMemo<MagicNineMarker[]>(() => {
+    if (!showPatternShapes) return [];
+    const recentShapes = recentPatternSignalsPerKind(
+      patternShapes,
+      RECENT_MARKERS_PER_KIND,
+    );
+    return recentShapes.flatMap((signal, index) => {
+      const candle = geometry.candles.find(
+        (entry) => entry.sourceIndex === signal.anchorIndex,
+      );
+      if (!candle) return [];
+      const y =
+        signal.direction === "bullish"
+          ? Math.min(candle.wickBottom + 20, geometry.panels.price.bottom - 7)
+          : Math.max(candle.wickTop - 20, geometry.panels.price.top + 7);
+      return [
+        {
+          key: `pattern-${signal.kind}-${signal.eventIndex}-${index}`,
+          testID: "pattern-shape-marker",
+          x: candle.x,
+          y,
+          label: PATTERN_MARKER_GLYPH[signal.kind],
+          direction: signal.direction,
+          mode: "series" as const,
+          labelTestID: "pattern-shape-marker-label",
+        },
+      ];
+    });
+  }, [
+    geometry.candles,
+    geometry.panels.price.bottom,
+    geometry.panels.price.top,
+    patternShapes,
+    showPatternShapes,
+  ]);
+
+  const allMarkers = useMemo(
+    () => [...markers, ...patternMarkers],
+    [markers, patternMarkers],
+  );
 
   const missingNotes = useMemo(() => {
     const unpublished: string[] = [];
@@ -463,7 +609,15 @@ export const PriceChart = memo(function PriceChart({
     if (!geometry.candles.length) return;
     const locationX = event.nativeEvent.locationX;
     const targetX = Number.isFinite(locationX) ? locationX : chartWidth;
-    const nearest = findNearestByX(geometry.candles, targetX);
+    // locationX arrives in the Pressable's own layout frame; the candles it
+    // is compared against live in the SVG's viewBox frame, which only ever
+    // matches when the Pressable happened to measure exactly chartWidth.
+    const alignedX = alignTouchXToViewBox({
+      x: targetX,
+      renderedWidth: renderedWidth ?? chartWidth,
+      chartWidth,
+    });
+    const nearest = findNearestByX(geometry.candles, alignedX);
     if (nearest) setSelectedTimestamp(nearest.timestamp);
   };
 
@@ -504,6 +658,9 @@ export const PriceChart = memo(function PriceChart({
             <Pressable
               accessibilityLabel={summary}
               accessibilityRole="button"
+              onLayout={(event) =>
+                setRenderedWidth(event.nativeEvent.layout.width)
+              }
               onLongPress={selectNearestCandle}
               onPress={selectNearestCandle}
               style={({ pressed }) => [
@@ -515,7 +672,7 @@ export const PriceChart = memo(function PriceChart({
                 geometry={geometry}
                 height={height}
                 macdLabel={macdPanelLabel(snapshot.indicators.macd)}
-                markers={markers}
+                markers={allMarkers}
                 rsiLabel={
                   snapshot.indicators.rsi.value === null
                     ? `RSI${parameterLabel(snapshot.indicators.rsi.methodVersion)} 暂不可用`

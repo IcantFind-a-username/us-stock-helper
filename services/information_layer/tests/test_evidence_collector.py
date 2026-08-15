@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -304,6 +305,31 @@ class FailureTests(unittest.TestCase):
         with self.assertRaises(EvidenceUnavailable):
             subject.collect()
 
+    def test_failure_reasons_are_investor_readable_chinese(self) -> None:
+        # 2026-08-15 served-copy sweep: `SourceFailure.reason` rides straight
+        # through into `source_id（reason）` gap entries that reach a real-mode
+        # screen -- both a decision's own notes and `GET /market-brief`'s
+        # `reason`/`sourceGaps` -- so an English adjective here was the
+        # "sec-current-8-k（unreachable）" leak Franz's real-mode QA reported.
+        cases = {
+            "unreachable": (
+                FakeTransport(OSError("connection refused")),
+                "无法连接",
+            ),
+            "unparsable": (FakeTransport(response(b"not a feed")), "无法解析该信息源返回的内容"),
+        }
+        for name, (transport, expected_reason) in cases.items():
+            with self.subTest(failure=name):
+                subject = collector(transport, Clock(FIRST_POLL))
+
+                with self.assertRaises(EvidenceUnavailable) as failure:
+                    subject.collect()
+
+                self.assertEqual(
+                    [item.reason for item in failure.exception.failures],
+                    [expected_reason],
+                )
+
     def test_a_retryable_upstream_status_is_a_failure_not_an_empty_answer(
         self,
     ) -> None:
@@ -458,6 +484,84 @@ class CacheTests(unittest.TestCase):
 
         self.assertEqual(len(transport.requests), 2)
         self.assertEqual(len(second), 1)
+
+
+class _RaceDict(dict):
+    """Wraps the live store dict so its `.values()` pauses right after
+    yielding its first item, deterministically handing control to a
+    concurrent writer before the real dict iterator is asked for its next
+    item -- the exact window `evidence()`'s iteration and `_poll_sources`'s
+    store writes must not both occupy unsynchronized under a
+    ThreadingHTTPServer. Real threads and `Event`s stand in for the two
+    concurrent requests; nothing here depends on sleep-based timing.
+    """
+
+    def __init__(self, *args: object, on_first_pause, wait_for: threading.Event, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_first_pause = on_first_pause
+        self._wait_for = wait_for
+
+    def values(self):  # type: ignore[override]
+        iterator = iter(dict.values(self))
+        first = next(iterator)
+        yield first
+        self._on_first_pause()
+        self._wait_for.wait(timeout=1.0)
+        yield from iterator
+
+
+class ThreadSafetyTests(unittest.TestCase):
+    """Reproduces the collector.py:158/171-175/234 races a ThreadingHTTPServer
+    exposes: one request iterating `evidence()` while another request's
+    `_poll_sources()` inserts into the same shared `_store` dict.
+    """
+
+    def test_a_concurrent_poll_cannot_corrupt_a_read_in_progress(self) -> None:
+        transport = FakeTransport(
+            response(atom(EARLIER_ENTRY), retrieved_at=FIRST_POLL),
+            response(atom(NVDA_ENTRY), retrieved_at=SECOND_POLL),
+        )
+        clock = Clock(FIRST_POLL)
+        subject = collector(transport, clock)
+        subject.refresh()  # seeds the store with one item to iterate
+        clock.now = SECOND_POLL  # past the adapter's minimum_poll_interval
+
+        reader_paused = threading.Event()
+        writer_done = threading.Event()
+        subject._store = _RaceDict(
+            subject._store,
+            on_first_pause=reader_paused.set,
+            wait_for=writer_done,
+        )
+
+        errors: list[BaseException] = []
+
+        def read() -> None:
+            try:
+                subject.evidence(symbols=("NVDA",))
+            except BaseException as error:  # noqa: BLE001 - captured for the assertion
+                errors.append(error)
+
+        def write() -> None:
+            reader_paused.wait(timeout=5)
+            # Stands in for a concurrent request's `_poll_sources()` commit
+            # landing on the same store while the first request's read is
+            # mid-iteration.
+            subject._poll_sources()
+            writer_done.set()
+
+        reader = threading.Thread(target=read)
+        writer = threading.Thread(target=write)
+        reader.start()
+        writer.start()
+        reader.join(timeout=5)
+        writer.join(timeout=5)
+
+        self.assertFalse(
+            errors,
+            f"a concurrent store write corrupted the read in progress: {errors}",
+        )
+        self.assertEqual(len(subject._store), 2)
 
 
 class ScopeTests(unittest.TestCase):

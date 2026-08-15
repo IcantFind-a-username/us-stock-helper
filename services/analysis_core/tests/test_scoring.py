@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import random
+import re
 import unittest
 
 from us_stock_helper_core.models import (
@@ -16,6 +17,7 @@ from us_stock_helper_core.models import (
 from us_stock_helper_core.scoring import (
     FeatureSet,
     HardGate,
+    data_freshness_budget,
     extract_horizon_features,
     score_horizon,
 )
@@ -214,6 +216,107 @@ class ExplainableScoreTests(unittest.TestCase):
         self.assertFalse(stale.actionable)
         self.assertIn(HardGate.STALE_DATA, stale.blocked_by)
 
+    def test_a_daily_bar_from_yesterdays_close_is_not_stale_on_any_horizon(
+        self,
+    ) -> None:
+        # A daily candle is only replaced once a session, and a session can
+        # be a weekend away. Budgeting it at an intraday tightness stale-gates
+        # every request made between one close and the next, which for the
+        # SHORT horizon is essentially all of a trading day.
+        for horizon in (Horizon.SHORT, Horizon.SWING, Horizon.LONG):
+            with self.subTest(horizon=horizon):
+                result = score_horizon(
+                    replace(
+                        manual_features(horizon=horizon),
+                        data_interval="day",
+                        latest_market_data_at=AS_OF - timedelta(hours=22),
+                    )
+                )
+
+                self.assertNotIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_daily_bar_many_days_old_is_still_stale(self) -> None:
+        # The budget widening for daily cadence must not become a licence to
+        # call a genuinely stopped feed fresh.
+        result = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SHORT),
+                data_interval="day",
+                latest_market_data_at=AS_OF - timedelta(days=10),
+            )
+        )
+
+        self.assertIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_completed_weekly_bar_is_not_stale_mid_cycle(self) -> None:
+        # A weekly bar only closes once a week, so its age climbs toward
+        # (but stays under) 7 days for most of the cycle before the next
+        # close resets it. "week" shared the 5-day daily budget, so every
+        # request made in the back half of the week was wrongly stale-gated.
+        for age in (timedelta(days=6), timedelta(days=6, hours=23)):
+            with self.subTest(age=age):
+                result = score_horizon(
+                    replace(
+                        manual_features(horizon=Horizon.SWING),
+                        data_interval="week",
+                        latest_market_data_at=AS_OF - age,
+                    )
+                )
+
+                self.assertNotIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_holiday_extended_week_is_still_not_stale(self) -> None:
+        # A holiday can push the next weekly close a day or two later than
+        # the ordinary 7-day cadence without the feed having stopped.
+        result = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SWING),
+                data_interval="week",
+                latest_market_data_at=AS_OF - timedelta(days=8, hours=12),
+            )
+        )
+
+        self.assertNotIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_a_weekly_bar_many_weeks_old_is_still_stale(self) -> None:
+        # The widened weekly budget must not become a licence to call a
+        # genuinely stopped feed fresh.
+        result = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SWING),
+                data_interval="week",
+                latest_market_data_at=AS_OF - timedelta(days=21),
+            )
+        )
+
+        self.assertIn(HardGate.STALE_DATA, result.blocked_by)
+
+    def test_the_weekly_budget_is_its_own_bound_not_the_daily_one(self) -> None:
+        self.assertGreater(
+            data_freshness_budget("week"), data_freshness_budget("day")
+        )
+
+    def test_an_intraday_bar_keeps_a_tight_freshness_budget(self) -> None:
+        # Intraday data must not inherit the daily cadence's slack: a 5-minute
+        # bar that is 21 minutes old is genuinely stale for a SHORT decision.
+        fresh = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SHORT),
+                data_interval="5m",
+                latest_market_data_at=AS_OF - timedelta(minutes=10),
+            )
+        )
+        stale = score_horizon(
+            replace(
+                manual_features(horizon=Horizon.SHORT),
+                data_interval="5m",
+                latest_market_data_at=AS_OF - timedelta(minutes=21),
+            )
+        )
+
+        self.assertNotIn(HardGate.STALE_DATA, fresh.blocked_by)
+        self.assertIn(HardGate.STALE_DATA, stale.blocked_by)
+
     def test_adviser_is_bounded_to_three_points_and_does_not_replace_facts(self) -> None:
         negative_adviser = score_horizon(
             manual_features(adviser_factor=-1.0)
@@ -240,6 +343,45 @@ class ExplainableScoreTests(unittest.TestCase):
         names = {item.name for item in result.contributions}
         self.assertTrue({"market_sentiment", "macro", "geopolitics"} <= names)
         self.assertTrue(all(item.explanation for item in result.contributions))
+
+    def test_every_factor_explanation_is_investor_readable_chinese(self) -> None:
+        # 2026-08-15 served-copy sweep: `contributions[].explanation` rides the
+        # wire verbatim (analysis_api does no translation of it), so an
+        # English sentence here reaches the stock page unreadable. A run of
+        # three or more lowercase ASCII letters is that sentence's signature;
+        # short tokens the reader does understand ("K线", "RSI", "MACD") stay
+        # under that threshold.
+        available = score_horizon(manual_features())
+        unavailable = score_horizon(
+            replace(
+                manual_features(adviser_factor=1.0),
+                macro=None,
+                geopolitics=None,
+                institutional_flow=None,
+                fundamentals=None,
+            )
+        )
+        for result in (available, unavailable):
+            for item in result.contributions:
+                with self.subTest(name=item.name, explanation=item.explanation):
+                    self.assertTrue(item.explanation.strip())
+                    self.assertNotRegex(item.explanation, r"[a-z]{3,}")
+
+    def test_institutional_flow_explanation_names_its_blend_and_labels_the_proxy(
+        self,
+    ) -> None:
+        # 2026-08-15 institutional-capital factor wiring: the factor now
+        # blends an intraday order-size proxy with a dated holdings-
+        # disclosure trend, and the served explanation has to say so and
+        # mark the proxy half as an estimate (估算代理), not a verified
+        # institutional identity.
+        result = score_horizon(manual_features())
+        contribution = next(
+            item for item in result.contributions if item.name == "institutional_flow"
+        )
+
+        self.assertIn("估算代理", contribution.explanation)
+        self.assertIn("机构持仓", contribution.explanation)
 
     def test_hard_gate_blocks_action_even_with_maximum_adviser_support(self) -> None:
         result = score_horizon(
@@ -383,7 +525,11 @@ class UnavailableFactorTests(unittest.TestCase):
         )
         self.assertIsNone(macro.raw_value)
         self.assertEqual(macro.points, 0.0)
-        self.assertIn("unavailable", macro.explanation.lower())
+        # Investor-readable Chinese (2026-08-15 served-copy sweep): the reader
+        # never sees "unavailable" as a bare English word on this card, so the
+        # unavailability marker pinned here is the Chinese phrase the service
+        # actually emits.
+        self.assertIn("本次快照不可用", macro.explanation)
 
     def test_a_score_with_no_usable_factor_is_not_actionable(self) -> None:
         blind = replace(
@@ -403,6 +549,152 @@ class UnavailableFactorTests(unittest.TestCase):
         self.assertEqual(result.factor_coverage, 0.0)
         self.assertFalse(result.actionable)
         self.assertEqual(result.objective_score, 50.0)
+
+
+def make_ohlc_bars(
+    rows: list[tuple[float, float, float, float]],
+) -> tuple[OHLCVBar, ...]:
+    """rows: (open, high, low, close), one bar per day ending at AS_OF."""
+
+    start = AS_OF - timedelta(days=len(rows))
+    result: list[OHLCVBar] = []
+    for index, (open_, high, low, close) in enumerate(rows):
+        closed_at = start + timedelta(days=index + 1)
+        result.append(
+            OHLCVBar(
+                symbol="NVDA",
+                interval="1d",
+                opened_at=closed_at - timedelta(hours=6),
+                closed_at=closed_at,
+                available_at=closed_at,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=5_000_000,
+            )
+        )
+    return tuple(result)
+
+
+# The 2026-08-16 re-review probe: a W底 confirms at bar 7 (neckline 104),
+# then the price walks down to 87 -- the neckline is lost, so the confirmed
+# pattern is no longer in force at the latest close. Two 顶分型 confirmed on
+# the way down still are. Old scoring read this as -0.30; the max-abs rewrite
+# silently let the stale W底 vote +0.90 forever.
+_W_BOTTOM_THEN_LOST_ROWS = [
+    (105.0, 106.0, 104.0, 105.0),
+    (98.0, 99.0, 96.0, 97.0),  # first trough (low 96)
+    (98.0, 101.0, 97.0, 100.0),
+    (100.0, 104.0, 99.0, 103.0),  # neckline high 104
+    (102.0, 103.0, 98.0, 99.0),
+    (97.0, 98.0, 96.5, 97.0),  # second trough (low 96.5)
+    (98.0, 101.0, 98.0, 100.0),
+    (100.0, 109.0, 99.0, 108.0),  # close 108 > 104: W底 confirmed at bar 7
+    (107.0, 108.0, 104.0, 105.0),
+    (104.0, 105.0, 100.0, 101.0),
+    (100.0, 101.0, 97.0, 98.0),
+    (97.0, 98.0, 93.0, 94.0),
+    (93.0, 94.0, 89.0, 90.0),
+    (89.0, 90.0, 86.0, 87.0),  # latest close 87: neckline 104 long lost
+]
+
+
+class PatternFactorInForceTests(unittest.TestCase):
+    def test_a_confirmed_pattern_stops_voting_once_its_neckline_is_lost(
+        self,
+    ) -> None:
+        # Reviewer probe, pinned old-vs-new: with the neckline lost (87
+        # against 104) the W底 may not vote +0.90 six bars after the fact;
+        # the current picture is the confirmed 顶分型 still in force, -0.30.
+        features = extract_horizon_features(
+            Horizon.SHORT, make_ohlc_bars(_W_BOTTOM_THEN_LOST_ROWS), (), context()
+        )
+
+        self.assertIsNotNone(features.pattern)
+        self.assertAlmostEqual(features.pattern, -0.3)
+
+    def test_a_close_exactly_on_the_neckline_keeps_the_confirmed_vote(
+        self,
+    ) -> None:
+        # Mutation-check target for the in-force boundary: 跌破 is a strict
+        # break, so a latest close sitting exactly on the neckline has NOT
+        # met the invalidation condition and the confirmed W底 still votes.
+        rows = _W_BOTTOM_THEN_LOST_ROWS[:8] + [(106.0, 107.0, 103.0, 104.0)]
+
+        features = extract_horizon_features(
+            Horizon.SHORT, make_ohlc_bars(rows), (), context()
+        )
+
+        self.assertIsNotNone(features.pattern)
+        self.assertAlmostEqual(features.pattern, 0.9)
+
+    def test_equal_magnitude_votes_prefer_the_latest_signal(self) -> None:
+        # A 顶分型 (event 2) and a later 底分型 (event 4), both still in
+        # force at a latest close between their levels: the tie between the
+        # +/-0.3 votes goes to the most recent read, as it did before the
+        # rewrite let list order decide.
+        rows = [
+            (100.0, 101.0, 99.0, 100.0),
+            (100.0, 105.0, 99.0, 104.0),  # fractal top (high 105)
+            (104.0, 104.5, 98.0, 99.0),
+            (99.0, 100.0, 95.0, 96.0),  # fractal bottom (low 95)
+            (96.0, 99.0, 96.0, 98.0),
+            (98.0, 100.0, 97.0, 99.0),
+            (99.0, 101.0, 98.0, 100.0),
+        ]
+
+        features = extract_horizon_features(
+            Horizon.SHORT, make_ohlc_bars(rows), (), context()
+        )
+
+        self.assertIsNotNone(features.pattern)
+        self.assertAlmostEqual(features.pattern, 0.3)
+
+    def test_a_confirmed_ma5_pullback_stops_voting_below_the_average(
+        self,
+    ) -> None:
+        # 回眸一笑 confirmed at bar 8, then the price collapses far below the
+        # five-day average: its own invalidation (收盘再次跌破五日线) has
+        # happened, so the +0.6 vote must not persist; the in-force read is
+        # the confirmed 顶分型 left by the collapse, -0.30.
+        closes = [
+            100.0,
+            102.0,
+            104.0,
+            106.0,
+            108.0,
+            110.0,
+            112.0,
+            109.0,  # touch of a rising MA5
+            113.0,  # 回眸一笑 confirmed
+            90.0,  # collapse: latest close far below the latest MA5
+        ]
+
+        features = extract_horizon_features(
+            Horizon.SHORT, make_bars(closes), (), context()
+        )
+
+        self.assertIsNotNone(features.pattern)
+        self.assertAlmostEqual(features.pattern, -0.3)
+
+    def test_the_in_force_semantics_are_versioned_and_disclosed(self) -> None:
+        # The factor's meaning changed (in-force filtering, latest-first
+        # ties), so the method version and the served Chinese explanation
+        # must both say so -- a silent semantics change under a stable
+        # version id is exactly what the re-review flagged.
+        result = score_horizon(manual_features())
+
+        self.assertEqual(result.method_version, "explainable-horizon-score-v2")
+        pattern = next(
+            item for item in result.contributions if item.name == "pattern"
+        )
+        self.assertEqual(
+            pattern.explanation,
+            "只计入收盘确认、且失效条件尚未触发的形态证据：确认后一旦收盘越过失效价位"
+            "（如W底跌回颈线下方），该形态即停止计分；多个形态并存时取幅度最大者，"
+            "幅度相同取最新。未确认的形态贡献为零。",
+        )
 
 
 class ContextAvailabilityTests(unittest.TestCase):
@@ -493,3 +785,54 @@ class UncomputableFactorTests(unittest.TestCase):
         # A default of 0.0 hands every caller that omits the argument a
         # measured neutral for a factor that has no feed at all.
         self.assertIsNone(signature.parameters["fundamentals"].default)
+
+    def test_a_window_no_pattern_detector_could_read_is_unavailable_not_zero(
+        self,
+    ) -> None:
+        # The smallest detector (three-bar fractals) needs three completed
+        # bars. Below that, "the detectors ran and found nothing" is false —
+        # nothing ran — and a claimed 0.0 dresses blindness up as a reading.
+        features = extract_horizon_features(
+            Horizon.SHORT, make_bars([100.0, 100.5]), (), context()
+        )
+
+        self.assertIsNone(features.pattern)
+
+    def test_a_window_the_detectors_did_read_keeps_its_measured_zero(
+        self,
+    ) -> None:
+        # Monotonic closes over enough bars: the detectors ran and confirmed
+        # nothing. That is a genuine reading of zero, not an absence, and the
+        # unmeasured-window fix must not erase it.
+        features = extract_horizon_features(
+            Horizon.SHORT,
+            make_bars([100.0, 100.5, 101.0, 101.5]),
+            (),
+            context(),
+        )
+
+        self.assertEqual(features.pattern, 0.0)
+
+    def test_a_blind_live_snapshot_reaches_the_no_usable_factor_rule(
+        self,
+    ) -> None:
+        # Two bars, no evidence, no context factors: nothing could be read.
+        # While pattern claimed a measured zero here, the "a score built on
+        # nothing is not actionable" rule was unreachable from any live path.
+        blind_context = MarketContext(
+            as_of=AS_OF,
+            market_sentiment=None,
+            macro=None,
+            geopolitics=None,
+            institutional_flow=None,
+        )
+
+        result = score_horizon(
+            extract_horizon_features(
+                Horizon.SHORT, make_bars([100.0, 100.5]), (), blind_context
+            )
+        )
+
+        self.assertIn("pattern", result.unavailable_factors)
+        self.assertEqual(result.factor_coverage, 0.0)
+        self.assertFalse(result.actionable)
