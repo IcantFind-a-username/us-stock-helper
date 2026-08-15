@@ -1,9 +1,10 @@
 import type { PropsWithChildren } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { PairDeviceScreen } from "@/screens/PairDeviceScreen";
 import { useDeviceSession } from "@/state/DeviceSessionProvider";
-import { colors, radius, shadow, spacing } from "@/theme/tokens";
+import { colors, layout, radius, shadow, spacing } from "@/theme/tokens";
 
 /**
  * Stands between an unpaired device and the rest of the app.
@@ -14,6 +15,14 @@ import { colors, radius, shadow, spacing } from "@/theme/tokens";
  */
 export function DeviceSessionGate({ children }: PropsWithChildren) {
   const { pairingRequired, session, forgetDevice } = useDeviceSession();
+  // This gate sits above the tab navigator (and above every non-tab screen
+  // reached from it), so a fixed bottom offset either overlaps the tab bar's
+  // own band on tabbed screens or floats over content that has no tab bar at
+  // all. Clearing `layout.tabBarHeight` plus the device's own bottom inset —
+  // on every screen, tabbed or not — is what keeps a mis-tap here from ever
+  // landing on 复盘 or Agent's corner instead of the tab underneath it.
+  const insets = useSafeAreaInsets();
+  const recoverBottom = insets.bottom + layout.tabBarHeight + spacing.sm;
 
   if (!pairingRequired) return <>{children}</>;
   if (session.status !== "paired") return <PairDeviceScreen />;
@@ -36,7 +45,11 @@ export function DeviceSessionGate({ children }: PropsWithChildren) {
         accessibilityLabel="重新配对设备"
         accessibilityRole="button"
         onPress={() => void forgetDevice()}
-        style={({ pressed }) => [styles.recover, pressed && styles.recoverPressed]}>
+        style={({ pressed }) => [
+          styles.recover,
+          { bottom: recoverBottom },
+          pressed && styles.recoverPressed,
+        ]}>
         <Text style={styles.recoverText}>配对失效？重新配对</Text>
       </Pressable>
     </View>
@@ -51,12 +64,17 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     borderRadius: radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
-    bottom: spacing.lg,
     justifyContent: "center",
-    minHeight: 36,
+    // The platform's own minimum tappable size, not the smaller pill this
+    // used to ship at — a short target here is a second way to mis-tap it.
+    minHeight: 44,
     paddingHorizontal: spacing.md,
     position: "absolute",
     right: spacing.md,
+    // Painted after the navigator regardless, so an explicit zIndex keeps its
+    // stacking order a property of this component instead of an accident of
+    // where it happens to sit in the tree.
+    zIndex: 10,
     ...shadow.card,
   },
   recoverPressed: { opacity: 0.66 },

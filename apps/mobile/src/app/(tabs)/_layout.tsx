@@ -1,6 +1,8 @@
 import { Tabs } from "expo-router";
 import { SymbolView } from "expo-symbols";
 
+import { layout } from "@/theme/tokens";
+
 export const tabRoutes = [
   ["index", "首页", "home-outline"],
   ["discover", "发现", "scan-outline"],
@@ -31,7 +33,7 @@ export default function TabsLayout() {
         tabBarStyle: {
           backgroundColor: "rgba(255,255,255,0.98)",
           borderTopColor: "rgba(18,33,55,0.07)",
-          height: 66,
+          height: layout.tabBarHeight,
           paddingBottom: 8,
           paddingTop: 6,
         },
