@@ -289,15 +289,18 @@ time-of-day bucket by a single caller-supplied `session_bucket: OHLCVBar ->
 SessionBucket(session, bucket)` function, keeping the module exchange- and
 calendar-agnostic and trivially testable with synthetic clocks.
 
-**Unavailability rules — three situations, never a padded 1.0×.**
-1. *Early session*: fewer than `minimum_buckets_elapsed` (default 2 — a
+**Unavailability rules — four situations, never a padded 1.0×.**
+1. *No data at cutoff*: `select_bars_as_of` leaves zero bars knowable as of
+   `decision_cutoff` — there is no completed candle yet to place into any
+   session or bucket at all.
+2. *Early session*: fewer than `minimum_buckets_elapsed` (default 2 — a
    single bar is the opening print itself, not yet comparable to anything)
    buckets have elapsed in the current session.
-2. *Insufficient history*: fewer than `lookback_sessions` prior sessions
+3. *Insufficient history*: fewer than `lookback_sessions` prior sessions
    have a bar landing in exactly the current bucket. A prior session missing
    that exact bucket does not interpolate or pad a substitute value — it
    simply does not count toward N.
-3. *Zero baseline*: the matched historical baseline sums to zero or less.
+4. *Zero baseline*: the matched historical baseline sums to zero or less.
 
 A live result always used exactly `lookback_sessions` — never fewer dressed
 up as complete (`RelativeVolumeResult.__post_init__` enforces
