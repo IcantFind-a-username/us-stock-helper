@@ -335,3 +335,71 @@ information_layer 247→268，analysis_api 273→277）。
 **下一步建议**：工作日盘中做 Task 5 的 evidence_confidence 分布测量（46 只自选），
 再决定 0.35 阈值去留；顺手在真实事件流下复核停牌/13D 源的端到端表现。
 
+## 续轮（2026-08-17 02:06–02:20 +0800）：Franz 指示"继续开发"，拍板事项全部保持挂起
+
+执行顺序按 Franz 建议（1 计划文档 → 2 测量准备 → 3 边角补齐），未发现更优顺序。
+
+### ① 双条目重发缺陷专项计划（仅计划，不实现）
+
+文档：`docs/superpowers/plans/2026-08-17-dual-entry-filing-reannouncement.md`。
+内容：复现证据（同一 fixture 两轮均发布 40 条、修订号 2/3 互刷）、两类伤害
+（available_at 被刷新导致永不过期 + 无界假修订链）、claim key 共享的承重分析
+（聚类按 claim key 合簇 + 修订链取代恰好让带归属的 Subject 条目当代表）、
+三个候选修法（A 按方 claim key + 聚类按 accession 合簇【推荐】；B 协调器多哈希
+记录【无法区分"同时的双方"与"随时间的修订"，否决】；C 适配器丢弃非归属方条目
+【丢可追溯性且改已钉死行为，否决】）、最小改动路径（4 个任务，先红后绿）、测试策略。
+**起草中核实的新事实**：`_representative_sort_key` 并不偏好带归属的事件
+（按状态/修订号/可靠度/置信度/时间/event_id 排序）——今天 Subject 胜出纯靠
+修订链取代这个副作用；键拆分后该函数必须显式增加"带归属"优先级（计划已写明，
+这是全案唯一触碰评分相邻语义的点）。
+
+### ② Task 5 一键测量脚本（测量准备，不改阈值）
+
+脚本：`.superpowers/sdd/2026-08-17-authoritative-source-adapters/measure_evidence_gate.py`。
+原理：进程内搭建与 `analysis_api.__main__` 完全相同的 provider 栈，
+对 `decision_engine.engine.extract_horizon_features` 打记录补丁，逐股跑真实
+`service.decision()`，捕获评分器真正看到的 `evidence_confidence`（HTTP 载荷不含此值）
+——零重实现，数值不可能与生产漂移。**状态诚实**：故意不设
+`ANALYSIS_API_COORDINATOR_STATE`（全新内存协调器=完整回看窗口视角，
+且绝不触碰生产快照文件）。
+
+**与规格的偏差（记录）**：规格 Task 5 Step 1 说测量脚本是"/tmp 下的一次性脚本，
+不入库"。Franz 本轮明确要求"可一键执行 + 使用说明"，故持久化在台账目录
+（非 scripts/ 工具目录，git add -f 入库），偏差原因即此指令。
+
+**RED→GREEN**：`summarize()` 先以 NotImplementedError 落地，`--self-test` 首跑红
+（NotImplementedError）→ 实现后绿。**变异验证**：把闸门边界 `>=` 改成 `>` →
+自检红（`clears_gate 1 != 2`，钉死"0.35 本身算通过、闸门严格小于才触发"）→ 恢复绿。
+**真实烟测**（`--limit 3`）：时段外警告正确弹出；SOFI/CRCL 测得 0.000（周日窗口
+诚实为空）；VCX 因首轮扫描一个瞬时网络失败（sec-current-10-q 无法连接）被记为
+"未测量"而非记 0——仪器不把"没测到"伪装成"测得零"。报告样例 `/tmp/gate_smoke.md`。
+
+**周一使用方法**（美股盘中 21:30–04:00 北京时间，服务栈开着即可）：
+```
+cd /Users/franz/Documents/stock_trader/.worktrees/iphone-demo
+python3 .superpowers/sdd/2026-08-17-authoritative-source-adapters/measure_evidence_gate.py \
+  --horizon short --out /tmp/gate_measurement.md
+```
+可选 `--limit N` 烟测、`--self-test` 免网络自检；瞬时"未测量"的股票重跑一次即可。
+产出 markdown 表（逐股 confidence/引用数/是否触闸）+ 分布摘要（含 ≥0.35 通过数），
+直接贴进台账即可完成 Task 5 Step 1。
+
+### ③ 规格边角补齐（Task 1/3 的验收缺口）
+
+- **FTC 正向归属用例**：抓取窗口内没有任何条目点名映射公司，正向归属此前未被
+  fixture 证明。按 Berkshire 测试的既有风格，把真实标题里的 Grubhub 换成 Qualcomm
+  → 断言 `("QCOM", 0.85)` 归属（第三方点名 0.85 的锚点也被钉死）。
+  **变异验证**：从注册表移除 QCOM 映射 → 测试红（named 事件零归属）→ 恢复绿，
+  registry.py 与提交版本零差异。
+- **13G 修正案表格钉死**：13D fixture 已覆盖多词表格 /A 解析，13G 走同一路径但
+  未被自己的载荷钉住；补 `test_a_13g_amendment_carries_its_actual_form_too`
+  （forms == {SCHEDULE 13G, SCHEDULE 13G/A}）。两个测试为钉死性质（落地即绿），
+  RED 纪律由各自的变异验证承担。
+
+**GREEN 结果**：information_layer 270 OK（268→270）。
+
+**本轮提交**：见下方哈希行。无用户可见改动（纯文档/测试/测量工具），无需模拟器截图；
+模拟器与服务栈保持上一轮末尾的健康状态。
+
+**新发现的拍板事项**：无新增；专项计划文档本身就是拍板材料（推荐路径 A）。
+
