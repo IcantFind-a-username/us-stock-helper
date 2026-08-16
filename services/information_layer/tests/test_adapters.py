@@ -731,3 +731,217 @@ class FormTypePrefixTests(unittest.TestCase):
         item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
 
         self.assertIn(("form_type", "8-K"), item.attributes)
+
+
+# --- Widened current-filings coverage, proven against captured EDGAR payloads.
+#
+# Every fixture below is the raw Atom body EDGAR actually served on
+# 2026-08-16 (12:41 EDT) to this project's own User-Agent, saved unmodified.
+# The retrieval moment for replaying them must postdate their entries.
+
+FIXTURE_NOW = datetime(2026, 8, 16, 17, 0, tzinfo=UTC)
+FIXTURE_SINCE = FIXTURE_NOW - timedelta(days=3)
+
+
+def fixture_bytes(name: str) -> bytes:
+    from pathlib import Path
+
+    return (Path(__file__).parent / "fixtures" / name).read_bytes()
+
+
+def fixture_adapter(
+    form_type: str,
+    fixture: str,
+    *,
+    tickers: str,
+) -> SecCurrentFilingsAdapter:
+    return SecCurrentFilingsAdapter(
+        form_type=form_type,
+        user_agent="USStockHelper/0.1 research@example.test",
+        transport=FakeTransport(
+            response(fixture_bytes(fixture), retrieved_at=FIXTURE_NOW)
+        ),
+        cik_registry=CikTickerRegistry.from_sec_payload(tickers),
+    )
+
+
+def events_for(adapter: SecCurrentFilingsAdapter):
+    return adapter.poll(since=FIXTURE_SINCE, until=FIXTURE_NOW).events
+
+
+def event_with_cik(events, cik: str):
+    for item in events:
+        if ("cik", cik) in item.attributes:
+            return item
+    raise AssertionError(f"no event carries cik {cik}")
+
+
+# The Outdoor Holding 13D/A pair: Urvan (Filed by) + Outdoor Holding (Subject)
+# share accession 0001493152-26-038570. The holder is deliberately given a
+# listed ticker here, exactly the shape of the DaVita/Berkshire incident.
+OWNERSHIP_TICKERS = json.dumps(
+    {
+        "0": {"cik_str": 1015383, "ticker": "POWW", "title": "Outdoor Holding Co"},
+        "1": {"cik_str": 1859485, "ticker": "URVN", "title": "Urvan Listed Co"},
+        "2": {"cik_str": 1871638, "ticker": "BZAI", "title": "Blaize Holdings"},
+        "3": {"cik_str": 1326389, "ticker": "PLRA", "title": "Polar Listed Co"},
+    }
+)
+
+REPORT_TICKERS = json.dumps(
+    {
+        "0": {"cik_str": 106040, "ticker": "WDC", "title": "Western Digital"},
+        "1": {"cik_str": 1650372, "ticker": "TEAM", "title": "Atlassian Corp"},
+    }
+)
+
+
+class BeneficialOwnershipFormCodeTests(unittest.TestCase):
+    def test_the_retired_sc_13d_code_returns_no_entries(self) -> None:
+        """EDGAR retired SC 13D/SC 13G; getcurrent answers "No recent filings".
+
+        The captured empty feed is the evidence for why the registry declares
+        SCHEDULE 13D / SCHEDULE 13G instead of the plan's assumed codes.
+        """
+
+        for fixture in (
+            "sec_current_sc_13d_empty.atom",
+            "sec_current_sc_13g_empty.atom",
+        ):
+            with self.subTest(fixture=fixture):
+                adapter = fixture_adapter(
+                    "SC 13D", fixture, tickers=OWNERSHIP_TICKERS
+                )
+                self.assertEqual(events_for(adapter), ())
+
+    def test_a_multiword_form_builds_a_hyphenated_adapter_id(self) -> None:
+        # The registry pins adapter_id == source_id, and a source_id with a
+        # space in it breaks every convention the coordinator state is keyed
+        # by.
+        adapter = fixture_adapter(
+            "SCHEDULE 13D",
+            "sec_current_schedule_13d.atom",
+            tickers=OWNERSHIP_TICKERS,
+        )
+
+        self.assertEqual(adapter.adapter_id, "sec-current-schedule-13d")
+
+    def test_a_subject_entry_is_attributed_to_the_issuer(self) -> None:
+        """The Subject party of a 13D names the stock being accumulated."""
+
+        events = events_for(
+            fixture_adapter(
+                "SCHEDULE 13D",
+                "sec_current_schedule_13d.atom",
+                tickers=OWNERSHIP_TICKERS,
+            )
+        )
+
+        subject = event_with_cik(events, "0001015383")
+        self.assertEqual(subject.symbol_relevance, (("POWW", 1.0),))
+        self.assertIn(("filer_role", "subject"), subject.attributes)
+        self.assertEqual(subject.claim_status, ClaimStatus.VERIFIED)
+        self.assertEqual(subject.available_at, FIXTURE_NOW)
+        self.assertEqual(subject.retrieved_at, FIXTURE_NOW)
+
+    def test_a_filed_by_entry_claims_no_symbol_even_when_the_holder_is_listed(
+        self,
+    ) -> None:
+        """The Filed-by party is the holder, not the stock the filing is about.
+
+        When the holder itself is listed, attributing its own ticker files an
+        accumulation of Outdoor Holding under the holder's stock — the same
+        misattribution that once sent a DaVita insider trade to Berkshire, as
+        verified top-reliability evidence. The issuer arrives as the paired
+        (Subject) entry of the same accession.
+        """
+
+        events = events_for(
+            fixture_adapter(
+                "SCHEDULE 13D",
+                "sec_current_schedule_13d.atom",
+                tickers=OWNERSHIP_TICKERS,
+            )
+        )
+
+        holder = event_with_cik(events, "0001859485")
+        self.assertEqual(holder.symbol_relevance, ())
+        self.assertIn(("filer_role", "filed by"), holder.attributes)
+
+    def test_an_amendment_carries_its_actual_form_not_the_requested_prefix(
+        self,
+    ) -> None:
+        # type=SCHEDULE 13D prefix-matches SCHEDULE 13D/A. Stamping the
+        # amendment with the original's form erases the distinction between
+        # a new stake and a change to a disclosed one.
+        events = events_for(
+            fixture_adapter(
+                "SCHEDULE 13D",
+                "sec_current_schedule_13d.atom",
+                tickers=OWNERSHIP_TICKERS,
+            )
+        )
+
+        forms = {
+            value
+            for item in events
+            for key, value in item.attributes
+            if key == "form_type"
+        }
+        self.assertEqual(forms, {"SCHEDULE 13D", "SCHEDULE 13D/A"})
+
+    def test_a_13g_subject_entry_is_attributed_to_the_issuer(self) -> None:
+        events = events_for(
+            fixture_adapter(
+                "SCHEDULE 13G",
+                "sec_current_schedule_13g.atom",
+                tickers=OWNERSHIP_TICKERS,
+            )
+        )
+
+        subject = event_with_cik(events, "0001871638")
+        self.assertEqual(subject.symbol_relevance, (("BZAI", 1.0),))
+        holder = event_with_cik(events, "0001326389")
+        self.assertEqual(holder.symbol_relevance, ())
+
+
+class QuarterlyAndAnnualReportFeedTests(unittest.TestCase):
+    def test_10q_events_verify_attribute_and_stamp_like_the_8k_feed(self) -> None:
+        events = events_for(
+            fixture_adapter(
+                "10-Q", "sec_current_10q.atom", tickers=REPORT_TICKERS
+            )
+        )
+
+        self.assertTrue(events)
+        forms = {
+            value
+            for item in events
+            for key, value in item.attributes
+            if key == "form_type"
+        }
+        self.assertEqual(forms, {"10-Q", "10-Q/A"})
+        for item in events:
+            self.assertEqual(item.claim_status, ClaimStatus.VERIFIED)
+            self.assertEqual(item.available_at, FIXTURE_NOW)
+            self.assertEqual(item.retrieved_at, FIXTURE_NOW)
+            self.assertFalse(item.sentiment_measured)
+
+    def test_a_10k_filer_resolves_through_the_cik_registry(self) -> None:
+        events = events_for(
+            fixture_adapter(
+                "10-K", "sec_current_10k.atom", tickers=REPORT_TICKERS
+            )
+        )
+
+        forms = {
+            value
+            for item in events
+            for key, value in item.attributes
+            if key == "form_type"
+        }
+        self.assertEqual(forms, {"10-K", "10-K/A"})
+        western_digital = event_with_cik(events, "0000106040")
+        self.assertEqual(western_digital.symbol_relevance, (("WDC", 1.0),))
+        atlassian = event_with_cik(events, "0001650372")
+        self.assertEqual(atlassian.symbol_relevance, (("TEAM", 1.0),))

@@ -22,7 +22,37 @@ from .http import FeedAccessError, HttpTransport
 
 _ACCESSION = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
 # EDGAR titles begin with the actual form type: "424B2 - LEGAL NAME (...)".
-_TITLE_FORM = re.compile(r"^\s*([A-Z0-9][A-Z0-9./-]*)\s+-\s", re.IGNORECASE)
+# A form code may itself contain spaces ("SCHEDULE 13D/A - HOLDER (...)"), so
+# the token walks word by word and stops, lazily, at the first " - "
+# separator — greedily it would swallow a legal name containing " - ".
+_TITLE_FORM = re.compile(
+    r"^\s*([A-Z0-9][A-Z0-9./-]*(?:\s[A-Z0-9][A-Z0-9./-]*)*?)\s+-\s",
+    re.IGNORECASE,
+)
+
+# The current-filings feeds production polls, one per form that moves prices.
+# Captured EDGAR responses (tests/fixtures/sec_current_*.atom, 2026-08-16) are
+# the authority for these codes: beneficial ownership is served as
+# "SCHEDULE 13D"/"SCHEDULE 13G", and the retired "SC 13D"/"SC 13G" queries
+# answer "No recent filings".
+CURRENT_FILING_FORMS = (
+    "8-K",
+    "4",
+    "10-Q",
+    "10-K",
+    "SCHEDULE 13D",
+    "SCHEDULE 13G",
+)
+
+
+def sec_current_source_id(form_type: str) -> str:
+    """The one identifier a form's adapter and its registry entry share.
+
+    Multi-word forms would otherwise put a space into an id that keys
+    coordinator state and registry lookups.
+    """
+
+    return f"sec-current-{form_type.strip().casefold().replace(' ', '-')}"
 
 
 class SecCurrentFilingsAdapter(GenericFeedAdapter):
@@ -63,7 +93,7 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         )
         super().__init__(
             FeedConfig(
-                adapter_id=f"sec-current-{clean_form.casefold()}",
+                adapter_id=sec_current_source_id(clean_form),
                 feed_url=f"https://www.sec.gov/cgi-bin/browse-edgar?{query}",
                 allowed_hosts=("www.sec.gov",),
                 publisher_id="sec-edgar",
@@ -174,7 +204,7 @@ def build_sec_current_filings_adapters(
     *,
     transport: HttpTransport,
     user_agent: str,
-    forms: Iterable[str] = ("8-K", "4"),
+    forms: Iterable[str] = CURRENT_FILING_FORMS,
     symbol_mappings: tuple[KeywordMapping, ...] = (),
     entity_mappings: tuple[KeywordMapping, ...] = (),
     macro_mappings: tuple[KeywordMapping, ...] = (),

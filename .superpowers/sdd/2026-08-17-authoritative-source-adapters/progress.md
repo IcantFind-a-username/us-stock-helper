@@ -1,53 +1,146 @@
-# SDD ledger — plan: docs/superpowers/plans/2026-08-17-authoritative-source-adapters.md
+# 台账：权威源适配器（2026-08-17）
 
-Status: **not started.** Baseline at handoff = commit `cc34784` on `feature/iphone-demo`.
-Baseline suites: all Python packages OK; mobile 982 passed / 1 skipped; typecheck clean.
+规格：`docs/superpowers/plans/2026-08-17-authoritative-source-adapters.md`
 
-## How to use this file
+## 开工基线（2026-08-17 00:36 +0800）
 
-Append one block per task as you finish it. A task is not done until every line below has a real answer —
-"跑过测试了" is not an acceptable substitute for the simulator line.
+- Python 全部套件绿（analysis_core / information_layer / adviser_layer / decision_engine /
+  market_gateway / device_auth / analysis_api / scripts 均 OK；adviser_llm 122 passed）。
+- 移动端 982 passed / 1 skipped，`npm run typecheck` 干净。与交接文档基线一致。
+- 服务栈四组件 running（market-loopback 8765 / market-lan 8766 / analysis-api 8770 / metro 8088）。
+- 模拟器验收：iPhone 17 Pro Max（Booted），深链接打开后看到 VCX 个股页真实模式
+  （"实时只读"，日 K + MACD + 神奇九转 + 参与结构，截止 2026-08-15）。
+  截图 `/tmp/app_baseline.png`。
 
-```
-Task N: <name> — complete | in progress | blocked
-- RED: <test name(s)> failed with <actual failure output, quoted>
-- GREEN: <suite counts after the fix>
-- Mutation check: <what you inverted, which test caught it>   (for correctness-critical changes)
-- Suites: <package: count> for every affected package + mobile + typecheck
-- Simulator: <which screen, what you actually saw — data, state, copy>
-- Commit: <hash> <message>
-- Notes / deferred: <anything the next agent must know>
-```
+## Task 1 · Step 1：EDGAR 表格代码调研（完成）
 
-## Task blocks
+**抓取方式**：curl，User-Agent = `us-stock-helper/0.1 (orchestragent@gmail.com)`
+（联系邮箱取自 `~/.us-stock-helper/lan.env` 的 `US_STOCK_HELPER_CONTACT_EMAIL`），
+URL 与 `SecCurrentFilingsAdapter` 生产构造完全一致
+（`browse-edgar?action=getcurrent&type=<form>&…&output=atom`），仅 `count=40`（生产为 100，
+只影响条数不影响形状）。每次请求间隔 ≥1s。抓取时间 2026-08-16 12:41 EDT（周日）。
 
-Task 1: Extend SEC current-filings coverage — not started
-- Pre-work owed: confirm real EDGAR form codes for 10-Q / 10-K / SC 13D / SC 13G against live samples
-  (the plan assumes `SC 13D`/`SC 13G`; the captured fixture is the authority, not the assumption).
+**礼貌性核查**：www.sec.gov 是既有已注册主机（8-K、Form 4 已在池内），非新增主机。
+EDGAR 公平访问政策（`sec.gov/os/accessing-edgar-data`）要求声明式 User-Agent（App/版本 + 联系邮箱）、
+≤10 请求/秒；本项目 UA 合规、单源轮询间隔 300s，远低于上限。robots.txt 未禁止 `cgi-bin/browse-edgar`。
 
-Task 2: Generalize company IR sources — not started
-- Owed per feed registered: a line recording that robots.txt and terms were actually read.
+**各 `type=` 实际返回**（样本已存 `services/information_layer/tests/fixtures/`）：
 
-Task 3: Regulatory and agency sources — not started
-- Owed per source investigated and REJECTED: the reason (no public feed / robots forbids / unstable schema).
-  A documented rejection is a result; an undocumented gap is a trap.
+| 请求的 type= | 返回 | 实际表格分布（样本 40 条） | fixture |
+|---|---|---|---|
+| `10-Q` | 40 条 | 10-Q ×38、10-Q/A ×2；角色全部 (Filer) | `sec_current_10q.atom` |
+| `10-K` | 25 条 | 10-K ×21、10-K/A ×4；角色全部 (Filer) | `sec_current_10k.atom` |
+| `SC 13D` | **0 条**（"No recent filings"） | — | `sec_current_sc_13d_empty.atom` |
+| `SC 13G` | **0 条**（"No recent filings"） | — | `sec_current_sc_13g_empty.atom` |
+| `SCHEDULE 13D` | 40 条 | SCHEDULE 13D ×10、SCHEDULE 13D/A ×30 | `sec_current_schedule_13d.atom` |
+| `SCHEDULE 13G` | 40 条 | SCHEDULE 13G ×36、SCHEDULE 13G/A ×4 | `sec_current_schedule_13g.atom` |
 
-Task 4: Coordinator snapshot persistence — not started
-- The mechanism (`snapshot`/`from_snapshot`) already exists and is unit-tested; only production wiring is missing.
-- Restart proof owed: kickstart the analysis-api label twice, show the second start publishes nothing new.
+**结论：规格假设不成立，以 fixture 为准。** 受益所有权申报的现行代码是
+`SCHEDULE 13D` / `SCHEDULE 13G`（EDGAR 2024 年改版后启用），`SC 13D`/`SC 13G` 是死代码。
+注册的 SourceSpec 用 `SCHEDULE 13D` / `SCHEDULE 13G`。
 
-Task 5: Re-examine the evidence gate — not started
-- Do NOT touch the 0.35 literal before Tasks 1–4 land. Measurement first, then a named constant,
-  and a `method_version` bump if the value changes.
+**13D/13G 归属结构**（真实样本证据）：每份申报产生**成对条目**，共享同一 accession 与同一
+Atom `<id>`：`(Filed by)`（持有人，标题与 URL 均为持有人 CIK）+ `(Subject)`（标的发行人，
+标题与 URL 均为发行人 CIK）。样本 40 条 = 20 份申报 × 2。归属应给 **Subject（发行人）**；
+Filed by 条目不得认领股票代码（持有人自身是上市公司时会重演 DaVita→Berkshire 误归属）。
 
-Task 6: Filing document text (optional) — undecided
-- Needs Franz's decision before any code: it is a new capability with real EDGAR request-volume risk.
+**调研发现的现有代码缺口**（对着真实 fixture 跑 `SecCurrentFilingsAdapter` 实测确认）：
 
-Task 7: Methodology / README / roadmap close-out — not started
+1. `_TITLE_FORM` 正则不认多词表格：`SCHEDULE 13D/A - …` 解析失败，`form_type` 属性
+   回退为请求前缀 `SCHEDULE 13D`——修正案被错标为原件（违反"记录条目自称的表格"）。
+2. `cik_registry._ROLE` 不认 `(Filed by)`：角色返回 None → `role_attributes_symbol(None)=True`
+   → 持有人 CIK 若在注册表中会被误归属（1.0 相关度、VERIFIED、0.99 可靠度）。
+3. `adapter_id` 由表格代码 casefold 生成：`SCHEDULE 13D` → `"sec-current-schedule 13d"`
+   （含空格），且与 SourceSpec.source_id 的既有一致性约定
+   （`test_every_declared_source_becomes_an_adapter_carrying_its_terms` 按 source_id 查 adapter_id）冲突。
 
-## Open questions for Franz (do not decide these alone)
+以上三条均属"form-code check demands it"允许的 sec.py / cik_registry.py 修改范围
+（cik_registry.py 不在规格 Task 1 文件清单里，但 13D/13G 归属断言强制触及角色逻辑，特此记录）。
 
-1. 顾问 taxonomy：具名投资人 vs 去品牌化框架（阶段 7 遗留）。
-2. 广度/RS 股票池是否扩大到自选之外；板块 RS 需要配置 `ANALYSIS_API_SECTOR_RS_SYMBOLS` / `_BENCHMARK`。
-3. Task 6（申报正文抓取）是否值得做。
-4. 新闻 wire 商业授权是否采购。
+**发现的既有缺陷（超出 Task 1 范围，不擅自修，上报 Franz）——协调器对双条目申报每轮重发**：
+同一 claim key（`sec|<accession>`）在一个批次出现两次（Filed by + Subject），内容哈希不同，
+协调器把第二条当第一条的"修订版"发布；下一轮又因存储哈希与首条不符而把两条**再次全部重发**
+（rev 2、3、4… 无限互刷）。实测：同一 fixture 轮询两次，第二次仍发布全部 40 条。
+影响：① 该类申报在回看窗口内每轮被重新宣布；② 重发事件带新的 `available_at`，
+collector 按 event_id 覆盖后这些申报永远"看起来刚发生"、永不过期（PIT 诚实性受损）。
+**Form 4（Reporting + Issuer 双条目）今天在生产中就有同样问题**，非本次新增所致。
+claim key 共享是聚类的承重结构（同一申报聚成一簇 + 修订链让 Subject 条目胜出），
+不能在 Task 1 局部改动；建议与 Task 4（快照持久化）一并定夺。
+
+## 环境修复插曲（2026-08-17 01:11–01:18，非代码提交，纯本地配置）
+
+Mac 换网导致 LAN IP 从 192.168.0.59 变为 10.100.252.18，模拟器 app 卡在
+"Failed to load app from http://192.168.0.59:8088"。三层根因逐一修复：
+
+1. **Metro 缓存旧 IP**：`launchctl kickstart -k …metro` 重启后 `metro_deep_link.py`
+   输出新 IP（10.100.252.18 在脚本允许的 10/8 私网段内，校验通过）。
+2. **`apps/mobile/.env`（未跟踪的本地配置）钉着旧 IP**：`EXPO_PUBLIC_MARKET_API_URL`
+   / `EXPO_PUBLIC_ANALYSIS_API_URL` 由 192.168.0.59 改为 10.100.252.18，再次重启 Metro。
+3. **服务端来源白名单挡新网段**（app 显示"网络受限·来源白名单"，具名原因正确工作）：
+   `~/.us-stock-helper/lan.env` 的 `MOOMOO_GATEWAY_ALLOWED_CLIENTS` /
+   `ANALYSIS_API_ALLOWED_CLIENTS` **追加** 10.100.252.0/24（保留旧网段 192.168.0.0/24，
+   回原网络仍可用），`local_runtime.py reinstall` 重生成 plist。文件保持 0600。
+
+修复后 Dashboard 显示真实市场简报（中性 · 真实数据 · 自选广度 46 只 59% 收于 50 日线上方）。
+**遗留给 Franz**：换网后 `.env` 与白名单需要手动同步是个易踩的环境坑，
+是否要一个"换网自愈"脚本（或把 app 端 URL 从 Metro hostUri 动态推导）值得拍板。
+
+## Task 1 · Steps 2–5：RED → GREEN → 变异验证 → 验收 → 提交（完成）
+
+**RED（先看到红）**：新增 `BeneficialOwnershipFormCodeTests` /
+`QuarterlyAndAnnualReportFeedTests`（fixture 驱动，test_adapters.py）与
+`WidenedSecCoverageTests`（test_source_registry.py）。首跑失败 6 处，原因全部与预期一致：
+
+- `test_a_filed_by_entry_claims_no_symbol_even_when_the_holder_is_listed`：
+  `(('URVN', 1.0),) != ()` —— Filed by 角色不被识别，持有人被误归属（13D）。
+- `test_a_13g_subject_entry_is_attributed_to_the_issuer` 中的持有人断言：
+  `(('PLRA', 1.0),) != ()` —— 同上（13G）。
+- `test_a_multiword_form_builds_a_hyphenated_adapter_id`：
+  `'sec-current-schedule 13d' != 'sec-current-schedule-13d'`。
+- `test_an_amendment_carries_its_actual_form_not_the_requested_prefix`：
+  form 集缺 `SCHEDULE 13D/A`（多词表格正则解析失败，回退为请求前缀）。
+- `test_the_registry_polls_all_six_current_filing_forms`：注册表缺 4 种表格。
+- `test_every_sec_source_shares_the_8k_terms`：`2 != 6`。
+
+**GREEN 改动**：
+
+- `sec.py`：`_TITLE_FORM` 支持多词表格（逐词、非贪婪、停在首个 " - "）；
+  新增 `CURRENT_FILING_FORMS`（6 种表格的单一权威清单）与 `sec_current_source_id()`
+  （空格→连字符）；adapter_id 改用该函数；工厂 `build_sec_current_filings_adapters`
+  默认值改为 `CURRENT_FILING_FORMS`（Step 4 决定：保留工厂但与注册表共用一份清单，
+  消灭两份清单；工厂仍被 README 示例与自身测试使用，不删）。
+- `cik_registry.py`：`_ROLE` 增加 `filed by`；`role_attributes_symbol` 把
+  `filed by` 加入不归属集合（与 `reporting` 同理，防持有人上市时的 DaVita 型误归属）。
+  ——该文件不在规格 Task 1 文件清单内，但 13D/13G 归属断言必然触及角色逻辑，属规格
+  "sec.py only if the form-code check demands it" 的同类必要修改，特此记录。
+- `registry.py`：SEC 源改为按 `CURRENT_FILING_FORMS` 生成 6 条 `SourceSpec`
+  （条款与 8-K 完全一致：0.99 / 300s / 联系式 UA / VERIFIED / 仅 www.sec.gov）。
+- `feeds/__init__.py` 导出新名字；`services/information_layer/README.md` 源表格
+  与工厂说明同步（同一提交，文档不说谎）。
+
+**变异验证**（两处关键断言）：
+① 把 `role_attributes_symbol` 反转回 `role != "reporting"` → 2 处测试红
+（URVN/PLRA 误归属复现）；② 把 `_TITLE_FORM` 反转回单词版 → 修正案表格测试红。
+两处均恢复后全绿。
+
+**GREEN 结果**：information_layer 247 OK · analysis_api 273 OK · scripts 211 OK
+（analysis_api 含 README 命令执行测试与路由白名单钉死测试）。
+移动端无涉及文件（纯 Python 改动），基线 982/1 在开工时已确认。
+
+**模拟器/服务端验收**（环境修复后）：
+- Dashboard：真实市场简报渲染（中性 · 真实数据；自选广度 46 只，59% 收于 50 日线上方，
+  +0.17；其余驱动因子按具名原因显示不可用）。截图 `/tmp/app_task1_dashboard3.png`。
+- AAPL 个股页（深链接 `usstockhelper://stocks/AAPL`）：实时只读 $305.93，日 K/MACD/
+  九转真实渲染。截图 `/tmp/app_task1_stock_aapl.png`。
+- 服务端证据核查（`GET /decision?symbol=AAPL&horizon=short`，重启后的 analysis-api）：
+  `citations = []`，notes 仅点名 geopolitics / institutional_flow 两个缺口，
+  **无任何 sec-current-* 源失败** —— 六个 SEC feed（含四个新源）全部被成功轮询。
+  **证据数没有移动的诚实解释**：验收发生在周日深夜（美东周日中午后），getcurrent
+  6 小时回看窗口内 EDGAR 没有新申报；新源注册正确、轮询成功、窗口为空，
+  属"不可用/为空就说为空"的预期行为。工作日窗口下 10-Q/10-K/13D/13G 事件将进入证据流。
+
+**提交**：见下方提交哈希行（feat: widen sec current-filings coverage）。
+
+**遗留项**：协调器双条目重发缺陷（见上方"发现的既有缺陷"）待 Franz 定夺；
+建议放进 Task 4 一并处理。
+

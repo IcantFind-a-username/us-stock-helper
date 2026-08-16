@@ -41,13 +41,16 @@ from .registry import (
     user_agent_for,
 )
 from .sec import (
+    CURRENT_FILING_FORMS,
     SecCurrentFilingsAdapter,
     build_sec_current_filings_adapters,
+    sec_current_source_id,
 )
 
 __all__ = [
     "APPLICATION_TOKEN",
     "CONTACT_EMAIL_VARIABLE",
+    "CURRENT_FILING_FORMS",
     "DEFAULT_LOOKBACK_SECONDS",
     "DEFAULT_RETENTION_SECONDS",
     "DEFAULT_STALE_AFTER_SECONDS",
@@ -81,5 +84,6 @@ __all__ = [
     "contact_email_from_environment",
     "freshness_seconds",
     "minimum_poll_interval_seconds",
+    "sec_current_source_id",
     "user_agent_for",
 ]

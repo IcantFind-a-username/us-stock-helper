@@ -27,7 +27,11 @@ from ..cik_registry import CikTickerRegistry
 from ..models import ClaimStatus
 from .generic import FeedConfig, GenericFeedAdapter, KeywordMapping
 from .http import FeedAccessError, HttpTransport
-from .sec import SecCurrentFilingsAdapter
+from .sec import (
+    CURRENT_FILING_FORMS,
+    SecCurrentFilingsAdapter,
+    sec_current_source_id,
+)
 
 
 CONTACT_EMAIL_VARIABLE = "US_STOCK_HELPER_CONTACT_EMAIL"
@@ -179,34 +183,32 @@ _MACRO_MAPPINGS = (
 )
 
 
+# One entry per current-filings form, on identical terms: the form list and
+# its codes live in sec.py next to the adapter that requests them, proven by
+# captured EDGAR payloads (SC 13D/SC 13G are retired; EDGAR serves
+# SCHEDULE 13D/SCHEDULE 13G). Writing the six out by hand here produced a
+# second list that could disagree with the factory's.
+_SEC_CURRENT_FILING_SOURCES = tuple(
+    SourceSpec(
+        source_id=sec_current_source_id(form),
+        kind=SourceKind.REGULATORY_FILING,
+        publisher_id="sec-edgar",
+        publisher_name="U.S. SEC EDGAR",
+        sec_form_type=form,
+        allowed_hosts=("www.sec.gov",),
+        reliability=0.99,
+        poll_interval_seconds=300.0,
+        requires_contact_user_agent=True,
+        robots_allows_polling=True,
+        claim_status=ClaimStatus.VERIFIED,
+    )
+    for form in CURRENT_FILING_FORMS
+)
+
+
 PUBLIC_SOURCES = SourceRegistry(
-    (
-        SourceSpec(
-            source_id="sec-current-8-k",
-            kind=SourceKind.REGULATORY_FILING,
-            publisher_id="sec-edgar",
-            publisher_name="U.S. SEC EDGAR",
-            sec_form_type="8-K",
-            allowed_hosts=("www.sec.gov",),
-            reliability=0.99,
-            poll_interval_seconds=300.0,
-            requires_contact_user_agent=True,
-            robots_allows_polling=True,
-            claim_status=ClaimStatus.VERIFIED,
-        ),
-        SourceSpec(
-            source_id="sec-current-4",
-            kind=SourceKind.REGULATORY_FILING,
-            publisher_id="sec-edgar",
-            publisher_name="U.S. SEC EDGAR",
-            sec_form_type="4",
-            allowed_hosts=("www.sec.gov",),
-            reliability=0.99,
-            poll_interval_seconds=300.0,
-            requires_contact_user_agent=True,
-            robots_allows_polling=True,
-            claim_status=ClaimStatus.VERIFIED,
-        ),
+    _SEC_CURRENT_FILING_SOURCES
+    + (
         SourceSpec(
             source_id="federal-reserve-press",
             kind=SourceKind.MACRO_DATA,

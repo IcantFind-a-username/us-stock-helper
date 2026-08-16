@@ -106,7 +106,11 @@ print(result.metadata.recommended_delay_seconds)
 
 ## 配置 SEC Current Filings
 
-SEC 要求自动化工具声明应用和联系方式。工厂为每个表单建立独立 Atom feed，默认支持 8-K 与 Form 4：
+SEC 要求自动化工具声明应用和联系方式。工厂为每个表单建立独立 Atom feed，默认表单集
+`CURRENT_FILING_FORMS`（8-K、4、10-Q、10-K、SCHEDULE 13D、SCHEDULE 13G）与源注册表共用一份清单。
+受益所有权申报的现行代码是 `SCHEDULE 13D`/`SCHEDULE 13G`——已抓取的真实样本
+（`tests/fixtures/sec_current_*.atom`，2026-08-16）证明旧代码 `SC 13D`/`SC 13G` 在
+getcurrent 上只返回"No recent filings"：
 
 ```python
 import os
@@ -119,7 +123,6 @@ from information_layer.feeds import (
 sec_adapters = build_sec_current_filings_adapters(
     transport=UrllibHttpsTransport(),
     user_agent=os.environ["SEC_USER_AGENT"],
-    forms=("8-K", "4"),
 )
 ```
 
@@ -135,6 +138,10 @@ SEC adapter 默认最小轮询间隔为 1 秒。SEC 官方当前公平访问上�
 | --- | --- | --- | --- | --- |
 | `sec-current-8-k` | 监管文件 | 0.99 | 300s | 是 |
 | `sec-current-4` | 监管文件 | 0.99 | 300s | 是 |
+| `sec-current-10-q` | 监管文件 | 0.99 | 300s | 是 |
+| `sec-current-10-k` | 监管文件 | 0.99 | 300s | 是 |
+| `sec-current-schedule-13d` | 监管文件 | 0.99 | 300s | 是 |
+| `sec-current-schedule-13g` | 监管文件 | 0.99 | 300s | 是 |
 | `federal-reserve-press` | 宏观数据 | 0.99 | 900s | 否 |
 | `bls-news-releases` | 宏观数据 | 0.99 | 1800s | 否 |
 | `bea-news-releases` | 宏观数据 | 0.99 | 1800s | 否 |

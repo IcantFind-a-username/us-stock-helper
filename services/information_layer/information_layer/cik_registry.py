@@ -27,8 +27,12 @@ _URL_CIK = re.compile(r"/data/(\d{1,10})(?:/|$)")
 _BARE_CIK = re.compile(r"^\d{1,10}$")
 # EDGAR labels every entry with the role that filer played. A Form 4 produces
 # one entry per party, and only the issuer's names the stock the filing is
-# about.
-_ROLE = re.compile(r"\((issuer|reporting|filer|subject)\)", re.IGNORECASE)
+# about. A Schedule 13D/13G likewise pairs the holder's "(Filed by)" entry
+# with the issuer's "(Subject)" entry under one accession.
+_ROLE = re.compile(
+    r"\((issuer|reporting|filer|subject|filed by)\)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,10 +156,13 @@ def role_attributes_symbol(role: str | None) -> bool:
     A reporting person does not. Corporate ten-percent holders are both
     insiders and listed issuers, so resolving "the first candidate with a
     ticker" sent a DaVita insider trade to Berkshire's stock as verified,
-    top-reliability evidence.
+    top-reliability evidence. A Schedule 13D/13G "filed by" holder is the
+    same shape: when the holder itself is listed, claiming its ticker files
+    an accumulation of the subject issuer under the holder's own stock. The
+    issuer arrives as the paired (Subject) entry of the same accession.
     """
 
-    return role != "reporting"
+    return role not in {"reporting", "filed by"}
 
 
 def _normalize(cik: str | int) -> str:

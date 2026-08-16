@@ -180,6 +180,60 @@ class ShippedRegistryTests(unittest.TestCase):
         self.assertIsNone(re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", source))
 
 
+class WidenedSecCoverageTests(unittest.TestCase):
+    """The six form feeds that actually move prices, declared as one set.
+
+    Captured live samples (tests/fixtures/sec_current_*.atom, 2026-08-16)
+    are the authority for the codes: EDGAR retired SC 13D / SC 13G — those
+    type= queries answer "No recent filings" — and serves beneficial
+    ownership under SCHEDULE 13D / SCHEDULE 13G.
+    """
+
+    def test_the_registry_polls_all_six_current_filing_forms(self) -> None:
+        self.assertEqual(
+            {item.sec_form_type for item in PUBLIC_SOURCES.requiring_cik_registry()},
+            {"8-K", "4", "10-Q", "10-K", "SCHEDULE 13D", "SCHEDULE 13G"},
+        )
+
+    def test_beneficial_ownership_uses_the_codes_edgar_actually_serves(
+        self,
+    ) -> None:
+        declared = {item.sec_form_type for item in PUBLIC_SOURCES.sources}
+        self.assertNotIn("SC 13D", declared)
+        self.assertNotIn("SC 13G", declared)
+
+    def test_every_sec_source_shares_the_8k_terms(self) -> None:
+        sec_sources = PUBLIC_SOURCES.requiring_cik_registry()
+        self.assertEqual(len(sec_sources), 6)
+        for item in sec_sources:
+            with self.subTest(source=item.source_id):
+                self.assertIs(item.kind, SourceKind.REGULATORY_FILING)
+                self.assertEqual(item.publisher_id, "sec-edgar")
+                self.assertEqual(item.allowed_hosts, ("www.sec.gov",))
+                self.assertEqual(item.reliability, 0.99)
+                self.assertEqual(item.poll_interval_seconds, 300.0)
+                self.assertTrue(item.requires_contact_user_agent)
+                self.assertIs(item.claim_status, ClaimStatus.VERIFIED)
+
+    def test_the_standalone_factory_agrees_with_the_registry(self) -> None:
+        # Production builds through SourceSpec/_adapter_for; the factory is
+        # the documented library entry point. Two disagreeing form lists mean
+        # one of them silently polls less than the product claims.
+        from information_layer.feeds import build_sec_current_filings_adapters
+
+        factory_ids = {
+            adapter.adapter_id
+            for adapter in build_sec_current_filings_adapters(
+                transport=NullTransport(),
+                user_agent="USStockHelper/0.1 research@example.test",
+            )
+        }
+        registry_ids = {
+            item.source_id for item in PUBLIC_SOURCES.requiring_cik_registry()
+        }
+        self.assertEqual(factory_ids, registry_ids)
+
+
 class UserAgentTests(unittest.TestCase):
     def test_a_missing_contact_address_is_refused_rather_than_invented(self) -> None:
         for environment in ({}, {"US_STOCK_HELPER_CONTACT_EMAIL": "   "}):
