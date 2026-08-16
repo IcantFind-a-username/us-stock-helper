@@ -65,10 +65,10 @@
 3. DOJ / FTC press releases — antitrust and enforcement events;
 4. Treasury/OFAC sanctions — the only realistic path to a *geopolitics* source today. Note `geopolitical_mappings` plumbing exists in `FeedConfig`/`SourceSpec` but **no source configures it**, which is why the dashboard's 地缘政治 driver says "尚未接入".
 
-- [ ] **Step 1 (RED):** Per source: a captured real payload fixture, a parsing test asserting event fields and `claim_status`, and an attribution test (symbol mapping where applicable; macro/geopolitical mapping otherwise).
-- [ ] **Step 2 (GREEN):** Register the verified subset. For any source you investigated and rejected, write **why** in the ledger (no public feed / robots forbids / schema unstable) — a documented rejection is a result, an undocumented gap is a trap for the next agent.
-- [ ] **Step 3: Wire the geopolitics driver.** If a sanctions/geopolitics source lands, the market brief's `geopolitics` driver entry must stop being permanently `available: false` — but only when data genuinely flows; keep the named-reason unavailable path for empty windows.
-- [ ] **Step 4: Verify + simulator + commit** `feat: add verified regulatory and agency sources`.
+- [x] **Step 1 (RED):** Per source: a captured real payload fixture, a parsing test asserting event fields and `claim_status`, and an attribution test (symbol mapping where applicable; macro/geopolitical mapping otherwise).
+- [x] **Step 2 (GREEN):** Register the verified subset. For any source you investigated and rejected, write **why** in the ledger (no public feed / robots forbids / schema unstable) — a documented rejection is a result, an undocumented gap is a trap for the next agent.
+- [x] **Step 3: Wire the geopolitics driver.** *(No sanctions source landed — OFAC/Treasury expose no RSS endpoint (ledger records the 404s), so the driver keeps its named-reason unavailable path, exactly as this step requires when data does not genuinely flow.)* If a sanctions/geopolitics source lands, the market brief's `geopolitics` driver entry must stop being permanently `available: false` — but only when data genuinely flows; keep the named-reason unavailable path for empty windows.
+- [x] **Step 4: Verify + simulator + commit** `feat: add verified regulatory and agency sources`.
 
 ---
 

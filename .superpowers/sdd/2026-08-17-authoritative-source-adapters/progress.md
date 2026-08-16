@@ -187,5 +187,54 @@ Apple/NVIDIA 迁入同一张 `_COMPANY_IR_SOURCES` 表（source_id 与 mapping �
 含 7 家 newsroom），citations 仍为空——周日 6 小时回看窗口内无新公告，诚实为空；
 工作日窗口配合 MSFT/INTC/BA/AMZN/GOOGL 的公告将进入证据流。
 
-**提交**：`<pending>` — feat: register verified company ir feeds。
+**提交**：`abefa25` — feat: register verified company ir feeds。
+
+## Task 3 · EDGAR 之外的监管/机构源（完成）
+
+**调研（全部真实抓取 + robots 核查，2026-08-16/17）**：
+
+| 结果 | 明细 |
+|---|---|
+| ✅ 采纳 4 个 | **Nasdaq 停牌** `www.nasdaqtrader.com/rss.aspx?feed=tradehalts`（无 robots.txt——请求 302 到"Page Not Available"；该 RSS 是 Nasdaq Trader 官方分发产品，feed 自声明 ttl=1 分钟，明示欢迎分钟级轮询）；**FDA 新闻稿** `www.fda.gov/...press-releases/rss.xml`（robots Crawl-Delay 30s ≪ 900s）；**FTC 新闻稿** `www.ftc.gov/feeds/press-release.xml`（robots Crawl-delay 5s）；**DOJ 新闻** `www.justice.gov/feeds/justice-news.xml`（robots Disallow 不含 /feeds） |
+| ❌ 拒绝并记录 | **OFAC/财政部制裁源**：`ofac.treasury.gov/recent-actions/rss.xml`、`/system/files/rss/recent-actions.xml` 均 404，`home.treasury.gov` 新闻稿 RSS 404/302——OFAC 网站改版后不再提供 RSS/Atom 端点。**地缘政治驱动因子保持具名"尚未接入"**（规格 Step 3 要求"只在数据真实流动时接线"——没有源就不接）。NYSE 停牌只有 CSV 下载无 feed，未注册 |
+
+样本存 `tests/fixtures/{nasdaq_trade_halts,fda_press_releases,ftc_press_releases,doj_justice_news}.rss`。
+
+**真实样本暴露的三个事实（全部写进测试）**：
+1. **Nasdaq 停牌条目没有 `<link>`/`<guid>`** → 通用解析器会全部丢弃 → 需要专用适配器
+   （`feeds/nasdaq.py::NasdaqHaltsAdapter`）：按 `ndaq:IssueSymbol` 权威归属（1.0，
+   等价于 CIK 精确匹配而非关键词猜测）、身份=代码+停牌日期+时间（复牌字段填充后
+   同一 claim 以修订版发布）、停牌通告是元数据不打情绪分。`SourceSpec` 新增 `dialect`
+   字段路由（未知 dialect 构造期拒绝）。
+2. **FDA feed 的条目链接是 http://** → 通用解析器按"仅 https"把全部条目丢弃。
+   修复：解析时把条目链接升级为同 URL 的 https 形式（引用不得给读者明文链接，
+   而整条公告因链接 scheme 被丢弃是更大的损失），新增钉死测试。
+3. **DOJ feed 真实携带未来日期条目**（"FY26 Q4 Data Due"，dated 2026-10-30，
+   抓取时刻是 08-16）→ 用真实载荷钉死 PIT 未来条目拒收护栏
+   （`future_entries_rejected ≥ 1`）。
+
+**归属设计**：FDA/FTC/DOJ 是监管者对第三方公司的表述，不是发行人自有频道——
+公司点名关键词用 **0.85** 相关度（发行人频道 0.9、CIK/交易所权威 1.0），
+映射只含区分度足够的公司词（apple/amazon/google/…/taiwan semiconductor + tsmc；
+FDA 另配 crispr therapeutics→CRSP、structure therapeutics→GPCR、merck→MRK）。
+当前抓取的样本窗口内没有任何映射词命中（测试断言零虚构归属）。
+
+**RED**：ImportError（`NasdaqHaltsAdapter` 不存在）×6 + KeyError
+（`nasdaq-trade-halts` 等不在注册表）×3，原因全部符合预期。
+其中 FDA fixture 解析测试在适配器/注册表就位后仍红（0 事件），暴露了上面第 2 条
+http 链接问题——先红的测试真实抓到了一个规格没预见的缺陷。
+
+**变异验证**：删除 `NasdaqHaltsAdapter._symbol_relevance` 的权威归属分支 →
+`test_a_halt_names_its_ticker_reason_and_pit_stamps` 变红。恢复后全绿。
+
+**GREEN 结果**：information_layer 268 OK · analysis_api 273 OK · scripts 211 OK ·
+decision_engine 19 OK。
+
+**验收**：重启 analysis-api 后 `GET /market-brief`：`sourceGaps: []`——
+**20 个源（6 SEC + 3 宏观 + 7 newsroom + 4 机构）全部实时轮询成功零失败**；
+`GET /decision?symbol=AAPL` notes 无任何源失败。Dashboard 真实简报渲染正常
+（截图 `/tmp/app_task3_dashboard.png`）。citations 仍为空——周日窗口诚实为空；
+停牌源上线后，自选股盘中停牌将以 1.0 相关度、VERIFIED 直达该股证据流。
+
+**提交**：`<pending>` — feat: add verified regulatory and agency sources。
 

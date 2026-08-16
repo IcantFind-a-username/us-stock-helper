@@ -152,10 +152,22 @@ SEC adapter 默认最小轮询间隔为 1 秒。SEC 官方当前公平访问上�
 | `boeing-newsroom` | 官方公告 | 0.95 | 900s | 否 |
 | `amazon-newsroom` | 官方公告 | 0.95 | 900s | 否 |
 | `google-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+| `nasdaq-trade-halts` | 监管文件 | 0.99 | 60s | 否 |
+| `fda-press-releases` | 官方公告 | 0.99 | 900s | 否 |
+| `ftc-press-releases` | 官方公告 | 0.99 | 900s | 否 |
+| `doj-press-releases` | 官方公告 | 0.99 | 900s | 否 |
 
 公司 newsroom 行由 `company_ir_source()` 构建器逐行声明（`_COMPANY_IR_SOURCES`）。
 只有实际抓取过、且 robots 政策已读过的 feed 才能进表；关键词必须有区分度——
 与常见英文单词同形的代码（GRAB、SOUN 等）在拿到"grab holdings"这类多词键之前不进表。
+
+`nasdaq-trade-halts` 的条目不带 `<link>`/`<guid>`，声明 `dialect="nasdaq-halts"`
+路由到专用的 `NasdaqHaltsAdapter`：按 `ndaq:IssueSymbol` 权威归属（1.0），
+以"代码+停牌日期+时间"为稳定身份，复牌字段填充后作为同一停牌事件的修订版发布；
+其 60s 轮询间隔是该类型的下限，与发布方 feed 自声明的 ttl=1 分钟一致。
+监管机构公告（FDA/FTC/DOJ）对第三方公司的点名归属用 0.85 相关度关键词
+（低于发行人自有频道的 0.9）。OFAC/财政部已不再提供 RSS/Atom 端点，
+地缘政治驱动因子保持具名的"尚未接入"状态，不用猜测的源填充。
 
 注册表里没有新闻通讯社。持牌通讯社和新闻稿分发商需要合同才能自动抓取，条款不明的源一律不加：一条日后必须撤回的证据，比没有这条证据更糟，因为基于它做出的判断已经发生。`SourceKind.NEWS_WIRE` 保留枚举位，是为了将来加入时必须是一次带许可的显式动作。
 

@@ -18,6 +18,7 @@ from .generic import (
     GenericFeedAdapter,
     KeywordMapping,
 )
+from .nasdaq import NasdaqHaltsAdapter
 from .http import (
     FeedAccessError,
     FeedError,
@@ -72,6 +73,7 @@ __all__ = [
     "HttpResponse",
     "HttpTransport",
     "KeywordMapping",
+    "NasdaqHaltsAdapter",
     "PollingCoordinator",
     "ResponseTooLargeError",
     "SecCurrentFilingsAdapter",

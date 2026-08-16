@@ -331,6 +331,13 @@ class GenericFeedAdapter:
     ) -> _ParsedEntry | None:
         if not identity or not title or not canonical_url:
             return None
+        # Some publishers still write plain-http links into their own feeds
+        # (FDA's press feed does). A citation handed to a reader must not be
+        # a cleartext link, and dropping the whole entry over the scheme of
+        # its link discards a real announcement — so the link is upgraded to
+        # the secure form of the same URL instead.
+        if canonical_url.startswith("http://"):
+            canonical_url = "https://" + canonical_url[len("http://"):]
         parsed_link = urlparse(canonical_url)
         if (
             parsed_link.scheme != "https"

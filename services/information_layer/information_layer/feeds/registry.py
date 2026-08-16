@@ -27,11 +27,18 @@ from ..cik_registry import CikTickerRegistry
 from ..models import ClaimStatus
 from .generic import FeedConfig, GenericFeedAdapter, KeywordMapping
 from .http import FeedAccessError, HttpTransport
+from .nasdaq import NasdaqHaltsAdapter
 from .sec import (
     CURRENT_FILING_FORMS,
     SecCurrentFilingsAdapter,
     sec_current_source_id,
 )
+
+
+# Feed dialects a spec may declare when its publisher's RSS deviates from
+# the plain grammar the generic adapter reads. Each value has exactly one
+# dedicated adapter behind it.
+KNOWN_DIALECTS = frozenset({"nasdaq-halts"})
 
 
 CONTACT_EMAIL_VARIABLE = "US_STOCK_HELPER_CONTACT_EMAIL"
@@ -78,6 +85,9 @@ class SourceSpec:
     # adapter builds itself. Exactly one of the two.
     feed_url: str | None = None
     sec_form_type: str | None = None
+    # Names the dedicated adapter for a feed whose RSS deviates from the
+    # plain grammar (e.g. Nasdaq halts items carry no <link>/<guid>).
+    dialect: str | None = None
     symbol_mappings: tuple[KeywordMapping, ...] = ()
     entity_mappings: tuple[KeywordMapping, ...] = ()
     macro_mappings: tuple[KeywordMapping, ...] = ()
@@ -97,6 +107,12 @@ class SourceSpec:
         if (self.feed_url is None) == (self.sec_form_type is None):
             raise FeedAccessError(
                 "a source declares either a feed URL or an EDGAR form, not both"
+            )
+        if self.dialect is not None and (
+            self.dialect not in KNOWN_DIALECTS or self.feed_url is None
+        ):
+            raise FeedAccessError(
+                f"{self.source_id} declares a dialect no adapter implements"
             )
         if not 0.0 < self.reliability <= 1.0:
             raise ValueError("reliability must be in (0, 1]")
@@ -285,6 +301,103 @@ _COMPANY_IR_SOURCES = (
 )
 
 
+# Companies a regulator's release may name. These are keyword guesses about a
+# third party's prose (unlike an issuer's own newsroom), so they carry 0.85
+# rather than 0.9, and only distinctive company words qualify — never bare
+# tickers that double as English words.
+_AGENCY_SYMBOL_MAPPINGS = (
+    KeywordMapping("AAPL", ("apple",), 0.85),
+    KeywordMapping("AMZN", ("amazon",), 0.85),
+    KeywordMapping("AVGO", ("broadcom",), 0.85),
+    KeywordMapping("BA", ("boeing",), 0.85),
+    KeywordMapping("BABA", ("alibaba",), 0.85),
+    KeywordMapping("GOOGL", ("google",), 0.85),
+    KeywordMapping("INTC", ("intel",), 0.85),
+    KeywordMapping("KO", ("coca-cola",), 0.85),
+    KeywordMapping("MSFT", ("microsoft",), 0.85),
+    KeywordMapping("NKE", ("nike",), 0.85),
+    KeywordMapping("NVDA", ("nvidia",), 0.85),
+    KeywordMapping("PYPL", ("paypal",), 0.85),
+    KeywordMapping("QCOM", ("qualcomm",), 0.85),
+    KeywordMapping("TSLA", ("tesla",), 0.85),
+    KeywordMapping("TSM", ("taiwan semiconductor", "tsmc"), 0.85),
+)
+
+# Drug-developer names for FDA announcements, same terms as above.
+_FDA_SYMBOL_MAPPINGS = (
+    KeywordMapping("CRSP", ("crispr therapeutics",), 0.85),
+    KeywordMapping("GPCR", ("structure therapeutics",), 0.85),
+    KeywordMapping("MRK", ("merck",), 0.85),
+)
+
+# Verified agency channels (fetched + robots read, 2026-08-16; ledger Task 3).
+# OFAC/Treasury expose no RSS endpoint any more, so the geopolitics driver
+# keeps its named "no source" state rather than a guessed feed.
+_AGENCY_SOURCES = (
+    SourceSpec(
+        source_id="nasdaq-trade-halts",
+        kind=SourceKind.REGULATORY_FILING,
+        publisher_id="nasdaq",
+        publisher_name="Nasdaq Trader",
+        feed_url="https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+        allowed_hosts=("www.nasdaqtrader.com",),
+        reliability=0.99,
+        # The feed itself declares ttl=1 minute; the kind's floor is the
+        # polite minimum for the most time-sensitive source in the registry.
+        poll_interval_seconds=60.0,
+        requires_contact_user_agent=False,
+        robots_allows_polling=True,
+        claim_status=ClaimStatus.VERIFIED,
+        dialect="nasdaq-halts",
+    ),
+    SourceSpec(
+        source_id="fda-press-releases",
+        kind=SourceKind.OFFICIAL_ANNOUNCEMENT,
+        publisher_id="fda",
+        publisher_name="U.S. Food and Drug Administration",
+        feed_url=(
+            "https://www.fda.gov/about-fda/contact-fda/stay-informed"
+            "/rss-feeds/press-releases/rss.xml"
+        ),
+        allowed_hosts=("www.fda.gov",),
+        reliability=0.99,
+        poll_interval_seconds=900.0,
+        requires_contact_user_agent=False,
+        robots_allows_polling=True,
+        claim_status=ClaimStatus.VERIFIED,
+        symbol_mappings=_FDA_SYMBOL_MAPPINGS,
+    ),
+    SourceSpec(
+        source_id="ftc-press-releases",
+        kind=SourceKind.OFFICIAL_ANNOUNCEMENT,
+        publisher_id="ftc",
+        publisher_name="U.S. Federal Trade Commission",
+        feed_url="https://www.ftc.gov/feeds/press-release.xml",
+        allowed_hosts=("www.ftc.gov",),
+        reliability=0.99,
+        poll_interval_seconds=900.0,
+        requires_contact_user_agent=False,
+        robots_allows_polling=True,
+        claim_status=ClaimStatus.VERIFIED,
+        symbol_mappings=_AGENCY_SYMBOL_MAPPINGS,
+    ),
+    SourceSpec(
+        source_id="doj-press-releases",
+        kind=SourceKind.OFFICIAL_ANNOUNCEMENT,
+        publisher_id="doj",
+        publisher_name="U.S. Department of Justice",
+        feed_url="https://www.justice.gov/feeds/justice-news.xml",
+        allowed_hosts=("www.justice.gov",),
+        reliability=0.99,
+        poll_interval_seconds=900.0,
+        requires_contact_user_agent=False,
+        robots_allows_polling=True,
+        claim_status=ClaimStatus.VERIFIED,
+        symbol_mappings=_AGENCY_SYMBOL_MAPPINGS,
+    ),
+)
+
+
 _MACRO_MAPPINGS = (
     KeywordMapping(
         "MONETARY_POLICY",
@@ -379,6 +492,7 @@ PUBLIC_SOURCES = SourceRegistry(
         ),
     )
     + _COMPANY_IR_SOURCES
+    + _AGENCY_SOURCES
 )
 
 
@@ -447,6 +561,27 @@ def _adapter_for(
     user_agent: str,
     cik_registry: CikTickerRegistry | None,
 ) -> GenericFeedAdapter:
+    if spec.dialect == "nasdaq-halts":
+        return NasdaqHaltsAdapter(
+            FeedConfig(
+                adapter_id=spec.source_id,
+                feed_url=spec.feed_url or "",
+                allowed_hosts=spec.allowed_hosts,
+                publisher_id=spec.publisher_id,
+                publisher_name=spec.publisher_name,
+                source_type=spec.kind.value,
+                reliability=spec.reliability,
+                user_agent=user_agent,
+                claim_status=spec.claim_status,
+                robots_allowed=spec.robots_allows_polling,
+                minimum_poll_interval_seconds=spec.poll_interval_seconds,
+                symbol_mappings=spec.symbol_mappings,
+                entity_mappings=spec.entity_mappings,
+                macro_mappings=spec.macro_mappings,
+                geopolitical_mappings=spec.geopolitical_mappings,
+            ),
+            transport,
+        )
     if spec.sec_form_type is not None:
         return SecCurrentFilingsAdapter(
             form_type=spec.sec_form_type,

@@ -380,6 +380,7 @@ class ShippedIrCoverageTests(unittest.TestCase):
         announcements = {
             item.source_id: item
             for item in PUBLIC_SOURCES.of_kind(SourceKind.OFFICIAL_ANNOUNCEMENT)
+            if item.source_id.endswith("-newsroom")
         }
 
         expected_symbols = {
@@ -399,6 +400,65 @@ class ShippedIrCoverageTests(unittest.TestCase):
                 self.assertEqual(source.reliability, 0.95)
                 self.assertEqual(source.poll_interval_seconds, 900.0)
                 self.assertFalse(source.requires_contact_user_agent)
+
+
+class RegulatoryAgencyCoverageTests(unittest.TestCase):
+    """Halts, FDA, FTC and DOJ — verified feeds only; OFAC has none to offer.
+
+    Each row's feed and robots policy were fetched and read on 2026-08-16
+    (fixtures nasdaq_trade_halts.rss, fda_press_releases.rss,
+    ftc_press_releases.rss, doj_justice_news.rss; ledger Task 3). OFAC and
+    Treasury press expose no RSS/Atom endpoint any more, so geopolitics
+    stays sourceless and its dashboard driver keeps saying so.
+    """
+
+    def test_the_registry_carries_the_verified_agency_feeds(self) -> None:
+        by_id = {item.source_id: item for item in PUBLIC_SOURCES.sources}
+
+        halts = by_id["nasdaq-trade-halts"]
+        self.assertIs(halts.kind, SourceKind.REGULATORY_FILING)
+        self.assertEqual(halts.reliability, 0.99)
+        # The publisher's own feed declares ttl=1 minute; the kind's floor is
+        # the polite minimum.
+        self.assertEqual(
+            halts.poll_interval_seconds,
+            minimum_poll_interval_seconds(SourceKind.REGULATORY_FILING),
+        )
+        self.assertEqual(halts.dialect, "nasdaq-halts")
+
+        for source_id in (
+            "fda-press-releases",
+            "ftc-press-releases",
+            "doj-press-releases",
+        ):
+            with self.subTest(source=source_id):
+                source = by_id[source_id]
+                self.assertIs(source.kind, SourceKind.OFFICIAL_ANNOUNCEMENT)
+                self.assertEqual(source.reliability, 0.99)
+                self.assertEqual(source.poll_interval_seconds, 900.0)
+                self.assertIs(source.claim_status, ClaimStatus.VERIFIED)
+                self.assertFalse(source.requires_contact_user_agent)
+
+    def test_the_halts_source_builds_the_dedicated_adapter(self) -> None:
+        from information_layer.feeds import NasdaqHaltsAdapter
+
+        adapters = build_adapters(
+            transport=NullTransport(),
+            contact_email=CONTACT,
+            cik_registry=cik_registry(),
+        )
+
+        halts = [
+            adapter
+            for adapter in adapters
+            if adapter.adapter_id == "nasdaq-trade-halts"
+        ]
+        self.assertEqual(len(halts), 1)
+        self.assertIsInstance(halts[0], NasdaqHaltsAdapter)
+
+    def test_an_unknown_dialect_is_refused_at_declaration(self) -> None:
+        with self.assertRaises(FeedAccessError):
+            spec(dialect="made-up-dialect")
 
 
 class UserAgentTests(unittest.TestCase):

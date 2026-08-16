@@ -341,6 +341,23 @@ class FeedParsingTests(unittest.TestCase):
             datetime(2026, 7, 25, 13, 50, tzinfo=timezone.utc),
         )
 
+    def test_a_plain_http_entry_link_is_upgraded_not_dropped(self) -> None:
+        # FDA's own press feed writes http:// links. The announcement is
+        # real; only the link scheme is unacceptable, so the citation gets
+        # the secure form of the same URL.
+        insecure = ATOM.replace(
+            b'href="https://news.example.test/item-1"',
+            b'href="http://news.example.test/item-1"',
+        )
+        adapter = GenericFeedAdapter(config(), FakeTransport(response(insecure)))
+
+        item = adapter.poll(since=NOW - timedelta(hours=1), until=NOW).events[0]
+
+        self.assertEqual(
+            item.provenance.canonical_url,
+            "https://news.example.test/item-1",
+        )
+
     def test_future_dated_entry_is_not_emitted(self) -> None:
         future_atom = ATOM.replace(
             b"2026-07-25T13:55:00Z",
@@ -1002,3 +1019,148 @@ class CompanyIrFeedFixtureTests(unittest.TestCase):
         self.assertTrue(silent)
         for item in silent:
             self.assertEqual(item.symbol_relevance, ())
+
+
+class NasdaqHaltsAdapterTests(unittest.TestCase):
+    """The halts feed names tickers authoritatively but carries no links.
+
+    Its items have neither <guid> nor <link>, so the generic parser drops
+    every one of them; the dedicated adapter reads the ndaq:* fields instead
+    and stands in a stable identity per halt.
+    """
+
+    @staticmethod
+    def _adapter(transport):
+        from information_layer.feeds import NasdaqHaltsAdapter
+
+        return NasdaqHaltsAdapter(
+            FeedConfig(
+                adapter_id="nasdaq-trade-halts",
+                feed_url="https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+                allowed_hosts=("www.nasdaqtrader.com",),
+                publisher_id="nasdaq",
+                publisher_name="Nasdaq Trader",
+                source_type="regulatory_filing",
+                reliability=0.99,
+                user_agent="USStockHelper/0.1 research@example.test",
+                robots_allowed=True,
+                minimum_poll_interval_seconds=60.0,
+                claim_status=ClaimStatus.VERIFIED,
+            ),
+            transport,
+        )
+
+    def _events(self):
+        adapter = self._adapter(
+            FakeTransport(
+                response(
+                    fixture_bytes("nasdaq_trade_halts.rss"),
+                    retrieved_at=FIXTURE_NOW,
+                )
+            )
+        )
+        return adapter.poll(
+            since=FIXTURE_NOW - timedelta(days=60), until=FIXTURE_NOW
+        ).events
+
+    def test_halt_items_without_links_are_still_read(self) -> None:
+        events = self._events()
+
+        self.assertTrue(events)
+
+    def test_a_halt_names_its_ticker_reason_and_pit_stamps(self) -> None:
+        events = self._events()
+
+        talk = next(
+            item
+            for item in events
+            if ("halt_symbol", "TALK") in item.attributes
+        )
+        self.assertEqual(talk.symbol_relevance, (("TALK", 1.0),))
+        self.assertIn(("reason_code", "T12"), talk.attributes)
+        self.assertIn(("market", "NASDAQ"), talk.attributes)
+        self.assertEqual(talk.claim_status, ClaimStatus.VERIFIED)
+        self.assertEqual(talk.available_at, FIXTURE_NOW)
+        self.assertEqual(talk.retrieved_at, FIXTURE_NOW)
+        # A halt notice is exchange metadata, not prose to be scored.
+        self.assertFalse(talk.sentiment_measured)
+        self.assertEqual(talk.sentiment, 0.0)
+
+    def test_an_unchanged_feed_is_not_reannounced(self) -> None:
+        body = fixture_bytes("nasdaq_trade_halts.rss")
+        adapter = self._adapter(
+            FakeTransport(
+                response(body, retrieved_at=FIXTURE_NOW),
+                response(body, retrieved_at=FIXTURE_NOW),
+            )
+        )
+        ticks = iter(
+            FIXTURE_NOW + timedelta(minutes=5 * step) for step in range(4)
+        )
+        coordinator = PollingCoordinator(clock=lambda: next(ticks))
+
+        first = coordinator.poll(
+            adapter, since=FIXTURE_NOW - timedelta(days=60), until=FIXTURE_NOW
+        )
+        second = coordinator.poll(
+            adapter, since=FIXTURE_NOW - timedelta(days=60), until=FIXTURE_NOW
+        )
+
+        self.assertTrue(first.events)
+        self.assertEqual(second.events, ())
+
+
+class AgencyFeedFixtureTests(unittest.TestCase):
+    """FDA / FTC / DOJ press feeds, parsed from captured payloads."""
+
+    @staticmethod
+    def _events_for(source_id: str, fixture: str, *, days: int = 30):
+        from information_layer.feeds.registry import (
+            PUBLIC_SOURCES,
+            SourceRegistry,
+            build_adapters,
+        )
+
+        row = next(
+            item
+            for item in PUBLIC_SOURCES.sources
+            if item.source_id == source_id
+        )
+        (adapter,) = build_adapters(
+            registry=SourceRegistry((row,)),
+            transport=FakeTransport(
+                response(fixture_bytes(fixture), retrieved_at=FIXTURE_NOW)
+            ),
+        )
+        return adapter.poll(
+            since=FIXTURE_NOW - timedelta(days=days), until=FIXTURE_NOW
+        )
+
+    def test_fda_releases_parse_verified_and_scored(self) -> None:
+        result = self._events_for("fda-press-releases", "fda_press_releases.rss")
+
+        self.assertTrue(result.events)
+        for item in result.events:
+            self.assertEqual(item.claim_status, ClaimStatus.VERIFIED)
+        # Agency prose is readable, unlike filing metadata titles.
+        self.assertTrue(any(item.sentiment_measured for item in result.events))
+        # None of the current items names a mapped company: no symbol may be
+        # invented for them.
+        for item in result.events:
+            self.assertEqual(item.symbol_relevance, ())
+
+    def test_ftc_releases_parse(self) -> None:
+        result = self._events_for("ftc-press-releases", "ftc_press_releases.rss")
+
+        self.assertTrue(result.events)
+
+    def test_a_future_dated_doj_item_is_rejected_loudly(self) -> None:
+        # The captured DOJ feed really carries a planned item dated
+        # 2026-10-30 — later than the capture moment. Publishing it would
+        # feed tomorrow's knowledge into today's decision.
+        result = self._events_for("doj-press-releases", "doj_justice_news.rss")
+
+        self.assertTrue(result.events)
+        self.assertGreaterEqual(result.metadata.future_entries_rejected, 1)
+        for item in result.events:
+            self.assertLessEqual(item.published_at, FIXTURE_NOW)
