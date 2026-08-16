@@ -921,6 +921,26 @@ class BeneficialOwnershipFormCodeTests(unittest.TestCase):
         holder = event_with_cik(events, "0001326389")
         self.assertEqual(holder.symbol_relevance, ())
 
+    def test_a_13g_amendment_carries_its_actual_form_too(self) -> None:
+        # Same multi-word parsing path as 13D, pinned on the 13G fixture so
+        # a regression in either feed's form stamping is caught by its own
+        # payload.
+        events = events_for(
+            fixture_adapter(
+                "SCHEDULE 13G",
+                "sec_current_schedule_13g.atom",
+                tickers=OWNERSHIP_TICKERS,
+            )
+        )
+
+        forms = {
+            value
+            for item in events
+            for key, value in item.attributes
+            if key == "form_type"
+        }
+        self.assertEqual(forms, {"SCHEDULE 13G", "SCHEDULE 13G/A"})
+
 
 class QuarterlyAndAnnualReportFeedTests(unittest.TestCase):
     def test_10q_events_verify_attribute_and_stamp_like_the_8k_feed(self) -> None:
@@ -1153,6 +1173,50 @@ class AgencyFeedFixtureTests(unittest.TestCase):
         result = self._events_for("ftc-press-releases", "ftc_press_releases.rss")
 
         self.assertTrue(result.events)
+
+    def test_an_agency_release_naming_a_mapped_company_is_attributed(
+        self,
+    ) -> None:
+        """The positive half of agency attribution, on a real-shaped payload.
+
+        No item in the captured window names a mapped company, so — in the
+        established Berkshire-fixture style — one real headline's subject is
+        swapped for a mapped name. A regulator naming a company is a keyword
+        guess about a third party's prose: 0.85, below the issuer channel's
+        0.9 and the registry/exchange 1.0.
+        """
+
+        from information_layer.feeds.registry import (
+            PUBLIC_SOURCES,
+            SourceRegistry,
+            build_adapters,
+        )
+
+        body = fixture_bytes("ftc_press_releases.rss").replace(
+            b"Grubhub", b"Qualcomm"
+        )
+        row = next(
+            item
+            for item in PUBLIC_SOURCES.sources
+            if item.source_id == "ftc-press-releases"
+        )
+        (adapter,) = build_adapters(
+            registry=SourceRegistry((row,)),
+            transport=FakeTransport(response(body, retrieved_at=FIXTURE_NOW)),
+        )
+        events = adapter.poll(
+            since=FIXTURE_NOW - timedelta(days=30), until=FIXTURE_NOW
+        ).events
+
+        named = [
+            item
+            for item in events
+            if "qualcomm" in item.headline.casefold()
+            or "qualcomm" in item.summary.casefold()
+        ]
+        self.assertTrue(named)
+        for item in named:
+            self.assertIn(("QCOM", 0.85), item.symbol_relevance)
 
     def test_a_future_dated_doj_item_is_rejected_loudly(self) -> None:
         # The captured DOJ feed really carries a planned item dated
