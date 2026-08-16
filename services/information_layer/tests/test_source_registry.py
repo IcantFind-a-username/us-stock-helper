@@ -19,6 +19,7 @@ from information_layer.feeds.registry import (
     SourceRegistry,
     SourceSpec,
     build_adapters,
+    company_ir_source,
     contact_email_from_environment,
     minimum_poll_interval_seconds,
     user_agent_for,
@@ -232,6 +233,172 @@ class WidenedSecCoverageTests(unittest.TestCase):
             item.source_id for item in PUBLIC_SOURCES.requiring_cik_registry()
         }
         self.assertEqual(factory_ids, registry_ids)
+
+
+def ir_row(**overrides: object) -> SourceSpec:
+    values: dict[str, object] = {
+        "symbol": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "publisher_id": "microsoft",
+        "publisher_name": "Microsoft Source",
+        "feed_url": "https://news.microsoft.com/feed/",
+        "host": "news.microsoft.com",
+        "keywords": ("microsoft", "msft"),
+    }
+    values.update(overrides)
+    return company_ir_source(**values)  # type: ignore[arg-type]
+
+
+class CompanyIrSourceBuilderTests(unittest.TestCase):
+    """One declarative row per verified newsroom, instead of hand-written specs.
+
+    Every shipped row's feed was actually fetched and its robots policy read
+    before registration (ledger, Task 2). The builder exists so declaring the
+    next one is one line whose invariants are enforced at construction.
+    """
+
+    def test_a_row_expands_into_a_complete_official_announcement_spec(
+        self,
+    ) -> None:
+        source = ir_row()
+
+        self.assertEqual(source.source_id, "microsoft-newsroom")
+        self.assertIs(source.kind, SourceKind.OFFICIAL_ANNOUNCEMENT)
+        self.assertEqual(source.publisher_name, "Microsoft Source")
+        self.assertEqual(source.allowed_hosts, ("news.microsoft.com",))
+        self.assertEqual(source.reliability, 0.95)
+        self.assertEqual(source.poll_interval_seconds, 900.0)
+        self.assertIs(source.claim_status, ClaimStatus.VERIFIED)
+        self.assertEqual(len(source.symbol_mappings), 1)
+        mapping = source.symbol_mappings[0]
+        self.assertEqual(mapping.key, "MSFT")
+        self.assertEqual(mapping.keywords, ("microsoft", "msft"))
+        self.assertEqual(mapping.relevance, 0.9)
+        # The entity is keyed by the issuer's name and earned from the text by
+        # the company word, exactly like the original two newsrooms.
+        self.assertEqual(len(source.entity_mappings), 1)
+        self.assertEqual(source.entity_mappings[0].key, "Microsoft Corporation")
+        self.assertEqual(source.entity_mappings[0].keywords, ("microsoft",))
+
+    def test_a_blank_symbol_is_refused(self) -> None:
+        for symbol in ("", "   "):
+            with self.subTest(symbol=repr(symbol)):
+                with self.assertRaises(ValueError):
+                    ir_row(symbol=symbol)
+
+    def test_a_blank_company_name_or_empty_keywords_are_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            ir_row(company_name="  ")
+        with self.assertRaises(ValueError):
+            ir_row(keywords=())
+
+    def test_a_plain_http_feed_is_refused(self) -> None:
+        with self.assertRaises(FeedAccessError):
+            ir_row(feed_url="http://news.microsoft.com/feed/")
+
+    def test_a_feed_outside_its_declared_host_is_refused(self) -> None:
+        with self.assertRaises(FeedAccessError):
+            ir_row(feed_url="https://elsewhere.example/feed/")
+
+    def test_two_rows_for_one_publisher_are_refused_by_the_registry(self) -> None:
+        with self.assertRaises(ValueError):
+            SourceRegistry((ir_row(), ir_row(symbol="MSFT2")))
+
+
+# Common English words mis-attribute: an issuer feed saying "grab a coffee"
+# is not about Grab Holdings. Tickers whose only obvious keyword is such a
+# word (GRAB, SOUN via "sound", COIN, RIOT …) stay out of the table until
+# they get a distinctive key like "grab holdings" — leaving them out is the
+# documented decision, not an oversight.
+_AMBIGUOUS_COMMON_WORDS = frozenset(
+    {"grab", "sound", "coin", "riot", "circle", "nio", "mo", "ba"}
+)
+
+
+class IrKeywordHonestyTests(unittest.TestCase):
+    def test_a_common_word_keyword_would_misattribute(self) -> None:
+        """The trap itself, demonstrated: the verb fires, the symbol lies."""
+
+        from information_layer.feeds import FeedConfig, GenericFeedAdapter
+
+        rss = (
+            b'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
+            b"<item><guid>x-1</guid>"
+            b"<title>Analysts grab bargains after the selloff</title>"
+            b"<description>Nothing about any listed holding company.</description>"
+            b"<link>https://news.example.test/x-1</link>"
+            b"<pubDate>Sat, 25 Jul 2026 13:50:00 +0000</pubDate>"
+            b"</item></channel></rss>"
+        )
+
+        import datetime as _dt
+
+        from information_layer.feeds import HttpResponse, KeywordMapping
+
+        now = _dt.datetime(2026, 7, 25, 14, 0, tzinfo=_dt.timezone.utc)
+
+        class OneShot:
+            def request(self, request: HttpRequest) -> HttpResponse:
+                return HttpResponse(
+                    status_code=200, headers=(), body=rss, retrieved_at=now
+                )
+
+        adapter = GenericFeedAdapter(
+            FeedConfig(
+                adapter_id="misattribution-demo",
+                feed_url="https://news.example.test/rss",
+                allowed_hosts=("news.example.test",),
+                publisher_id="example",
+                publisher_name="Example",
+                source_type="official_announcement",
+                reliability=0.95,
+                user_agent="USStockHelper/0.1 research@example.test",
+                robots_allowed=True,
+                symbol_mappings=(KeywordMapping("GRAB", ("grab",), 0.9),),
+            ),
+            OneShot(),
+        )
+
+        item = adapter.poll(
+            since=now - _dt.timedelta(hours=1), until=now
+        ).events[0]
+
+        self.assertEqual(item.symbol_relevance, (("GRAB", 0.9),))
+
+    def test_no_shipped_ir_keyword_is_an_ambiguous_common_word(self) -> None:
+        for source in PUBLIC_SOURCES.of_kind(SourceKind.OFFICIAL_ANNOUNCEMENT):
+            for mapping in source.symbol_mappings:
+                for keyword in mapping.keywords:
+                    with self.subTest(source=source.source_id, keyword=keyword):
+                        self.assertNotIn(
+                            keyword.casefold(), _AMBIGUOUS_COMMON_WORDS
+                        )
+
+
+class ShippedIrCoverageTests(unittest.TestCase):
+    def test_the_registry_carries_the_seven_verified_newsrooms(self) -> None:
+        announcements = {
+            item.source_id: item
+            for item in PUBLIC_SOURCES.of_kind(SourceKind.OFFICIAL_ANNOUNCEMENT)
+        }
+
+        expected_symbols = {
+            "apple-newsroom": "AAPL",
+            "nvidia-newsroom": "NVDA",
+            "microsoft-newsroom": "MSFT",
+            "intel-newsroom": "INTC",
+            "boeing-newsroom": "BA",
+            "amazon-newsroom": "AMZN",
+            "google-newsroom": "GOOGL",
+        }
+        self.assertEqual(set(announcements), set(expected_symbols))
+        for source_id, symbol in expected_symbols.items():
+            with self.subTest(source=source_id):
+                source = announcements[source_id]
+                self.assertEqual(source.symbol_mappings[0].key, symbol)
+                self.assertEqual(source.reliability, 0.95)
+                self.assertEqual(source.poll_interval_seconds, 900.0)
+                self.assertFalse(source.requires_contact_user_agent)
 
 
 class UserAgentTests(unittest.TestCase):

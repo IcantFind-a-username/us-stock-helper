@@ -159,6 +159,132 @@ class SourceRegistry:
         return tuple(item for item in self.sources if item.kind is kind)
 
 
+def company_ir_source(
+    *,
+    symbol: str,
+    company_name: str,
+    publisher_id: str,
+    publisher_name: str,
+    feed_url: str,
+    host: str,
+    keywords: tuple[str, ...],
+) -> SourceSpec:
+    """Declare one verified issuer newsroom as a source row.
+
+    A row may only be added for a feed that was actually fetched and whose
+    robots policy was read (the ledger records both per row). The first
+    keyword is the company word that earns the entity attribution; ticker
+    aliases follow. Attribution is still earned from the text: a release
+    that never names the company gets no symbol rather than an assumed one.
+    Keywords that double as common English words mis-attribute (an issuer
+    saying "grab a coffee" is not news about Grab Holdings) — such tickers
+    stay out of the table until they have a distinctive key.
+    """
+
+    clean_symbol = symbol.strip().upper()
+    clean_name = company_name.strip()
+    if not clean_symbol:
+        raise ValueError("an IR row needs the issuer's ticker symbol")
+    if not clean_name:
+        raise ValueError("an IR row needs the issuer's name")
+    if not keywords:
+        raise ValueError(f"{clean_symbol} IR row declares no keywords")
+    return SourceSpec(
+        source_id=f"{publisher_id}-newsroom",
+        kind=SourceKind.OFFICIAL_ANNOUNCEMENT,
+        publisher_id=publisher_id,
+        publisher_name=publisher_name,
+        feed_url=feed_url,
+        allowed_hosts=(host,),
+        reliability=0.95,
+        poll_interval_seconds=900.0,
+        requires_contact_user_agent=False,
+        robots_allows_polling=True,
+        claim_status=ClaimStatus.VERIFIED,
+        symbol_mappings=(KeywordMapping(clean_symbol, keywords, 0.9),),
+        entity_mappings=(KeywordMapping(clean_name, (keywords[0],), 0.9),),
+    )
+
+
+# Each row's feed was fetched and its robots policy read on 2026-08-16
+# (fixtures ir_*.rss; ledger Task 2). Merck, Cisco, Qualcomm, PayPal, Sony,
+# AMD and Coca-Cola were investigated and rejected: empty feed, no public
+# feed, or access denied — the ledger records each rejection.
+_COMPANY_IR_SOURCES = (
+    company_ir_source(
+        symbol="AAPL",
+        company_name="Apple Inc.",
+        publisher_id="apple",
+        publisher_name="Apple Newsroom",
+        feed_url="https://www.apple.com/newsroom/rss-feed.rss",
+        host="www.apple.com",
+        keywords=("apple", "aapl"),
+    ),
+    company_ir_source(
+        symbol="NVDA",
+        company_name="NVIDIA Corporation",
+        publisher_id="nvidia",
+        publisher_name="NVIDIA Newsroom",
+        feed_url="https://nvidianews.nvidia.com/releases.xml",
+        host="nvidianews.nvidia.com",
+        keywords=("nvidia", "nvda"),
+    ),
+    company_ir_source(
+        symbol="MSFT",
+        company_name="Microsoft Corporation",
+        publisher_id="microsoft",
+        publisher_name="Microsoft Source",
+        feed_url="https://news.microsoft.com/feed/",
+        host="news.microsoft.com",
+        keywords=("microsoft", "msft"),
+    ),
+    company_ir_source(
+        symbol="INTC",
+        company_name="Intel Corporation",
+        publisher_id="intel",
+        publisher_name="Intel Newsroom",
+        feed_url="https://newsroom.intel.com/feed",
+        host="newsroom.intel.com",
+        keywords=("intel", "intc"),
+    ),
+    company_ir_source(
+        # The bare ticker "ba" doubles as ordinary text ("BA degree"), so
+        # only the company word may attribute.
+        symbol="BA",
+        company_name="The Boeing Company",
+        publisher_id="boeing",
+        publisher_name="Boeing MediaRoom",
+        feed_url=(
+            "https://boeing.mediaroom.com/news-releases-statements"
+            "?pagetemplate=rss"
+        ),
+        host="boeing.mediaroom.com",
+        keywords=("boeing",),
+    ),
+    company_ir_source(
+        symbol="AMZN",
+        company_name="Amazon.com, Inc.",
+        publisher_id="amazon",
+        publisher_name="About Amazon",
+        feed_url="https://www.aboutamazon.com/news/rss",
+        host="www.aboutamazon.com",
+        keywords=("amazon", "amzn"),
+    ),
+    company_ir_source(
+        # The blog is Google's own channel; the listed issuer is Alphabet.
+        # "alphabet" is a common English word, so only the operating-company
+        # word and the ticker attribute.
+        symbol="GOOGL",
+        company_name="Alphabet Inc.",
+        publisher_id="google",
+        publisher_name="Google | The Keyword",
+        feed_url="https://blog.google/rss/",
+        host="blog.google",
+        keywords=("google", "googl"),
+    ),
+)
+
+
 _MACRO_MAPPINGS = (
     KeywordMapping(
         "MONETARY_POLICY",
@@ -251,40 +377,8 @@ PUBLIC_SOURCES = SourceRegistry(
             claim_status=ClaimStatus.VERIFIED,
             macro_mappings=_MACRO_MAPPINGS,
         ),
-        SourceSpec(
-            source_id="apple-newsroom",
-            kind=SourceKind.OFFICIAL_ANNOUNCEMENT,
-            publisher_id="apple",
-            publisher_name="Apple Newsroom",
-            feed_url="https://www.apple.com/newsroom/rss-feed.rss",
-            allowed_hosts=("www.apple.com",),
-            reliability=0.95,
-            poll_interval_seconds=900.0,
-            requires_contact_user_agent=False,
-            robots_allows_polling=True,
-            claim_status=ClaimStatus.VERIFIED,
-            # An issuer newsroom carries only that issuer's releases, but the
-            # attribution still has to be earned from the text: a release that
-            # never names the company gets no symbol rather than an assumed one.
-            symbol_mappings=(KeywordMapping("AAPL", ("apple", "aapl"), 0.9),),
-            entity_mappings=(KeywordMapping("Apple Inc.", ("apple",), 0.9),),
-        ),
-        SourceSpec(
-            source_id="nvidia-newsroom",
-            kind=SourceKind.OFFICIAL_ANNOUNCEMENT,
-            publisher_id="nvidia",
-            publisher_name="NVIDIA Newsroom",
-            feed_url="https://nvidianews.nvidia.com/releases.xml",
-            allowed_hosts=("nvidianews.nvidia.com",),
-            reliability=0.95,
-            poll_interval_seconds=900.0,
-            requires_contact_user_agent=False,
-            robots_allows_polling=True,
-            claim_status=ClaimStatus.VERIFIED,
-            symbol_mappings=(KeywordMapping("NVDA", ("nvidia", "nvda"), 0.9),),
-            entity_mappings=(KeywordMapping("NVIDIA Corporation", ("nvidia",), 0.9),),
-        ),
     )
+    + _COMPANY_IR_SOURCES
 )
 
 

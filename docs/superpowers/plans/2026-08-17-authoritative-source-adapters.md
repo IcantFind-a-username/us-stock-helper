@@ -48,10 +48,10 @@
 
 **Why:** `apple-newsroom` and `nvidia-newsroom` are hardcoded one-offs. Franz's watchlist is 46 symbols; two of them having a newsroom is not coverage. The `SourceSpec` shape already supports this — what's missing is a way to declare many IR feeds without hand-writing each `KeywordMapping`.
 
-- [ ] **Step 1 (RED):** Test that a small table of `(symbol, company name, feed URL, host)` rows expands into valid `SourceSpec`s with correct `symbol_mappings`/`entity_mappings`, that a malformed row fails loudly at construction (blank symbol, non-HTTPS URL, host not in `allowed_hosts`), and that duplicate `source_id`s are refused by `SourceRegistry`.
-- [ ] **Step 2 (GREEN):** Add the builder plus an initial table covering the largest watchlist names whose IR feeds you have **actually verified** (fetched once, robots/terms read, recorded in the ledger). Quality over count: five verified feeds beat twenty guessed URLs. Keep `reliability=0.95` and the 900s poll interval of the existing two.
-- [ ] **Step 3: Keyword honesty.** A symbol mapping that fires on a common English word will mis-attribute (e.g. `GRAB`, `SOUN`). Test the mis-attribution case explicitly and require distinctive keywords or a higher-precision rule for such tickers; if a symbol cannot be safely keyed, leave it out and say so in the ledger.
-- [ ] **Step 4: Verify + simulator + commit** `feat: register verified company ir feeds`.
+- [x] **Step 1 (RED):** Test that a small table of `(symbol, company name, feed URL, host)` rows expands into valid `SourceSpec`s with correct `symbol_mappings`/`entity_mappings`, that a malformed row fails loudly at construction (blank symbol, non-HTTPS URL, host not in `allowed_hosts`), and that duplicate `source_id`s are refused by `SourceRegistry`.
+- [x] **Step 2 (GREEN):** Add the builder plus an initial table covering the largest watchlist names whose IR feeds you have **actually verified** (fetched once, robots/terms read, recorded in the ledger). Quality over count: five verified feeds beat twenty guessed URLs. Keep `reliability=0.95` and the 900s poll interval of the existing two.
+- [x] **Step 3: Keyword honesty.** A symbol mapping that fires on a common English word will mis-attribute (e.g. `GRAB`, `SOUN`). Test the mis-attribution case explicitly and require distinctive keywords or a higher-precision rule for such tickers; if a symbol cannot be safely keyed, leave it out and say so in the ledger.
+- [x] **Step 4: Verify + simulator + commit** `feat: register verified company ir feeds`.
 
 ---
 

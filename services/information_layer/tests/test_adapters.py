@@ -945,3 +945,60 @@ class QuarterlyAndAnnualReportFeedTests(unittest.TestCase):
         self.assertEqual(western_digital.symbol_relevance, (("WDC", 1.0),))
         atlassian = event_with_cik(events, "0001650372")
         self.assertEqual(atlassian.symbol_relevance, (("TEAM", 1.0),))
+
+
+class CompanyIrFeedFixtureTests(unittest.TestCase):
+    """The captured newsroom payloads, parsed by the sources that declare them."""
+
+    @staticmethod
+    def _events(source_id: str, fixture: str):
+        from information_layer.feeds.registry import (
+            PUBLIC_SOURCES,
+            SourceRegistry,
+            build_adapters,
+        )
+
+        row = next(
+            item
+            for item in PUBLIC_SOURCES.sources
+            if item.source_id == source_id
+        )
+        (adapter,) = build_adapters(
+            registry=SourceRegistry((row,)),
+            transport=FakeTransport(
+                response(fixture_bytes(fixture), retrieved_at=FIXTURE_NOW)
+            ),
+        )
+        return adapter.poll(
+            since=FIXTURE_NOW - timedelta(days=7), until=FIXTURE_NOW
+        ).events
+
+    def test_a_boeing_release_naming_the_company_is_attributed(self) -> None:
+        events = self._events("boeing-newsroom", "ir_boeing_mediaroom.rss")
+
+        self.assertTrue(events)
+        named = [
+            item for item in events if "boeing" in item.headline.casefold()
+        ]
+        self.assertTrue(named)
+        for item in named:
+            self.assertEqual(item.symbol_relevance, (("BA", 0.9),))
+            self.assertEqual(item.claim_status, ClaimStatus.VERIFIED)
+
+    def test_a_release_that_never_names_the_company_claims_no_symbol(
+        self,
+    ) -> None:
+        # "Introducing Gemini 3.7 Flash" never says Google: attribution is
+        # earned from the text, not assumed from the channel.
+        events = self._events("google-newsroom", "ir_google_blog.rss")
+
+        self.assertTrue(events)
+        silent = [
+            item
+            for item in events
+            if "google" not in item.headline.casefold()
+            and "google" not in item.summary.casefold()
+        ]
+        self.assertTrue(silent)
+        for item in silent:
+            self.assertEqual(item.symbol_relevance, ())

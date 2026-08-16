@@ -139,8 +139,53 @@ Mac 换网导致 LAN IP 从 192.168.0.59 变为 10.100.252.18，模拟器 app �
   6 小时回看窗口内 EDGAR 没有新申报；新源注册正确、轮询成功、窗口为空，
   属"不可用/为空就说为空"的预期行为。工作日窗口下 10-Q/10-K/13D/13G 事件将进入证据流。
 
-**提交**：见下方提交哈希行（feat: widen sec current-filings coverage）。
+**提交**：`8cfab6c` — feat: widen sec current-filings coverage to 10-Q, 10-K and schedule 13D/13G。
 
 **遗留项**：协调器双条目重发缺陷（见上方"发现的既有缺陷"）待 Franz 定夺；
 建议放进 Task 4 一并处理。
+
+## Task 2 · 公司 IR 源泛化（完成）
+
+**调研（先于代码，全部真实抓取验证，UA 同 Task 1，逐个间隔 ≥1s）**：
+自选 46 只中的大市值候选逐一试探官方 newsroom/IR feed：
+
+| 结果 | 明细 |
+|---|---|
+| ✅ 采纳 5 家 | MSFT `news.microsoft.com/feed/`（robots 全开）；INTC `newsroom.intel.com/feed`（robots 全开）；BA `boeing.mediaroom.com/news-releases-statements?pagetemplate=rss`（**无 robots.txt**，HTTP 404，按惯例不设限；该 URL 是 MediaRoom 平台自身的 RSS 分发模板）；AMZN `www.aboutamazon.com/news/rss`（robots 允许，Crawl-delay 10s ≪ 900s 轮询）；GOOGL `blog.google/rss/`（robots 仅禁 /search 路径） |
+| ❌ 拒绝并记录 | MRK：`merck.com/feed/` 与 `/media/news/feed/` 均返回 200 但 **0 条目**（空壳 feed）；AMZN 旧地址 `press.aboutamazon.com/rss/news-releases.xml` 404；AMD `ir.amd.com/rss/press-releases.xml` 404、`www.amd.com/en/newsroom.rss` 连接失败；CSCO 两个候选 404；QCOM 两个候选 404；PYPL MediaRoom 模板返回 HTML 非 RSS；SONY 403 Access Denied；KO 404 |
+| ⏸ 未键入 | GRAB / SOUN / COIN / RIOT / NIO / MO 等：代码与常见英文词同形（或无已验证 feed），在拿到"grab holdings"式多词键前不进表——测试 `IrKeywordHonestyTests` 把这条规则钉死 |
+
+样本存 `tests/fixtures/ir_{microsoft_news,intel_newsroom,boeing_mediaroom,aboutamazon_news,google_blog}.rss`。
+GOOGL 特殊性已记录：blog.google 是 Google（运营公司）的官方频道，上市主体是 Alphabet Inc.；
+entity 键用 "Alphabet Inc."，关键词用 "google"/"googl"（"alphabet" 是常见词，不用）。
+
+**RED**：`company_ir_source` 不存在 → test_source_registry 整文件 ImportError
+（预期失败原因：构建器未实现）。新测试：`CompanyIrSourceBuilderTests`（行展开、
+空 symbol/公司名/关键词拒绝、http 拒绝、host 不匹配拒绝、同 publisher 双行注册表拒绝）、
+`IrKeywordHonestyTests`（真实演示 "grab" 动词误归属 + 钉死出货表无歧义常见词关键词）、
+`ShippedIrCoverageTests`（7 家 newsroom 齐全、条款一致）、
+`CompanyIrFeedFixtureTests`（真实 fixture：Boeing 标题含公司词 → ("BA",0.9)+VERIFIED；
+Google 博客标题不点名公司 → 零归属——归属从文本挣得，不因频道假定）。
+
+**GREEN**：`registry.py` 新增 `company_ir_source()` 构建器（0.95 / 900s / VERIFIED /
+OFFICIAL_ANNOUNCEMENT；首关键词=公司词，挣得 entity 归属；构造期拒绝空行）；
+Apple/NVIDIA 迁入同一张 `_COMPANY_IR_SOURCES` 表（source_id 与 mapping 逐字段保持不变，
+`ShippedRegistryTests` 与既有 apple/nvidia 断言未动仍绿）；新增 5 行已验证 feed。
+`feeds/__init__.py` 导出；README 源表格 +5 行并写明构建器规则。
+
+**变异验证**：往 GOOGL 行塞入常见词关键词 "grab" →
+`test_no_shipped_ir_keyword_is_an_ambiguous_common_word` 变红
+（`'grab' unexpectedly found in frozenset`）。恢复后全绿。
+（插曲：恢复变异时误用 `git checkout` 把未提交的 registry.py Task 2 改动一并回滚，
+已重新应用并复跑全套件确认 258 绿——教训记录：变异恢复用编辑器反向替换，不用 checkout。）
+
+**GREEN 结果**：information_layer 258 OK · analysis_api 273 OK · scripts 211 OK。
+
+**模拟器/服务端验收**：MSFT 个股页真实渲染（$495.40 实时只读，日 K/MACD/九转），
+截图 `/tmp/app_task2_stock_msft.png`。重启 analysis-api 后
+`GET /decision?symbol=MSFT&horizon=short`：无任何源失败（16 个源全部轮询成功，
+含 7 家 newsroom），citations 仍为空——周日 6 小时回看窗口内无新公告，诚实为空；
+工作日窗口配合 MSFT/INTC/BA/AMZN/GOOGL 的公告将进入证据流。
+
+**提交**：`<pending>` — feat: register verified company ir feeds。
 

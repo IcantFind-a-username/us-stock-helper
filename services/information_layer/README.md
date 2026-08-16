@@ -147,6 +147,15 @@ SEC adapter 默认最小轮询间隔为 1 秒。SEC 官方当前公平访问上�
 | `bea-news-releases` | 宏观数据 | 0.99 | 1800s | 否 |
 | `apple-newsroom` | 官方公告 | 0.95 | 900s | 否 |
 | `nvidia-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+| `microsoft-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+| `intel-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+| `boeing-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+| `amazon-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+| `google-newsroom` | 官方公告 | 0.95 | 900s | 否 |
+
+公司 newsroom 行由 `company_ir_source()` 构建器逐行声明（`_COMPANY_IR_SOURCES`）。
+只有实际抓取过、且 robots 政策已读过的 feed 才能进表；关键词必须有区分度——
+与常见英文单词同形的代码（GRAB、SOUN 等）在拿到"grab holdings"这类多词键之前不进表。
 
 注册表里没有新闻通讯社。持牌通讯社和新闻稿分发商需要合同才能自动抓取，条款不明的源一律不加：一条日后必须撤回的证据，比没有这条证据更糟，因为基于它做出的判断已经发生。`SourceKind.NEWS_WIRE` 保留枚举位，是为了将来加入时必须是一次带许可的显式动作。
 
