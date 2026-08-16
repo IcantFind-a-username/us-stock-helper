@@ -567,6 +567,9 @@ with tempfile.TemporaryDirectory() as temporary:
                 "DEVICE_AUTH_DATABASE": str(
                     home / ".us-stock-helper/state/devices.sqlite3"
                 ),
+                "ANALYSIS_API_COORDINATOR_STATE": str(
+                    home / ".us-stock-helper/state/coordinator.json"
+                ),
                 "PYTHONPATH": ":".join(
                     str(repository / relative)
                     for relative in (

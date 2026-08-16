@@ -589,6 +589,9 @@ def build_component_environment(
         environment["DEVICE_AUTH_DATABASE"] = str(
             home_path / ".us-stock-helper/state/devices.sqlite3"
         )
+        environment["ANALYSIS_API_COORDINATOR_STATE"] = str(
+            home_path / ".us-stock-helper/state/coordinator.json"
+        )
     return environment
 
 

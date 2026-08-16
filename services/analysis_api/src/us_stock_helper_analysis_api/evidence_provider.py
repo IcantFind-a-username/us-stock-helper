@@ -18,7 +18,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from pathlib import Path
+from typing import Any, Callable, Mapping, Protocol
 
 from information_layer import EvidenceEvent
 from information_layer.factors import FactorSnapshot
@@ -36,6 +37,7 @@ from information_layer.feeds import (
 from us_stock_helper_core import OHLCVBar
 
 from .cik_registry_provider import LazySecTickerRegistry
+from .coordinator_state import CoordinatorStateStore
 from .institutional_flow_provider import InstitutionalFlowReading
 
 
@@ -91,15 +93,29 @@ class FeedEvidenceProvider:
     """
 
     collector: Collector
+    # Persists the coordinator's published record after each sweep so a
+    # restart does not re-announce the whole lookback window. Optional: with
+    # no store configured the provider behaves exactly as before.
+    state_saver: Callable[[], str | None] | None = None
 
     def read_evidence(self, symbol: str) -> EvidenceRead:
         events, failures = self.collector.collect_with_failures(symbols=(symbol,))
+        self.save_state()
         return EvidenceRead(
             events=tuple(events),
             gaps=tuple(
                 f"{failure.source_id}（{failure.reason}）" for failure in failures
             ),
         )
+
+    def save_state(self) -> None:
+        """Persist the published record; a failure must not fail the read."""
+
+        if self.state_saver is None:
+            return
+        note = self.state_saver()
+        if note is not None:
+            print(note)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,17 +194,35 @@ def evidence_provider_from_environment(
     cik_registry = LazySecTickerRegistry(
         resolved_transport, user_agent_for(contact_email)
     )
+    # Restore what each feed already published, so this process start does
+    # not re-announce the whole lookback window; a missing path keeps the
+    # old single-process behavior, a malformed snapshot is rejected whole
+    # with the named reason printed where the operator's log is.
+    state_path = env.get("ANALYSIS_API_COORDINATOR_STATE", "").strip()
+    store = CoordinatorStateStore(Path(state_path)) if state_path else None
+    coordinator = None
+    if store is not None:
+        coordinator, load_note = store.load_coordinator()
+        if load_note is not None:
+            print(load_note)
+    collector = EvidenceCollector(
+        build_adapters(
+            transport=resolved_transport,
+            contact_email=contact_email,
+            cik_registry=cik_registry,
+        ),
+        coordinator=coordinator,
+        lookback_seconds=lookback,
+        stale_after_seconds=stale_after,
+        retention_seconds=retention,
+    )
     return FeedEvidenceProvider(
-        EvidenceCollector(
-            build_adapters(
-                transport=resolved_transport,
-                contact_email=contact_email,
-                cik_registry=cik_registry,
-            ),
-            lookback_seconds=lookback,
-            stale_after_seconds=stale_after,
-            retention_seconds=retention,
-        )
+        collector,
+        state_saver=(
+            (lambda: store.save(collector.coordinator))
+            if store is not None
+            else None
+        ),
     )
 
 

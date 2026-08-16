@@ -20,9 +20,10 @@ def main() -> None:
     # The same gateway instance backs both candles and the institutional-flow
     # factor: they are two reads of one loopback HTTP client, not two.
     gateway = provider_from_environment()
+    evidence = evidence_provider_from_environment()
     provider = CompositeAnalysisProvider(
         bars=gateway,
-        evidence=evidence_provider_from_environment(),
+        evidence=evidence,
         factors=factor_provider_from_environment(),
         institutional_flow=GatewayInstitutionalFlowProvider(gateway=gateway),
     )
@@ -50,6 +51,11 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        # The record is also saved after every sweep; this catches whatever
+        # happened since the last one. A crash skips it and degrades to the
+        # pre-persistence behavior rather than corrupting the file — saves
+        # are atomic (temp file + rename).
+        evidence.save_state()
 
 
 if __name__ == "__main__":

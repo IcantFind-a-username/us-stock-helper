@@ -359,5 +359,128 @@ class ProviderConfigTests(unittest.TestCase):
         self.assertEqual(provider.collector.lookback_seconds, 1800.0)
 
 
+class UniversalFeedTransport:
+    """Serves one fresh RSS item to every feed, and tickers to the registry."""
+
+    def __init__(self) -> None:
+        now = datetime.now(tz=UTC)
+        stamp = now.strftime("%a, %d %b %Y %H:%M:%S +0000")
+        self.body = (
+            "<?xml version='1.0' encoding='UTF-8'?>"
+            "<rss version='2.0'><channel>"
+            "<item><guid>shared-item-1</guid>"
+            "<title>NVIDIA supplier raises shipment forecast</title>"
+            "<description>NVDA demand improved.</description>"
+            "<link>https://news.example.test/item-1</link>"
+            f"<pubDate>{stamp}</pubDate>"
+            "</item></channel></rss>"
+        ).encode("utf-8")
+
+    def request(self, request: HttpRequest) -> HttpResponse:
+        if "company_tickers" in request.url:
+            body = (
+                b'{"0": {"cik_str": 1045810, "ticker": "NVDA",'
+                b' "title": "NVIDIA CORP"}}'
+            )
+        else:
+            body = self.body
+        return HttpResponse(
+            status_code=200,
+            headers=(),
+            body=body,
+            retrieved_at=datetime.now(tz=UTC),
+        )
+
+
+class CoordinatorPersistenceTests(unittest.TestCase):
+    """A restart must not re-announce what each feed already published.
+
+    `PollingCoordinator.snapshot()`/`from_snapshot()` existed, were locked
+    and unit-tested — and were never called outside tests. Every process
+    start therefore got an empty coordinator and re-published every item
+    still inside each feed's lookback window as brand-new, freshly
+    `available_at`-stamped evidence.
+    """
+
+    def _environment(self, path) -> dict[str, str]:
+        return {**CONTACT, "ANALYSIS_API_COORDINATOR_STATE": str(path)}
+
+    def test_a_restart_does_not_reannounce_what_was_already_published(
+        self,
+    ) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "state" / "coordinator.json"
+            transport = UniversalFeedTransport()
+
+            first = evidence_provider_from_environment(
+                self._environment(path), transport=transport
+            )
+            announced = first.read_evidence("NVDA")
+            self.assertTrue(announced.events)
+
+            second = evidence_provider_from_environment(
+                self._environment(path), transport=transport
+            )
+            replayed = second.read_evidence("NVDA")
+
+            self.assertEqual(replayed.events, ())
+
+    def test_the_snapshot_file_is_private_and_written_atomically(self) -> None:
+        import os
+        import stat
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "coordinator.json"
+            provider = evidence_provider_from_environment(
+                self._environment(path), transport=UniversalFeedTransport()
+            )
+            provider.read_evidence("NVDA")
+
+            self.assertTrue(path.exists())
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            self.assertEqual(mode, 0o600)
+            leftovers = [
+                name
+                for name in os.listdir(scratch)
+                if name != "coordinator.json"
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_a_malformed_snapshot_is_rejected_whole_with_a_named_reason(
+        self,
+    ) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from us_stock_helper_analysis_api.coordinator_state import (
+            CoordinatorStateStore,
+        )
+
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "coordinator.json"
+            path.write_text("{ this is not json", encoding="utf-8")
+
+            coordinator, note = CoordinatorStateStore(path).load_coordinator()
+
+            self.assertIsNotNone(coordinator)
+            self.assertIsNotNone(note)
+            assert note is not None
+            self.assertIn("coordinator", note)
+            # Rejected whole: the fresh coordinator remembers nothing.
+            self.assertEqual(coordinator.snapshot(), {})
+
+    def test_without_a_configured_path_behavior_is_unchanged(self) -> None:
+        provider = evidence_provider_from_environment(
+            dict(CONTACT), transport=UniversalFeedTransport()
+        )
+
+        self.assertTrue(provider.read_evidence("NVDA").events)
+
+
 if __name__ == "__main__":
     unittest.main()

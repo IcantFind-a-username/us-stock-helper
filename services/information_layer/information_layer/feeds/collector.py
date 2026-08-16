@@ -120,6 +120,19 @@ class EvidenceCollector:
         return self._adapters
 
     @property
+    def coordinator(self) -> PollingCoordinator:
+        """The published-record keeper, exposed so a host can persist it.
+
+        Snapshotting and restoring are the coordinator's own affair; this
+        module stays free of file I/O. Without an accessor the record was
+        unreachable from outside, so no process could remember across a
+        restart what its feeds had already published — and every restart
+        re-announced the whole lookback window as breaking news.
+        """
+
+        return self._coordinator
+
+    @property
     def lookback_seconds(self) -> float:
         return self._lookback.total_seconds()
 

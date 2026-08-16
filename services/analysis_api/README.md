@@ -139,6 +139,7 @@ durable local launcher fixes the LAN host/port, loopback gateway URL, and
 | `ANALYSIS_API_EVIDENCE_LOOKBACK_SECONDS` | `21600` | How far back each poll asks its sources. |
 | `ANALYSIS_API_EVIDENCE_STALE_AFTER_SECONDS` | `86400` | Age past which a cited item is marked stale. |
 | `ANALYSIS_API_EVIDENCE_RETENTION_SECONDS` | `604800` | Memory bound on collected evidence; must exceed the staleness window. |
+| `ANALYSIS_API_COORDINATOR_STATE` | unset | Path to the feed coordinator's published-record snapshot (JSON, written atomically, `0600`). Set it and a restart stops re-announcing every item still inside the lookback window; a malformed file is rejected whole with a named reason and a fresh record. The local runtime injects `~/.us-stock-helper/state/coordinator.json`. |
 | `ANALYSIS_API_BREADTH_UNIVERSE` | unset | Comma-separated US symbols (≤60) for `GET /market-brief`'s breadth driver. Unset falls back to the operator's watchlist, read live from the gateway's `GET /watchlist`; neither source leaves breadth `available: false`. |
 | `ANALYSIS_API_SECTOR_RS_SYMBOLS` | unset | Comma-separated sector-ETF symbols (≤30) for the brief's sector-RS driver. Must be set together with `ANALYSIS_API_SECTOR_RS_BENCHMARK`. |
 | `ANALYSIS_API_SECTOR_RS_BENCHMARK` | unset | Single benchmark symbol (e.g. `SPY`) for sector-RS. Must be set together with `ANALYSIS_API_SECTOR_RS_SYMBOLS`. |

@@ -236,5 +236,50 @@ decision_engine 19 OK。
 （截图 `/tmp/app_task3_dashboard.png`）。citations 仍为空——周日窗口诚实为空；
 停牌源上线后，自选股盘中停牌将以 1.0 相关度、VERIFIED 直达该股证据流。
 
-**提交**：`<pending>` — feat: add verified regulatory and agency sources。
+**提交**：`801fb29` — feat: add verified regulatory and agency sources。
+
+## Task 4 · 协调器快照持久化接线（完成）
+
+**RED**（`test_evidence_provider.CoordinatorPersistenceTests`，4 个用例首跑 2 失败 + 1 错误，
+原因全符预期）：
+- `test_a_restart_does_not_reannounce_what_was_already_published`：两次
+  `evidence_provider_from_environment()` 共享同一快照路径 + 每个 feed 都返回同一条目的
+  假传输 → 第二次仍重发 3 个事件（`(EvidenceEvent(...)×3) != ()`）——缺陷本体。
+- `test_the_snapshot_file_is_private_and_written_atomically`：无快照文件产生。
+- `test_a_malformed_snapshot_is_rejected_whole_with_a_named_reason`：
+  `coordinator_state` 模块不存在（ImportError）。
+- scripts：`ANALYSIS_API_COORDINATOR_STATE` 未注入 analysis-api 环境 → 环境字典测试红。
+
+**GREEN 改动**：
+- `information_layer/feeds/collector.py`：`EvidenceCollector.coordinator` 只读访问器
+  （information_layer 保持零文件 I/O，文件读写归 analysis_api——规格 Step 2 的取向）。
+- 新文件 `analysis_api/.../coordinator_state.py`：`CoordinatorStateStore`——
+  `load_coordinator()` 缺文件=正常首启；损坏文件**整体拒绝**并返回具名原因 + 全新协调器
+  （沿用 `from_snapshot` 的不部分加载规则）；`save()` 原子写（同目录临时文件 + rename）、
+  0600、目录 0700，失败返回具名原因但**不使当次请求失败**（崩溃降级为旧行为，不腐蚀状态）。
+- `evidence_provider.py`：读 `ANALYSIS_API_COORDINATOR_STATE`，启动时恢复协调器
+  （损坏原因 print 进 launchd 日志），每次证据扫描后保存；未配置路径时行为逐字节不变
+  （测试钉死）。`__main__.py` 停机 finally 再保存一次。
+- `scripts/local_runtime_support.py`：analysis-api 分支注入
+  `~/.us-stock-helper/state/coordinator.json`（与 DEVICE_AUTH_DATABASE 同款）。
+- `services/analysis_api/README.md` 环境变量表新增该行。
+
+**变异验证**：把装配改回 `coordinator=None`（无视恢复的协调器）→ 重启重播测试变红。
+恢复后 analysis_api 17/17 绿。
+
+**GREEN 结果**：information_layer 268 OK · analysis_api 277 OK · scripts 211 OK。
+
+**真实重启验证**：`local_runtime.py reinstall` 注入新环境变量 → `GET /decision` 200 后
+`~/.us-stock-helper/state/coordinator.json` 出现（`-rw-------` 0600，3667 字节，
+与 devices.sqlite3 同目录）→ `launchctl kickstart -k` 重启 → 第二次 `GET /decision` 200，
+快照续写，日志无"malformed"具名原因（即恢复成功）。本任务无用户可见界面改动
+（服务端状态持久化）；Dashboard 此前截图确认服务健康。
+
+**行为语义说明（诚实披露）**：持久化后，重启进程不再把回看窗口内旧条目重新宣布为新证据
+——同时意味着重启后的进程证据存量从零开始积累（旧条目不再重播即不再入库），
+直到各 feed 出现新内容。这是规格明确要求的取向（重播被定义为缺陷：available_at
+被刷新成"刚发生"，永不过期）。Franz 若希望"重启后立即恢复证据存量"，
+需要另行持久化证据事件本身（超出本规格，见拍板事项）。
+
+**提交**：`<pending>` — fix: remember what each feed already published across restarts。
 
