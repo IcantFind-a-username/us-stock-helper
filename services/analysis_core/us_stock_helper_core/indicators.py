@@ -1,7 +1,7 @@
 """Technical indicators calculated from closed point-in-time bars."""
 
 from dataclasses import dataclass
-from math import isfinite
+from math import fsum, isfinite
 from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:
@@ -34,10 +34,16 @@ def moving_average_series(
 ) -> tuple[float | None, ...]:
     """SMA at every index, ``None`` until one full window has closed."""
 
+    # fsum, not the built-in sum: plain left-to-right float accumulation
+    # rounds differently depending on which values land in the window, so
+    # the same closes can print as 101.9 in one window and
+    # 101.89999999999999 in the next -- noise, not a real distinct price.
+    # fsum is the correctly-rounded sum regardless of term order, so a
+    # window's value depends only on its contents.
     checked = _validated(values, period)
     result: list[float | None] = [None] * len(checked)
     for index in range(period - 1, len(checked)):
-        result[index] = sum(checked[index - period + 1 : index + 1]) / period
+        result[index] = fsum(checked[index - period + 1 : index + 1]) / period
     return tuple(result)
 
 

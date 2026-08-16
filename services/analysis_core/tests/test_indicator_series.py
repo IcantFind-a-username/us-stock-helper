@@ -52,6 +52,18 @@ class MovingAverageSeriesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "period"):
             moving_average_series(_closes(5), 0)
 
+    def test_window_sum_is_not_left_to_right_rounding_noise(self) -> None:
+        # sum() over this exact window order (105.3, 101.4, 97.5, 104.6,
+        # 100.7) previously landed on 101.89999999999999 rather than the
+        # mathematically exact 101.9 -- a plain left-to-right float
+        # accumulation error, not a real cross-platform difference (every
+        # summation order but this one already gave 101.9). It broke the
+        # market_gateway contract fixture, which pins byte-exact JSON.
+        series = moving_average_series(_closes(30), 5)
+
+        self.assertEqual(series[7], 101.9)
+        self.assertEqual(series[12], 100.0)
+
 
 class RsiSeriesTests(unittest.TestCase):
     def test_series_is_index_aligned_with_its_input(self) -> None:
