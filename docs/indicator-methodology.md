@@ -666,6 +666,74 @@ for; most symbols will see one ingredient, the other, or neither, and the
 factor stays proportionally weaker (or entirely absent) rather than
 backfilled to look complete.
 
+## Evidence sources (information layer registry, 2026-08-17)
+
+Every source below is a channel its publisher operates for syndication; each
+was fetched with the project's own User-Agent and its robots policy read
+before registration (captured payloads live in
+`services/information_layer/tests/fixtures/`). Reliability, cadence and
+attribution rules are declared per source in
+`information_layer/feeds/registry.py::PUBLIC_SOURCES`.
+
+### SEC EDGAR current filings (6 feeds, poll 300s, reliability 0.99, VERIFIED)
+
+`8-K`, `4`, `10-Q`, `10-K`, `SCHEDULE 13D`, `SCHEDULE 13G` — the last two are
+the codes EDGAR actually serves since its 2024 revision; the retired
+`SC 13D`/`SC 13G` queries answer "No recent filings" (the captured empty
+feeds are kept as fixtures). Attribution is by filer identity through the
+CIK→ticker registry, never by prose. **Limitations:** each Schedule 13D/13G
+produces a *pair* of entries under one accession — the holder's `(Filed by)`
+entry claims no symbol (a listed holder would otherwise swallow the subject
+issuer's event, the DaVita/Berkshire failure shape), the issuer's
+`(Subject)` entry carries the attribution. Filing titles are metadata and
+carry no sentiment; the Atom feed has no document text, so filing sentiment
+stays structurally unmeasured. Known open defect: the paired entries share a
+claim key and the coordinator re-publishes both as mutual "revisions" every
+poll (pre-dates this work; also affects Form 4; see the 2026-08-17 ledger).
+
+### Company newsrooms (7 feeds, poll 900s, reliability 0.95, VERIFIED)
+
+AAPL, NVDA, MSFT, INTC, BA, AMZN, GOOGL — declared row-by-row through
+`company_ir_source()`. Attribution is earned from the text (a release that
+never names the company gets no symbol), symbol keywords carry 0.9.
+**Limitations:** issuer-authored and therefore promotional — reliability
+describes authenticity (the company really said it), not balance. Tickers
+whose only obvious keyword doubles as a common English word (GRAB, SOUN,
+COIN, RIOT…) are deliberately absent until they have a distinctive
+multi-word key; the mis-attribution trap is pinned by test.
+
+### Nasdaq trade halts (poll 60s — the publisher's own feed declares ttl=1min; reliability 0.99, VERIFIED)
+
+A dedicated adapter (`feeds/nasdaq.py`) reads the `ndaq:*` fields because
+halt items carry neither `<guid>` nor `<link>`. The exchange names the
+halted issue itself, so attribution is 1.0 — exact like a CIK match, not a
+keyword guess. A resumption fills the same item's resumption fields and is
+published as a *revision* of the original halt. Halt notices are metadata
+and carry no sentiment. **Limitations:** Nasdaq-listed issues only (NYSE
+publishes no feed, only a CSV download); `pubDate` is date-granular, the
+precise halt moment lives in the `halt_date`/`halt_time` attributes (ET).
+
+### Agency press feeds: FDA / FTC / DOJ (poll 900s, reliability 0.99, VERIFIED)
+
+Regulator statements about third parties, so company attribution is a 0.85
+keyword guess (below the 0.9 of an issuer's own channel and the 1.0 of
+registry/exchange identity). FDA additionally maps watchlist drug
+developers (CRISPR Therapeutics, Structure Therapeutics, Merck). Agency
+prose is scored for sentiment, unlike filing metadata. **Limitations:** an
+event that names no mapped company reaches no symbol-scoped read; the DOJ
+feed really publishes future-dated planning items ("FY26 Q4 Data Due"),
+which the PIT guard rejects and counts in `future_entries_rejected`.
+
+### Deliberately absent
+
+- **News wires** (Reuters/Bloomberg class): require a commercial licence;
+  the `NEWS_WIRE` slot stays empty by policy, not oversight.
+- **OFAC / Treasury sanctions**: no RSS/Atom endpoint exists since the site
+  redesign (the 404s are recorded in the 2026-08-17 ledger), so the
+  geopolitics driver keeps its named "尚未接入" state.
+- **Merck, Cisco, Qualcomm, PayPal, Sony, AMD, Coca-Cola newsrooms**:
+  investigated and rejected — empty feed, no public feed, or access denied.
+
 ## Required gates before a signal reaches the live alert channel
 
 1. **No future data:** appending future candles must not alter historical output.

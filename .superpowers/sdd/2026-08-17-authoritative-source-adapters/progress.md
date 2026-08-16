@@ -281,5 +281,57 @@ decision_engine 19 OK。
 被刷新成"刚发生"，永不过期）。Franz 若希望"重启后立即恢复证据存量"，
 需要另行持久化证据事件本身（超出本规格，见拍板事项）。
 
-**提交**：`<pending>` — fix: remember what each feed already published across restarts。
+**提交**：`4ef2226` — fix: remember what each feed already published across restarts。
+
+## Task 5 · 证据闸门重审（**未开工，顺延，原因如下**）
+
+规格 Step 1 要求"先测量"：新源上线后统计 46 只自选的真实 `evidence_confidence` 分布。
+本次会话在周日深夜（美东周日中午后），EDGAR getcurrent、各 newsroom、机构 feed 的
+6 小时回看窗口全部为空——此时测量得到的是全零分布，正是规格自己警告的
+"tuning a gate against a starved input"。**测量必须在美股交易日窗口内做**，
+届时新源（尤其 10-Q/10-K/13D/13G 与停牌）有真实事件流。
+顺延项：Step 1 测量 → Step 2 常量命名+边界钉死 → Step 3 视测量决定是否调值。
+
+## Task 6 ·（可选）申报正文抓取：待 Franz 拍板后才动（见拍板事项）
+
+## Task 7 · 方法论 / README / roadmap / 台账收口（完成）
+
+- `docs/indicator-methodology.md` 新增 "Evidence sources" 一节：四类源的发布内容、
+  节奏、归属规则与已知局限（13D/13G 双条目归属、IR 源自营宣传属性、停牌元数据、
+  机构公告 0.85 第三方点名、DOJ 未来条目被 PIT 拒收、显式缺席的源与原因）。
+- `services/information_layer/README.md` 与 `services/analysis_api/README.md`
+  已在各任务提交内同步（源表格 +9 行、dialect 说明、`ANALYSIS_API_COORDINATOR_STATE`
+  环境变量行）；`services/README.md` 无涉源清单表述，无需改动。
+- `docs/roadmap-to-delivery.md` 阶段 6 "补齐权威源适配器" 勾选，附提交清单与未做项。
+
+## 会话收口（2026-08-17 02:00 +0800）
+
+**最终全量测试**：Python 八个包 unittest 全 OK + adviser_llm 122 passed；
+移动端 982 passed / 1 skipped；`tsc --noEmit` 干净。与开工基线一致（本轮只增测试：
+information_layer 247→268，analysis_api 273→277）。
+
+**本轮提交**：`8cfab6c`（SEC 六表格）→ `abefa25`（IR 源表）→ `801fb29`（监管/机构源）
+→ `4ef2226`（协调器快照持久化）→ 本提交（文档收口）。未 push，未建 PR。
+
+**留给 Franz 拍板的事项**（主交接文档第八节 + 本轮新发现）：
+1. （§八.1）顾问 taxonomy：具名投资人 vs 去品牌化框架。
+2. （§八.2）广度/RS 股票池是否购买/配置更宽的池子。
+3. （§八.3）云端部署时机与主机、是否走 TestFlight。
+4. （§八.4）新闻 wire 商业授权是否采购。
+5. （新）**协调器双条目重发缺陷**：Form 4 / 13D/13G 的成对条目共享 claim key，
+   每轮轮询互刷为"修订版"重发且 available_at 被刷新（影响新鲜度诚实与 stale 标记）。
+   claim key 共享是聚类的承重结构，修法需要设计取舍（如 claim key 加 CIK 维度 +
+   聚类改用 accession 维度合并），建议专门排一个小计划。
+6. （新）**重启后证据存量从零开始**：快照持久化按规格阻止重播，副作用是重启后
+   决策的证据数暂时下降，直到 feed 出现新内容。若要"重启即恢复存量"，需另行
+   持久化证据事件本身（新能力，需规格）。
+7. （新）**申报正文抓取（Task 6）**：让申报情绪可测需对 EDGAR 的请求量显著上升
+   （每份申报多一次正文抓取），是礼貌与封禁风险问题，规格明确要求先拍板。
+8. （新）**换网环境自愈**：本轮换网导致 Metro 缓存旧 IP + `apps/mobile/.env` 钉旧 IP +
+   服务端白名单挡新网段三层连环故障（已手工修复，均为本地未跟踪配置）。
+   是否要一个"换网自愈"脚本或把 app 端 URL 从 Metro hostUri 动态推导，值得决定。
+9. （新）**证据闸门测量（Task 5）**：需在美股交易日窗口内做，周末测量是饥饿输入。
+
+**下一步建议**：工作日盘中做 Task 5 的 evidence_confidence 分布测量（46 只自选），
+再决定 0.35 阈值去留；顺手在真实事件流下复核停牌/13D 源的端到端表现。
 

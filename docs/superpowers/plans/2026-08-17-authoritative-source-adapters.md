@@ -113,10 +113,10 @@ Decide with Franz whether this is worth doing before writing code. If yes: fetch
 
 ### Task 7: Methodology, README, and ledger close-out
 
-- [ ] Extend `docs/indicator-methodology.md` with each new source: what it publishes, its cadence, its attribution rule, its known limitations (e.g. 13D/13G attribution ambiguity, IR feeds being issuer-authored and therefore promotional).
-- [ ] Update `services/README.md` / `services/analysis_api/README.md` if any command or env var changed — `test_documentation.py` executes the documented command verbatim and `AllowlistDriftTests` pins the route claim, so a stale README is a red test, not a cosmetic issue.
-- [ ] Update `docs/roadmap-to-delivery.md` 阶段 6：tick 补齐权威源适配器 with the commit list, and record any source you deliberately did not add.
-- [ ] Close the ledger with the final suite counts, the simulator acceptance notes, and the open questions left for Franz.
+- [x] Extend `docs/indicator-methodology.md` with each new source: what it publishes, its cadence, its attribution rule, its known limitations (e.g. 13D/13G attribution ambiguity, IR feeds being issuer-authored and therefore promotional).
+- [x] Update `services/README.md` / `services/analysis_api/README.md` if any command or env var changed — `test_documentation.py` executes the documented command verbatim and `AllowlistDriftTests` pins the route claim, so a stale README is a red test, not a cosmetic issue.
+- [x] Update `docs/roadmap-to-delivery.md` 阶段 6：tick 补齐权威源适配器 with the commit list, and record any source you deliberately did not add.
+- [x] Close the ledger with the final suite counts, the simulator acceptance notes, and the open questions left for Franz. *(Tasks 5 and 6 remain open by design: Task 5's measurement needs a weekday market window — a weekend measurement is exactly the starved input this task warns against; Task 6 awaits Franz's decision on the added EDGAR request volume.)*
 
 ---
 
