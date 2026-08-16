@@ -5,6 +5,57 @@
 
 ---
 
+## 零、开发三原则（不满足其一，这次开发就不算完成）
+
+这三条是 Franz 明确要求的工作方式，优先于任何"看起来更快"的做法。
+
+### 原则一：**开着 iOS 模拟器，看着真实画面开发**
+
+不是写完再截图验收，而是**从开工就把模拟器面板开着**，每落地一个用户可见的改动就去看那一屏。
+
+```bash
+# 开工第一件事（不是最后一件）
+# 1) 确认 Xcode 已选好（需要 Franz 输密码，agent 不能代跑 sudo）
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+# 2) 起本地栈
+python3 scripts/local_runtime.py status && python3 scripts/local_runtime.py health
+# 3) 拿到深链接
+python3 scripts/metro_deep_link.py
+```
+
+然后用 iOS Simulator 工具：`attach` 开实时面板 → `open_url` 打开上一步的深链接 →
+`screenshot` / `tap` / `swipe` 逐屏走。移动端有 Fast Refresh，改代码即时可见；
+**改了 Python 服务要 `launchctl kickstart -k` 对应标签**，否则屏幕上还是旧行为。
+
+**为什么这条是硬性的**：本项目已经发生过两次单测全绿但界面是死代码的情况——
+13 席顾问会诊屏做好了却全 app 没有入口；顾问屏在真实模式无条件读演示 fixture，换个 symbol 就崩。
+两者都是在模拟器里点出来的，测试一个都没抓到。**测试证明逻辑对，模拟器证明用户真的能用到。**
+
+### 原则二：**TDD——测试必须先看到它变红**
+
+写实现前先写会失败的测试，**运行它，确认它以预期原因失败**，再实现到绿。
+从未变红的测试什么也没证明——历史上有两个变异体大摇大摆走过全绿测试。
+关键断言要做**变异验证**：故意把修复反转，确认测试确实变红，再改回来。
+
+### 原则三：**SDD——先有规格，再有代码；进度写进台账**
+
+每一段工作都必须有一份**计划文档**和一份**台账**，两者一起防止开发偏离：
+
+| 文件 | 作用 |
+|---|---|
+| `docs/superpowers/plans/<日期>-<名字>.md` | 规格：目标、架构、全局约束、逐任务的"先红测试→实现→验证→提交"步骤与勾选框 |
+| `.superpowers/sdd/<同名>/progress.md` | 台账：每个任务的 RED 证据、GREEN 结果、评审发现与修复、提交哈希、遗留项 |
+
+**接手时：下一段的规格已经写好了**，见
+[`docs/superpowers/plans/2026-08-17-authoritative-source-adapters.md`](../superpowers/plans/2026-08-17-authoritative-source-adapters.md)。
+按任务顺序执行，每完成一个任务就勾掉它的复选框并往台账追加一行。
+**不要自己发挥新方向**；规格与现实冲突时，先把冲突写进台账并告知 Franz，由他定夺。
+
+后续每开一段新工作，同样先写规格再动手（照抄现有两份已完成计划的结构：
+`2026-08-15-demo-parity-market-brief-and-council.md`、`2026-08-15-quant-foundations-plain-language.md`）。
+
+---
+
 ## 一、这是什么项目
 
 一个**证据优先的美股研究助手**：iOS App（Expo/React Native）+ 一组 Python 只读服务。
@@ -158,11 +209,21 @@ sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 计划文档放 `docs/superpowers/plans/`，台账放 `.superpowers/sdd/<plan-name>/progress.md`
 （该目录默认 gitignore，用 `git add -f` 入库）。
 
-### 5. 联调验收高于单测
+### 5. 联调验收高于单测（见开头原则一）
 
-单元测试全绿仍会漏掉**装配缺口**——本轮就抓到两个：13 席会诊屏做好了但**全 app 没有任何入口**
-（死代码），以及顾问屏在真实模式无条件读演示 fixture（换个 symbol 就崩）。
-两者单测都是绿的，是在模拟器里点出来的。所以**每个用户可见的任务，收尾条件是"测试绿 + 模拟器里真实看到这屏"**。
+**每个用户可见的任务，收尾条件是"测试绿 + 模拟器里真实看到这屏"**，两者缺一不可。
+台账里要写清楚这次在模拟器里看到了什么（哪一屏、什么数据、什么状态），
+"跑过测试了"不能替代"看到了"。
+
+### 6. 任务完成的定义（DoD）
+
+一个任务只有同时满足下面五条才算完成，才可以勾掉计划里的复选框：
+
+1. 先红后绿的测试存在，且 RED 的失败原因与预期一致（台账记录失败输出）；
+2. 受影响的**全部**套件绿（Python 各包 + `npm test` + `npm run typecheck`）；
+3. 用户可见的改动在**模拟器里亲眼验收过**（台账记录看到了什么）；
+4. 只用显式 pathspec 暂存本任务的文件，单独提交，信息含 `Co-Authored-By` trailer；
+5. 台账追加一行：RED 证据、GREEN 结果、模拟器验收、提交哈希、遗留项。
 
 ---
 
