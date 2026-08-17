@@ -404,3 +404,61 @@ python3 .superpowers/sdd/2026-08-17-authoritative-source-adapters/measure_eviden
 
 **新发现的拍板事项**：无新增；专项计划文档本身就是拍板材料（推荐路径 A）。
 
+
+## 续轮（2026-08-17）：双条目重发缺陷修复（专项计划路径 A，Franz 已批准继续开发）
+
+按 `docs/superpowers/plans/2026-08-17-dual-entry-filing-reannouncement.md` 的
+Option A 四任务实施，全程 fixture 驱动（`sec_current_schedule_13d.atom`，真实抓取样本）。
+
+**RED（先看到红，与计划预测逐字吻合）**：
+
+- `test_an_unchanged_feed_publishes_nothing_on_the_second_poll`：
+  第二轮轮询同一 body 发布了全部 40 条，修订号列表
+  `[2, 3, 2, 3, …] != []` —— 计划预测的互刷链原样复现。
+- `test_an_unchanged_filing_keeps_its_available_at_and_goes_stale`：
+  第二轮后存量事件 `available_at` 从 17:00 被刷新为 23:00 UTC，
+  `stale` 永不触发（PIT 诚实性受损的直接钉死）。
+- Task 3 RED（claim key 拆分后、聚类补偿前）：`40 != 20`（一份申报裂成两簇）；
+  代表评选两处 `'z-unattributed' != 'a-attributed'`（成对条目在状态/修订/可靠度/
+  置信度/时间全部并列，旧 event-id 字典序把无归属方选为代表）。
+
+**GREEN 改动**：
+
+- `feeds/sec.py` `_claim_key`：`sec|{accession}|{党方CIK}`（标题优先取条目自身 CIK；
+  无 CIK 回退角色字符串；两者皆无回退旧键；无 accession 走通用键）。每方条目
+  只与自己比对哈希，互刷终止；同方真实修订仍按同键正常走修订链。
+- `clustering.py` `_cluster_events`：第三张 owners 映射（`accession_owner`），
+  共享 `accession` 属性的事件合入一簇（仅 SEC 适配器发该属性，accession 全局唯一）。
+- `clustering.py` `_representative_sort_key`：新增"带股票归属"档位，
+  位于所有编辑性档位（状态/修订号/可靠度/置信度）之下、时间/event-id 决胜之上
+  ——全案唯一触碰评分相邻语义的点，位置本身被测试显式钉死
+  （`test_attribution_outranks_recency` + 三个"不越权"钉：不压状态/可靠度/修订号）。
+
+**变异验证（三处，全部见红后恢复）**：
+
+1. 把 `_claim_key` revert 回 `sec|{accession}` → 3 红（互刷 40 条复现、
+   available_at 被刷新、快照兼容测试 `4 != 0`）。
+2. 删除 accession 合簇 → `40 != 20` 红。
+3. 删除"带归属"档位 → 3 红（fixture 代表测试 `fdfa… != 1261…`：无归属的
+   Filed-by 条目重新当代表；两个合成代表测试同红）。
+
+**快照兼容（部署路径钉死）**：手工构造旧格式快照（`sec|{accession}` 键、
+真实内容哈希、修订号停在互刷中段的 3）→ `from_snapshot` 正常加载（键是不透明
+字符串）；恢复后首轮把窗口内每个条目**作为全新 claim（revision 0，无 revision_of）
+重发一次**，第二轮归零。测试：
+`test_an_old_format_snapshot_causes_one_bounded_reannouncement`。
+
+**GREEN 结果**：information_layer 280 OK（270→280，+10 测试）·
+decision_engine 19 OK · analysis_api 277 OK · scripts 211 OK。
+
+**提交**：`ead0bd7` — fix: stop republishing multi-party filings as fake revisions
+（仅 4 个文件：sec.py / clustering.py / test_adapters.py / test_semantic_clustering.py）。
+
+**部署须知（一次性有界重播，计划已预告）**：生产协调器快照持有旧格式 claim key
+（以及由旧键派生的 event_id）。部署本修复后的**第一轮轮询**会把回看窗口内的每个
+在场条目按新键重新宣布一次（revision 0 的全新 claim，不接旧修订链），此后恢复安静。
+这是有界的一次性重播，与此前每轮无限互刷相对；已用快照兼容测试钉死上界。
+计划 Task 4 中的"对运行栈的双重启实测"属部署时验证，本轮未运行生产栈，留待
+下次启动服务栈时顺手确认（观察首轮日志一次重播、次轮归零即可）。
+
+**未触碰**：证据闸门阈值（Task 5 需交易日测量）、移动端、roadmap 文档。
