@@ -462,3 +462,61 @@ decision_engine 19 OK · analysis_api 277 OK · scripts 211 OK。
 下次启动服务栈时顺手确认（观察首轮日志一次重播、次轮归零即可）。
 
 **未触碰**：证据闸门阈值（Task 5 需交易日测量）、移动端、roadmap 文档。
+
+## 续轮（2026-08-17）：对抗性评审发现的停牌源缺陷修复（生产回看窗口下零事件）
+
+对抗性评审复现了一个关键缺陷：Nasdaq 停牌源在**整个盘中交易时段**返回零事件——恰恰是停牌信息最要紧的时候。
+
+**缺陷本体**：feed 每条条目的 `<pubDate>` 一律钉在停牌当日 ET 零点
+（`04:00:00 GMT`/`05:00:00 GMT`，随夏令时切换），无论实际停牌发生在哪一刻
+（例如 TALK 实际 19:50 ET 停牌，`<pubDate>` 仍写 "Fri, 14 Aug 2026 04:00:00 GMT"）。
+`generic.py::_parse` 按 `updated_at < since` 过滤，生产轮询用
+`DEFAULT_LOOKBACK_SECONDS`（6 小时，`collector.py`）。ET 零点一旦落在 6 小时回看窗口外
+（任何 06:00 ET 之后的轮询皆如此），当日全部停牌被判定为"过旧"而丢弃。
+既有测试用 `since = FIXTURE_NOW − 60 天` 掩盖了这一点，从未真正跑过生产回看窗口。
+次生伤害：`published_at`/`event_time` 也被同一 bug 错误地回填到零点，最多倒填近 20 小时
+（PIT 诚实性问题）。
+
+**RED**（`services/information_layer/tests/test_adapters.py::NasdaqHaltsAdapterTests`
+新增两例，先于修复跑，复现方式与评审预测逐字吻合）：
+
+- `test_same_day_halts_survive_the_production_lookback`：用真实
+  `DEFAULT_LOOKBACK_SECONDS`（6h）+ 模拟"当日 20:00 ET"轮询捕获的 fixture
+  （`nasdaq_trade_halts.rss`，2026-08-14 当日 5 条停牌：TALK/YYAI/PFSA/GPUS/GPUS-D），
+  断言五个代码全部在场 → 首跑结果为空集，5 个代码全部缺失。
+- `test_the_event_timestamp_is_the_halt_time_not_midnight`：钉死 TALK 的真实字段
+  （`HaltDate=08/14/2026`、`HaltTime=19:50:00.000`）应产生
+  `event_time == published_at == 2026-08-14T23:50:00Z`（19:50 ET，夏令时 UTC-4）
+  → 首跑得到 `2026-08-14T04:00:00Z`（零点），与预期不符。
+
+**GREEN 改动**（仅 `feeds/nasdaq.py`）：新增 `_parse_eastern_stamp(date_text, time_text)`，
+用 `zoneinfo.ZoneInfo("America/New_York")` 把 feed 自带的 `HaltDate`（"MM/DD/YYYY"）+
+`HaltTime`（"HH:MM:SS[.ffffff]"，两种格式均见于真实样本）拼成带时区的 UTC 时间戳，
+不再依赖 `<pubDate>`。`published_at` 取停牌时刻；`updated_at` 取停牌时刻与
+`ResumptionDate`+`ResumptionTradeTime`（缺失则退 `ResumptionQuoteTime`）解析出的复牌时刻
+两者较晚者——复牌回填同一条目时，修订版的 `updated_at` 也不再被同一个零点 bug
+挡在回看窗口外。`HaltDate`/`HaltTime` 解析失败的条目按既有约定（与缺失代码/无 `<pubDate>`
+同款）整条跳过，绝不回退到不可信的 `<pubDate>`。移除因此改动而失效的 `_parse_timestamp`
+导入。
+
+**变异验证**：把 `halt_at` 的计算改回旧逻辑（用 `_parse_timestamp(pubDate)`），
+两个新测试均变红——`test_same_day_halts_survive_the_production_lookback` 复现空集，
+`test_the_event_timestamp_is_the_halt_time_not_midnight` 复现
+`2026-08-14T04:00:00Z != 2026-08-14T23:50:00Z`。恢复后全绿，diff 与提交版本零差异。
+
+**GREEN 结果**：information_layer 282 OK（280→282，+2 测试）·
+analysis_api 277 OK（未变，验证掩盖测试未被误改）。
+
+**文档同步**：`docs/indicator-methodology.md` 的 Nasdaq 停牌小节原写"`pubDate` 是
+日粒度，精确停牌时刻在 `halt_date`/`halt_time` 属性里"（描述的是修复前、依赖调用方
+自行读属性的旧行为）。已改写为如实描述修复后的行为：`published_at`/`event_time`
+直接由 `HaltDate`/`HaltTime` 合成，`updated_at` 另跟踪复牌时刻，`pubDate` 不再被信任，
+并说明了修复前的两层伤害（倒填时间戳 + 生产回看窗口内全丢）。
+
+**提交**：`3f6b67b` — fix: stamp nasdaq halts at the halt time, not midnight
+（仅 3 个文件：`feeds/nasdaq.py` / `test_adapters.py` / `docs/indicator-methodology.md`，
+未触及本任务清单之外的文件）。
+
+**未触碰**：证据闸门阈值、移动端、`generic.py`（未新增计数器字段，理由见提交内注释：
+现有 `_parse_rss` 对缺代码/缺时间戳条目本就是静默跳过而非计数上报，本次遵循同一惯例，
+未扩大改动半径到 `generic.py`）。
