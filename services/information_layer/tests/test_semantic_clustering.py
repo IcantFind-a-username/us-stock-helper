@@ -60,6 +60,133 @@ def event(
     )
 
 
+def ranked_event(
+    event_id: str,
+    *,
+    symbol_relevance: tuple[tuple[str, float], ...] = (),
+    claim_status: ClaimStatus = ClaimStatus.VERIFIED,
+    reliability: float = 0.9,
+    available_offset_minutes: int = 0,
+    revision_of: str | None = None,
+    revision_number: int = 0,
+) -> EvidenceEvent:
+    """An event whose every representative-rank input is set explicitly.
+
+    All of them share one claim key so they land in one cluster, and none is
+    a revision of another cluster member, so supersession never removes a
+    contender — the representative rank alone decides.
+    """
+
+    moment = AS_OF - timedelta(hours=1) + timedelta(
+        minutes=available_offset_minutes
+    )
+    return EvidenceEvent.create(
+        event_id=event_id,
+        claim_key="wire|shared-claim",
+        headline=f"Distinct headline for {event_id}",
+        summary="",
+        provenance=SourceProvenance(
+            source_id="feed:wire",
+            publisher_id="wire",
+            publisher_name="wire",
+            canonical_url=f"https://wire.example/{event_id}",
+            source_type="wire",
+            reliability=reliability,
+        ),
+        event_time=moment,
+        published_at=moment,
+        first_seen_at=moment,
+        available_at=moment,
+        retrieved_at=moment,
+        claim_status=claim_status,
+        sentiment=0.0,
+        sentiment_measured=False,
+        confidence=reliability,
+        symbol_relevance=symbol_relevance,
+        revision_of=revision_of,
+        revision_number=revision_number,
+    )
+
+
+class RepresentativeSelectionTests(unittest.TestCase):
+    """The representative rank orders every cluster in the system.
+
+    SEC's per-party claim keys leave both entries of one filing active in
+    one cluster, tied on status, revision, reliability, confidence and
+    timestamp — the old event-id tiebreak then fronted an arbitrary party.
+    Carrying symbol attribution now ranks ahead of the time/id tiebreaks,
+    and these pins fix exactly where in the order it sits: below every
+    editorial rank, above recency.
+    """
+
+    def _representative(self, *events: EvidenceEvent) -> str:
+        clusters = build_clusters(events, AS_OF)
+        self.assertEqual(len(clusters), 1)
+        return clusters[0].active_event_id
+
+    def test_a_symbol_attributed_event_wins_an_otherwise_exact_tie(
+        self,
+    ) -> None:
+        # The unattributed event deliberately carries the larger event id:
+        # under the old event-id tiebreak it would win.
+        winner = self._representative(
+            ranked_event("a-attributed", symbol_relevance=(("POWW", 1.0),)),
+            ranked_event("z-unattributed"),
+        )
+
+        self.assertEqual(winner, "a-attributed")
+
+    def test_attribution_outranks_recency(self) -> None:
+        # Deliberate placement, not an accident: among events tied on every
+        # editorial rank, the entry naming the stock fronts the cluster even
+        # when the unattributed one arrived later. For a filing pair both
+        # arrive in the same poll; for mixed clusters the headline should
+        # name the stock rather than merely be newest.
+        winner = self._representative(
+            ranked_event("a-attributed", symbol_relevance=(("POWW", 1.0),)),
+            ranked_event("z-unattributed", available_offset_minutes=30),
+        )
+
+        self.assertEqual(winner, "a-attributed")
+
+    def test_attribution_does_not_outrank_claim_status(self) -> None:
+        winner = self._representative(
+            ranked_event(
+                "a-attributed",
+                symbol_relevance=(("POWW", 1.0),),
+                claim_status=ClaimStatus.REPORTED,
+            ),
+            ranked_event("z-verified"),
+        )
+
+        self.assertEqual(winner, "z-verified")
+
+    def test_attribution_does_not_outrank_reliability(self) -> None:
+        winner = self._representative(
+            ranked_event(
+                "a-attributed",
+                symbol_relevance=(("POWW", 1.0),),
+                reliability=0.7,
+            ),
+            ranked_event("z-stronger", reliability=0.9),
+        )
+
+        self.assertEqual(winner, "z-stronger")
+
+    def test_attribution_does_not_outrank_a_revision(self) -> None:
+        # revision_of points outside the cluster, so supersession does not
+        # remove the contender and the rank comparison itself is what is
+        # being observed.
+        winner = self._representative(
+            ranked_event("a-attributed", symbol_relevance=(("POWW", 1.0),)),
+            ranked_event(
+                "z-revised", revision_of="offstage", revision_number=1
+            ),
+        )
+
+        self.assertEqual(winner, "z-revised")
+
+
 class HeadlineTokenTests(unittest.TestCase):
     def test_tokens_drop_case_punctuation_and_filler(self) -> None:
         left = headline_tokens("NVIDIA raises full-year revenue guidance")

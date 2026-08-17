@@ -42,12 +42,21 @@ def _cluster_events(
 
     claim_owner: dict[str, int] = {}
     hash_owner: dict[str, int] = {}
+    # An SEC filing arrives as one entry per party — (Filed by)/(Subject),
+    # (Reporting)/(Issuer) — under per-party claim keys, so the exact keys
+    # above no longer join them. The accession number the adapter records is
+    # the filing's own identity: entries sharing one are one filing.
+    accession_owner: dict[str, int] = {}
     id_owner = {item.event_id: index for index, item in enumerate(events)}
     for index, item in enumerate(events):
-        for key, owners in (
+        keys: list[tuple[str, dict[str, int]]] = [
             (item.claim_key, claim_owner),
             (item.content_hash, hash_owner),
-        ):
+        ]
+        accession = _filing_accession(item)
+        if accession:
+            keys.append((accession, accession_owner))
+        for key, owners in keys:
             if key in owners:
                 union(index, owners[key])
             else:
@@ -147,6 +156,19 @@ def _summarize_cluster(
     )
 
 
+def _filing_accession(item: EvidenceEvent) -> str | None:
+    """The regulatory filing this event is an entry of, if it declared one.
+
+    Only the SEC adapter emits the attribute, and an EDGAR accession number
+    is globally unique, so the key cannot collide across feeds.
+    """
+
+    for key, value in item.attributes:
+        if key == "accession":
+            return value
+    return None
+
+
 def _has_conflict(events: Sequence[EvidenceEvent]) -> bool:
     return (
         any(item.sentiment > 0.15 for item in events)
@@ -164,7 +186,7 @@ def _revision_sort_key(item: EvidenceEvent) -> tuple[int, datetime, str]:
 
 def _representative_sort_key(
     item: EvidenceEvent,
-) -> tuple[int, int, float, float, datetime, str]:
+) -> tuple[int, int, float, float, int, datetime, str]:
     status_rank = {
         ClaimStatus.RUMOR: 0,
         ClaimStatus.REPORTED: 1,
@@ -175,6 +197,14 @@ def _representative_sort_key(
         item.revision_number,
         item.provenance.reliability,
         item.confidence,
+        # Below every editorial rank, above the time/id tiebreaks: among
+        # otherwise-tied events the one naming a stock fronts the cluster.
+        # An SEC filing's party entries tie on everything above — both
+        # verified, revision 0, one publisher — and the metadata-only party
+        # (Filed by / Reporting) is no longer demoted as a superseded
+        # "revision", so without this rank the winner fell to event-id
+        # string order.
+        int(bool(item.symbol_relevance)),
         item.revised_at or item.available_at,
         item.event_id,
     )

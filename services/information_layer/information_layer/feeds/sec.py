@@ -118,8 +118,25 @@ class SecCurrentFilingsAdapter(GenericFeedAdapter):
         )
 
     def _claim_key(self, entry: _ParsedEntry) -> str:
+        """One claim per party of a filing, not one per filing.
+
+        EDGAR's getcurrent feed emits one entry per party — a Form 4 pairs
+        (Reporting) with (Issuer), a Schedule 13D/13G pairs (Filed by) with
+        (Subject) — sharing the accession and even the Atom <id>. Keyed by
+        accession alone, the pair collided in the coordinator's published
+        record and ping-ponged as fake "revisions" of each other on every
+        poll. The party's own CIK (title first, so it is the entry's own
+        identity, not the counterparty's) separates them; the role label is
+        the fallback when no CIK parses. The two entries still land in one
+        cluster: clustering unions events sharing an `accession` attribute.
+        """
+
         accession = self._accession(entry)
-        return f"sec|{accession}" if accession else super()._claim_key(entry)
+        if not accession:
+            return super()._claim_key(entry)
+        candidates = extract_ciks(entry.title, entry.canonical_url)
+        party = candidates[0] if candidates else filer_role(entry.title)
+        return f"sec|{accession}|{party}" if party else f"sec|{accession}"
 
     def _sentiment_text(self, entry: _ParsedEntry) -> str:
         """A filing entry is metadata, not prose.

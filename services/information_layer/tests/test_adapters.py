@@ -6,8 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 from information_layer import ClaimStatus
 from information_layer.cik_registry import CikTickerRegistry
+from information_layer.clustering import build_clusters
 from information_layer.feeds import (
+    STALE_ATTRIBUTE,
     CacheValidators,
+    EvidenceCollector,
     FeedAccessError,
     FeedConfig,
     GenericFeedAdapter,
@@ -982,6 +985,197 @@ class QuarterlyAndAnnualReportFeedTests(unittest.TestCase):
         self.assertEqual(western_digital.symbol_relevance, (("WDC", 1.0),))
         atlassian = event_with_cik(events, "0001650372")
         self.assertEqual(atlassian.symbol_relevance, (("TEAM", 1.0),))
+
+
+class DualEntryRepublicationTests(unittest.TestCase):
+    """One filing arrives as two party entries sharing one accession.
+
+    EDGAR's getcurrent feed emits a (Filed by)/(Subject) pair per Schedule
+    13D/13G — Form 4 pairs (Reporting) with (Issuer) the same way — whose
+    titles differ, so their content hashes differ. Under a claim key shared
+    by both parties the coordinator reads the pair as one claim ping-ponging
+    between two "revisions", republishing every filing on every poll while
+    it stays inside the lookback window.
+    """
+
+    def _schedule_13d_adapter(
+        self, *responses: HttpResponse
+    ) -> SecCurrentFilingsAdapter:
+        return SecCurrentFilingsAdapter(
+            form_type="SCHEDULE 13D",
+            user_agent="USStockHelper/0.1 research@example.test",
+            transport=FakeTransport(*responses),
+            cik_registry=CikTickerRegistry.from_sec_payload(OWNERSHIP_TICKERS),
+        )
+
+    def test_an_unchanged_feed_publishes_nothing_on_the_second_poll(self) -> None:
+        body = fixture_bytes("sec_current_schedule_13d.atom")
+        later = FIXTURE_NOW + timedelta(minutes=5)
+        adapter = self._schedule_13d_adapter(
+            response(body, retrieved_at=FIXTURE_NOW),
+            response(body, retrieved_at=later),
+        )
+        clock = iter([FIXTURE_NOW, later])
+        coordinator = PollingCoordinator(clock=lambda: next(clock))
+
+        first = coordinator.poll(adapter, since=FIXTURE_SINCE, until=FIXTURE_NOW)
+        second = coordinator.poll(adapter, since=FIXTURE_SINCE, until=later)
+
+        self.assertEqual(len(first.events), 40)
+        # The revision numbers are listed so a regression shows the fake
+        # 2, 3, 2, 3, … chain instead of a bare length mismatch.
+        self.assertEqual(
+            [item.revision_number for item in second.events],
+            [],
+            "an unchanged feed must publish nothing on a repeat poll",
+        )
+
+    def test_an_unchanged_filing_keeps_its_available_at_and_goes_stale(
+        self,
+    ) -> None:
+        """PIT honesty: a filing polled again is not news again.
+
+        Each republication carried the latest poll's retrieved_at as
+        available_at, and the collector's event_id upsert then moved the
+        stored copy forward: the filing always read as just-arrived, sorted
+        newest in decision ordering, and the stale marker could never fire.
+        """
+
+        body = fixture_bytes("sec_current_schedule_13d.atom")
+        later = FIXTURE_NOW + timedelta(hours=6)
+        adapter = self._schedule_13d_adapter(
+            response(body, retrieved_at=FIXTURE_NOW),
+            response(body, retrieved_at=later),
+        )
+        moment = {"now": FIXTURE_NOW}
+        collector = EvidenceCollector(
+            [adapter],
+            clock=lambda: moment["now"],
+            lookback_seconds=3 * 24 * 60 * 60.0,
+            stale_after_seconds=4 * 60 * 60.0,
+        )
+
+        first = collector.collect()
+        moment["now"] = later
+        second = collector.collect()
+
+        self.assertEqual(len(first), 40)
+        self.assertEqual(len(second), 40)
+        for item in second:
+            self.assertEqual(item.available_at, FIXTURE_NOW)
+            self.assertIn((STALE_ATTRIBUTE, "true"), item.attributes)
+
+    def test_an_old_format_snapshot_causes_one_bounded_reannouncement(
+        self,
+    ) -> None:
+        """Deploy path: snapshots written before the key split still load.
+
+        Claim keys are opaque strings to the coordinator, so the old
+        `sec|{accession}` records restore untouched. They never match a
+        per-party key, so the first poll re-announces each in-window entry
+        once, as a fresh claim rather than a fake revision of the old
+        record — a bounded, one-time replay — and the next poll is quiet.
+        """
+
+        body = fixture_bytes("sec_current_schedule_13d.atom")
+        probe = self._schedule_13d_adapter(
+            response(body, retrieved_at=FIXTURE_NOW)
+        )
+        published: dict[str, dict[str, object]] = {}
+        for item in events_for(probe):
+            accession = dict(item.attributes)["accession"]
+            # As the old coordinator left it: one record per filing, holding
+            # whichever party entry the batch processed last, mid ping-pong.
+            published[f"sec|{accession}"] = {
+                "content_hash": item.content_hash,
+                "event_id": item.event_id,
+                "revision_number": 3,
+            }
+        snapshot = {
+            "sec-current-schedule-13d": {
+                "etag": None,
+                "last_modified": None,
+                "consecutive_failures": 0,
+                "last_polled_at": None,
+                "published": published,
+            }
+        }
+
+        later = FIXTURE_NOW + timedelta(minutes=5)
+        adapter = self._schedule_13d_adapter(
+            response(body, retrieved_at=FIXTURE_NOW),
+            response(body, retrieved_at=later),
+        )
+        clock = iter([FIXTURE_NOW, later])
+        restored = PollingCoordinator.from_snapshot(
+            snapshot, clock=lambda: next(clock)
+        )
+
+        first = restored.poll(adapter, since=FIXTURE_SINCE, until=FIXTURE_NOW)
+        second = restored.poll(adapter, since=FIXTURE_SINCE, until=later)
+
+        self.assertEqual(len(first.events), 40)
+        for item in first.events:
+            self.assertEqual(item.revision_number, 0)
+            self.assertIsNone(item.revision_of)
+        self.assertEqual(second.events, ())
+
+
+class DualEntryClusteringTests(unittest.TestCase):
+    """The per-party claim key must not break what the shared key bought.
+
+    One filing's (Filed by)/(Subject) pair must still read as one story —
+    otherwise every 13D/13G and Form 4 double-counts in any cluster-level
+    view — and the party that names the stock must front the cluster, since
+    the metadata-only holder entry is no longer demoted as a superseded
+    "revision".
+    """
+
+    def _events_and_clusters(self):
+        events = events_for(
+            fixture_adapter(
+                "SCHEDULE 13D",
+                "sec_current_schedule_13d.atom",
+                tickers=OWNERSHIP_TICKERS,
+            )
+        )
+        return events, build_clusters(events, FIXTURE_NOW)
+
+    def test_the_two_party_entries_of_one_filing_form_one_cluster(self) -> None:
+        events, clusters = self._events_and_clusters()
+
+        self.assertEqual(len(events), 40)
+        self.assertEqual(len(clusters), 20)
+        for cluster in clusters:
+            self.assertEqual(len(cluster.event_ids), 2)
+            # Neither party entry is a revision of the other, so both stay
+            # active; the representative rank, not supersession, decides who
+            # fronts the cluster.
+            self.assertEqual(len(cluster.active_event_ids), 2)
+            # Both entries are one publisher saying one thing once.
+            self.assertEqual(cluster.independent_source_count, 1)
+
+    def test_the_symbol_attributed_party_fronts_its_cluster(self) -> None:
+        events, clusters = self._events_and_clusters()
+        by_id = {item.event_id: item for item in events}
+
+        attributed_clusters = 0
+        for cluster in clusters:
+            attributed = [
+                by_id[event_id]
+                for event_id in cluster.event_ids
+                if by_id[event_id].symbol_relevance
+            ]
+            if not attributed:
+                continue
+            attributed_clusters += 1
+            self.assertEqual(cluster.active_event_id, attributed[0].event_id)
+            self.assertEqual(cluster.symbol_relevance, (("POWW", 1.0),))
+        # Exactly one filing in the captured window has a registry-listed
+        # subject (Outdoor Holding / POWW); its holder entry sorts after the
+        # subject's by event id, so without the attribution rank the holder
+        # would front this cluster.
+        self.assertEqual(attributed_clusters, 1)
 
 
 class CompanyIrFeedFixtureTests(unittest.TestCase):
