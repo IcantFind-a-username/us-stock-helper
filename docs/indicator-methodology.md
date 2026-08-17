@@ -709,9 +709,19 @@ halt items carry neither `<guid>` nor `<link>`. The exchange names the
 halted issue itself, so attribution is 1.0 — exact like a CIK match, not a
 keyword guess. A resumption fills the same item's resumption fields and is
 published as a *revision* of the original halt. Halt notices are metadata
-and carry no sentiment. **Limitations:** Nasdaq-listed issues only (NYSE
-publishes no feed, only a CSV download); `pubDate` is date-granular, the
-precise halt moment lives in the `halt_date`/`halt_time` attributes (ET).
+and carry no sentiment. The feed's own `pubDate` is date-granular — stamped
+at midnight ET for every item regardless of when the halt actually
+happened — so it is never trusted for the entry's timestamp: `published_at`
+(and `event_time`) are synthesized from `ndaq:HaltDate`/`ndaq:HaltTime`
+(ET, converted to UTC), and `updated_at` additionally tracks a later
+`ndaq:ResumptionDate`/`ResumptionTradeTime` (falling back to
+`ResumptionQuoteTime`) once a resumption is filled in. Trusting `pubDate`
+previously backdated every halt by up to ~20 hours and dropped every
+same-day halt from the collector's 6-hour production lookback for any poll
+after roughly 06:00 ET — i.e. during the whole regular session. An item
+whose `HaltDate`/`HaltTime` cannot be parsed is dropped rather than
+timestamped from `pubDate`. **Limitations:** Nasdaq-listed issues only
+(NYSE publishes no feed, only a CSV download).
 
 ### Agency press feeds: FDA / FTC / DOJ (poll 900s, reliability 0.99, VERIFIED)
 

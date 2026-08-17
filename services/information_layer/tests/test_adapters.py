@@ -1300,6 +1300,58 @@ class NasdaqHaltsAdapterTests(unittest.TestCase):
         self.assertFalse(talk.sentiment_measured)
         self.assertEqual(talk.sentiment, 0.0)
 
+    def test_same_day_halts_survive_the_production_lookback(self) -> None:
+        """Adversarial-review defect: every item's <pubDate> is stamped at
+        midnight ET regardless of when the halt actually happened (e.g. TALK
+        halted at 19:50 ET on 2026-08-14 still carries
+        'Fri, 14 Aug 2026 04:00:00 GMT'). Production polls with
+        DEFAULT_LOOKBACK_SECONDS (6h), so trusting <pubDate> drops every
+        same-day halt for any poll after ~06:00 ET -- exactly the regular
+        session, when halts matter. This polls the captured fixture with the
+        real 6h window at a simulated 2026-08-14 20:00 ET (10 minutes after
+        the last halt on record that day) and expects all five same-day
+        halts to still be there.
+        """
+        from information_layer.feeds.collector import DEFAULT_LOOKBACK_SECONDS
+
+        now = datetime(2026, 8, 15, 0, 0, tzinfo=UTC)  # 2026-08-14 20:00 ET
+        since = now - timedelta(seconds=DEFAULT_LOOKBACK_SECONDS)
+
+        adapter = self._adapter(
+            FakeTransport(
+                response(fixture_bytes("nasdaq_trade_halts.rss"), retrieved_at=now)
+            )
+        )
+        events = adapter.poll(since=since, until=now).events
+
+        same_day_symbols = {
+            symbol
+            for item in events
+            for key, symbol in item.attributes
+            if key == "halt_symbol"
+        }
+        self.assertEqual(
+            same_day_symbols, {"TALK", "YYAI", "PFSA", "GPUS", "GPUS-D"}
+        )
+
+    def test_the_event_timestamp_is_the_halt_time_not_midnight(self) -> None:
+        """Pin the fix against TALK's real fixture values: pubDate reads
+        'Fri, 14 Aug 2026 04:00:00 GMT' (midnight ET) but
+        ndaq:HaltDate/ndaq:HaltTime read '08/14/2026' / '19:50:00.000' --
+        19:50 ET on 2026-08-14 (EDT, UTC-4) is 2026-08-14T23:50:00Z, almost
+        20 hours after the midnight stamp the old code trusted.
+        """
+        events = self._events()
+
+        talk = next(
+            item
+            for item in events
+            if ("halt_symbol", "TALK") in item.attributes
+        )
+        expected = datetime(2026, 8, 14, 23, 50, tzinfo=UTC)
+        self.assertEqual(talk.event_time, expected)
+        self.assertEqual(talk.published_at, expected)
+
     def test_an_unchanged_feed_is_not_reannounced(self) -> None:
         body = fixture_bytes("nasdaq_trade_halts.rss")
         adapter = self._adapter(
