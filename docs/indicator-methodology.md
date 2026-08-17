@@ -687,9 +687,17 @@ entry claims no symbol (a listed holder would otherwise swallow the subject
 issuer's event, the DaVita/Berkshire failure shape), the issuer's
 `(Subject)` entry carries the attribution. Filing titles are metadata and
 carry no sentiment; the Atom feed has no document text, so filing sentiment
-stays structurally unmeasured. Known open defect: the paired entries share a
-claim key and the coordinator re-publishes both as mutual "revisions" every
-poll (pre-dates this work; also affects Form 4; see the 2026-08-17 ledger).
+stays structurally unmeasured. Each party's entry now keys off
+`sec|{accession}|{party CIK}` rather than the bare accession, so the two
+sides of a pair (and the same split for Form 4) no longer chain onto each
+other as fake mutual "revisions" every poll — same-party updates still
+revision normally. The pair is still recognized as one story: clustering
+groups events sharing an accession into a single cluster, and the attributed
+`(Subject)` entry is preferred as that cluster's representative over its
+unattributed `(Filed by)` sibling. Fixed 2026-08-17 (`ead0bd7`); a production
+deployment's first poll after upgrading re-announces each filing still inside
+the lookback window once, bounded, as a fresh claim (not chained to the old
+key) — see the ledger for the snapshot-compatibility test that pins this.
 
 ### Company newsrooms (7 feeds, poll 900s, reliability 0.95, VERIFIED)
 

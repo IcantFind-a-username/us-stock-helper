@@ -283,6 +283,56 @@ decision_engine 19 OK。
 
 **提交**：`4ef2226` — fix: remember what each feed already published across restarts。
 
+## 续轮（2026-08-17 12:04–12:16 +0800）：Sonnet 交接开工 — 双重启验证（Task 4 遗留）
+
+按 `2026-08-17-sonnet-handoff.md` 开工检查：`git pull`（已是最新）→ 全量基线套件
+（information_layer 282 / analysis_api 277 / scripts 211 / 其余包与移动端 982/1 全绿，
+与交接文档基线一致，`npm run typecheck` 干净）→ `local_runtime.py status/health` 四组件
+running（analysis-api 经 LAN IP 401 需配对令牌，经 loopback 403 CLIENT_NOT_ALLOWED，
+均为既有白名单设计，非本轮改动）→ 模拟器已 attach（iPhone 17 Pro Max），Dashboard 截图
+确认 `休市 · 数据不足`，与美东深夜时段一致。
+
+**发现（开工即抓到）**：`analysis-api` 当时运行的进程（pid 68319）启动于本地 01:53:51
+（即 UTC 17:53），**早于** `ead0bd7`（双条目重发修复）与 `3f6b67b`（Nasdaq 时间戳修复）
+两个提交落地的时间——换句话说，联调打开的第一版 AAPL 页面实际跑的是修复前的旧代码，
+是交接文档 §七.3 "改了代码必须重启" 的活教材。这也正好是 Franz 要求的"生产栈起来后
+补做双重启验证"的由头，遂借此把两件事一起做了。
+
+**双重启验证过程**：
+
+1. 重启前记录：`coordinator.json` 全部 20 个源 `published=0`（该时段真实为空，诚实的
+   周日深夜快照），`last_polled_at` 均为 UTC 17:53:2x（旧进程启动时的首轮轮询）。
+2. 模拟器打开 `usstockhelper://stocks/AAPL`（先于重启，验证当前代码路径）→ App 内
+   "新闻与解读"卡片显示 "快照截止 2026-08-17 04:10:44 UTC"、"已触发硬性拦截：证据不足"，
+   证明 `/decision` 真实调用了 `read_evidence`；随后核对 `coordinator.json`，
+   `last_polled_at` 全部刷新为 04:10:2x–04:10:44（与请求时刻吻合，`published` 仍为 0，
+   诚实为空）——**排除了一个中途怀疑的假警报**：第一次核对文件时机比写入早了不到 1 秒，
+   看到"未更新"是检查时序问题，不是缺陷（记录以免下一个 agent 重踩同一个乌龙）。
+3. **重启 1**：`launchctl kickstart -k` analysis-api → 新 pid（12:14:48 本地启动，
+   已加载 `ead0bd7`/`3f6b67b` 修复后的代码）。stdout 日志无 "malformed" 字样
+   （即 `load_note is None`，快照按既有格式干净加载）。重开 AAPL 页触发新一轮
+   `read_evidence`：`coordinator.json` 的 `last_polled_at` **原样保持**
+   04:10:2x–04:10:44（未变），这是**正确行为**——彼时距上次轮询不足各源的
+   300s/900s 下限，节流按持久化的真实时间戳生效，没有因为进程重启就重置节流时钟
+   （若重启把 `last_polled_at` 清空或改记为"进程启动时刻"，节流会失效并立刻重新轮询
+   全部 20 个源，那才是缺陷；本次未观察到这个模式）。
+4. **重启 2**：再次 `kickstart -k` → 新 pid（12:16:00 本地）。日志同样无 "malformed"。
+   重开 AAPL 页第三次触发 `read_evidence`：`coordinator.json` 内容与重启 1 后逐字节一致
+   （20 个源 `published=0`、`last_polled_at` 全部 04:10:2x–04:10:44 未变），文件权限
+   全程 `-rw-------`（0600），`~/.us-stock-helper/state/` 目录 0700。
+5. **两次真实重启均未在日志或状态文件里出现任何重新宣布的迹象**（没有 revision 号跳变、
+   没有新 event_id、没有 `available_at` 被刷新）。
+
+**诚实的验证边界（写清楚，不夸大结论）**：本次验证证明了机制层——快照跨重启正确加载
+（无 malformed 回退）、节流时间戳不被重启重置、文件原子写/私有权限持续成立——这些正是
+`ead0bd7`/Task 4 部署路径依赖的前提。**但没有证明"重启不重新宣布已发布的申报"这条核心
+承诺本身**，因为整个验证窗口内 20 个源的 `published` 全程为 0（美东深夜/周末窗口诚实为空，
+无事可"重新宣布"）。这与 Task 5 卡住的原因同根同源：**空窗口测不出有内容的行为**。
+建议工作日盘中（届时源里会有真实 filings/公告）重复一次同样的双重启操作，
+用非零 `published` 计数复核 revision 号与 `available_at` 在重启前后保持不变。
+
+**未触碰**：证据闸门阈值、Task 6、移动端代码、任何文件清单外的生产代码。
+
 ## Task 5 · 证据闸门重审（**未开工，顺延，原因如下**）
 
 规格 Step 1 要求"先测量"：新源上线后统计 46 只自选的真实 `evidence_confidence` 分布。
@@ -291,6 +341,15 @@ decision_engine 19 OK。
 "tuning a gate against a starved input"。**测量必须在美股交易日窗口内做**，
 届时新源（尤其 10-Q/10-K/13D/13G 与停牌）有真实事件流。
 顺延项：Step 1 测量 → Step 2 常量命名+边界钉死 → Step 3 视测量决定是否调值。
+
+**复核（2026-08-17 12:16 +0800，Sonnet 交接开工检查）**：`TZ=America/New_York date`
+→ `Mon Aug 17 00:04:23 EDT 2026`——美东周一凌晨零点出头，深夜，非盘中也非盘前，
+且 20 个证据源本轮实测 `published` 全部为 0（见上一节双重启验证），与"空窗口"判断
+互相印证。维持顺延决定，**不跑测量脚本、不下任何关于阈值分布的结论**。已就绪：
+一键测量脚本 `measure_evidence_gate.py`（提交 `540b0a8`），使用方法见上文"周一使用方法"
+一节——等美股开盘（盘中或收盘后几小时内，北京时间约 21:30–04:00+1）再跑。
+**这一项按操作手册"停下来是合格的产出"处理，留给 Franz：Task 5 需要交易日窗口，
+现在还不是。**
 
 ## Task 6 ·（可选）申报正文抓取：待 Franz 拍板后才动（见拍板事项）
 
@@ -520,3 +579,35 @@ analysis_api 277 OK（未变，验证掩盖测试未被误改）。
 **未触碰**：证据闸门阈值、移动端、`generic.py`（未新增计数器字段，理由见提交内注释：
 现有 `_parse_rss` 对缺代码/缺时间戳条目本就是静默跳过而非计数上报，本次遵循同一惯例，
 未扩大改动半径到 `generic.py`）。
+
+## 续轮（2026-08-17 12:16–12:30 +0800）：Task 7 收口复核（文档滞后于后续修复，已补）
+
+上一次"Task 7 完成"记录（见上文该节）落在 `bdeaf67`，**早于** `ead0bd7`（双条目重发修复）
+与 `3f6b67b`（Nasdaq 停牌盘中失明修复）两个提交。核对后发现两处真实的文档滞后
+（不是新缺陷，是收口本身没跟上后续修复——同样属于"文档说谎是红线"的范畴）：
+
+1. `docs/indicator-methodology.md` 第 690–692 行（13D/13G 小节）仍写着
+   "Known open defect: the paired entries share a claim key and the coordinator
+   re-publishes both as mutual revisions every poll"——这件事已经在 `ead0bd7` 修好，
+   文档却还在说它是未解决的缺陷。**已改写**为如实描述修复后的行为（按方分 claim key、
+   accession 聚簇、带归属代表优先、部署期一次性有界重播），并标注修复提交号。
+   Nasdaq 小节本身在 `3f6b67b` 提交内已同步（核对确认无需再改）。
+2. `docs/roadmap-to-delivery.md` 阶段 6 小节仍把双条目重发写成"遗留缺陷……待与 Franz
+   定夺"，同样是修复前的措辞。**已改写**为登记 `ead0bd7`/`3f6b67b` 两个提交、
+   补记本轮双重启验证的结果与边界（见上一节"续轮 12:04–12:16"）。
+
+**核对未改动的文档**：`services/information_layer/README.md`、
+`services/analysis_api/README.md` 逐行核对，两个修复均未新增/更改任何命令、环境变量
+或路由声明（纯内部逻辑改动），无需改动，`test_documentation.py` 的 README 执行测试与
+`AllowlistDriftTests` 保持真实。
+
+**验证**：`MethodologyDocumentationTests`（`services/analysis_core/tests/test_trend_system.py`，
+唯一引用 `indicator-methodology.md` 的测试，断言的是成交量基线措辞，与本次改动的
+13D/13G 段落无关）单独跑绿；两处改动均为纯文档，未触及任何 `.py` 文件，未重跑全量套件
+（本轮开工基线已在会话开头跑过，全绿，见上文"续轮 12:04–12:16"节首段）。
+
+**提交**：待与本次会话其余变更（双重启验证台账、Task 5 复核记录）一并提交，
+参见下方"提交清单"。
+
+**Task 5、Task 6 仍按设计保持打开**（见各自小节）——Task 7 的收口范围是文档准确性，
+不代表这两项已完成，也不应被这次"收口"误读为"全部做完"。
