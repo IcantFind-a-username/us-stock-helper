@@ -618,18 +618,12 @@ class MoomooOpenDProviderTests(unittest.TestCase):
         self.assertEqual(
             batch.items[0]["timestamp"], "2026-07-25T15:55:00Z"
         )
-        self.assertEqual(
-            batch.items[0]["available_at"], "2026-07-25T15:55:00Z"
-        )
         self.assertFalse(batch.items[1]["complete"])
         self.assertEqual(
             batch.items[1]["timestamp"], "2026-07-25T16:00:00Z"
         )
-        self.assertEqual(
-            batch.items[1]["available_at"], "2026-07-25T16:00:00Z"
-        )
 
-    def test_candle_separates_publication_time_from_gateway_receipt(self) -> None:
+    def test_candle_available_at_reflects_receive_clock_not_bar_close(self) -> None:
         provider = MoomooOpenDProvider(
             sdk_loader=fake_sdk,
             connectivity_probe=no_op_probe,
@@ -638,10 +632,30 @@ class MoomooOpenDProviderTests(unittest.TestCase):
 
         batch = provider.candles("US.NVDA", "5m", 200)
 
-        # available_at is when the exchange published the close; received_at is
-        # when this gateway actually held the row. Collapsing the two would let
-        # a backtest act on data before it existed anywhere.
-        self.assertEqual(batch.items[0]["available_at"], "2026-07-25T15:55:00Z")
+        # item[0]'s bar closed at 15:55:00Z, strictly before the gateway's
+        # receive-clock reading (NOW = 15:56:00Z). available_at must track
+        # when the gateway actually received the row, not the bar's
+        # theoretical close time -- otherwise a replay could act on the bar
+        # a full minute before this gateway ever held it.
+        self.assertEqual(batch.items[0]["timestamp"], "2026-07-25T15:55:00Z")
+        self.assertEqual(batch.items[0]["available_at"], iso_z(NOW))
+        self.assertNotEqual(
+            batch.items[0]["available_at"], batch.items[0]["timestamp"]
+        )
+
+    def test_candle_available_at_and_received_at_match_receive_clock(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=fake_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        batch = provider.candles("US.NVDA", "5m", 200)
+
+        # Both available_at and received_at are the gateway's own
+        # receive-clock reading: the honest bound on what a replay could
+        # have known, regardless of when the bar's exchange close was.
+        self.assertEqual(batch.items[0]["available_at"], iso_z(NOW))
         self.assertEqual(batch.items[0]["received_at"], iso_z(NOW))
         for item in batch.items:
             self.assertLessEqual(item["available_at"], item["received_at"])

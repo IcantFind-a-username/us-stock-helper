@@ -510,12 +510,14 @@ class MoomooOpenDProvider:
                 "code": str(row["code"]),
                 "timeframe": timeframe,
                 "timestamp": iso_z(bar_close),
-                # When the exchange published the close, which is what a
-                # point-in-time replay may act on.
-                "available_at": iso_z(bar_close),
-                # When this gateway actually held the row. Never earlier than
-                # publication, and the honest bound on what we could have known.
-                "received_at": iso_z(max(bar_close, now)),
+                # `now` is the gateway's own receive-clock reading, taken
+                # right after the OpenD response landed. A replay must never
+                # be able to act on this row before this gateway actually
+                # held it, so available_at/received_at track the receive
+                # clock -- never the bar's theoretical close time, which can
+                # be earlier (stale data) or later (an in-progress bar).
+                "available_at": iso_z(now),
+                "received_at": iso_z(now),
                 # OpenD is queried with forward adjustment, so a corporate
                 # action rewrites every earlier price in this series.
                 "price_adjustment": "forward-adjusted",
