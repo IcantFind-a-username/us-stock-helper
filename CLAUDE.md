@@ -40,3 +40,4 @@
 - `deploy/tests`、`scripts/tests` 在 Linux 容器里会有环境性失败（launchd/fchmod/systemd 假设），不代表代码坏了，勿花 token 去"修"
 - 遇到"同一份代码、不同环境算出不同浮点值"先别急着诊断为"跨平台差异"：`sum()` 对 float 列表是从左到右累加，舍入误差只取决于求和顺序，同一顺序在任何平台上结果都相同——真正该查的是求和/累加顺序有没有变过（如从滚动增量换成整窗重算），需要顺序无关的正确舍入就用 `math.fsum()`
 - 从主线重启已合并旧 PR 的同名分支时，`git push --force-with-lease -u origin <branch>` 若本地从未 fetch 过该远端分支会报 "stale info"（无 lease 基准）；先 `git fetch origin +refs/heads/<branch>:refs/remotes/origin/<branch>` 建立 tracking ref，若仍报错就显式传 `--force-with-lease=<branch>:<远端实际 sha>`（用 `git ls-remote` 确认）
+- `adviser_llm` 的 `anthropic>=0.116` 是开放版本区间，而 `anthropic` SDK 在 1.0.0 版把传输依赖从 `httpx` 改名为 `httpx2`；测试里凡是需要构造真实 `anthropic.*Error` 异常（用于测试 `isinstance` 判断，比无脑换成内置异常更贴近真实场景）时，导入传输库要写成 `try: import httpx / except ModuleNotFoundError: import httpx2 as httpx`，不要硬编码某一个——否则测试红不红取决于 pip 这次解析到哪个 anthropic 版本，看起来像"偶发 flaky"实则是版本漂移
