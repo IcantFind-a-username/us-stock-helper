@@ -6,9 +6,10 @@
 
 ## 队列
 
-- [ ] **P0** `services/market_gateway`：K 线 `available_at` 应记录真实接收时刻，而非理论收盘时刻（roadmap 第一节指出的时序缺陷）。完成标准：新增测试证明 `available_at` 来自接收时钟；理论收盘时刻早于接收时刻的用例不再通过旧逻辑。[claude 夜间进行中]
+- [x] **P0** `services/market_gateway`：K 线 `available_at` 应记录真实接收时刻，而非理论收盘时刻（roadmap 第一节指出的时序缺陷）。完成标准：新增测试证明 `available_at` 来自接收时钟；理论收盘时刻早于接收时刻的用例不再通过旧逻辑。
   - 2026-08-15 诊断：修复代码已实现（`opend_adapter.py` `_candle_item`：`available_at`/`received_at` 均改为 `iso_z(now)`，即调用方传入的接收时钟读数，不再用 `bar_close`），新增/改写的 `test_opend_adapter.py` 三个测试单独跑全绿（含新测试 `test_candle_available_at_reflects_receive_clock_not_bar_close`，修复前会失败：期望值 `15:56:00Z` 实际拿到 `15:55:00Z`，即旧逻辑用的是理论收盘时刻）。但 `bash scripts/test_changed.sh` 对本服务不绿：`test_snapshot_contract_v3.py` 的 2 个 contract fixture 测试失败（`101.9` vs `101.89999999999999`），已用 `git stash` 验证该失败在本改动之前、`feature/iphone-demo` 合并后即存在，与 `available_at` 改动无关。故未勾掉本项，留给下一轮：先做下面新插入的 fixture-staleness 条目，再回来复核本项验收标准后勾掉。代码改动已提交在 `claude/token-quota-check-4lvpkl` 分支上，未回退。
   - 2026-08-16：阻塞它的 fixture 求和噪声条目已修复（见下方已勾掉的条目），`bash scripts/test_changed.sh` 现在对 `services/market_gateway` 全绿。下一轮：直接复核本项验收标准（`available_at` 相关测试仍绿）后勾掉，预计无需改代码。
+  - 2026-08-20 复核：`services/market_gateway/tests` 全量 187 passed（含 298 subtests），`test_opend_adapter.py` 中 `test_candle_available_at_reflects_receive_clock_not_bar_close` 等 3 个 available_at 相关测试单独跑仍绿；`opend_adapter.py` `_candle_item` 的 `available_at`/`received_at` 仍为 `iso_z(now)`。未改代码，勾掉。
 - [x] **P0** `services/market_gateway`：`test_snapshot_contract_v3.py` 的 `test_v2_snapshot_matches_the_checked_in_contract_fixture` / `test_v3_snapshot_matches_the_checked_in_contract_fixture` 对不上 `tests/fixtures/contract_snapshot_v2.json` / `v3.json`（如 `high: 101.9` vs 实际渲染出 `101.89999999999999`）。**2026-08-16 复核推翻了此前的"跨平台浮点差异"诊断**：逐字段 diff 两份 fixture 后，唯一分歧点是 `indicators.ma5.series[7]`/`[12]`，且在同一台 Linux 机器上，把窗口内 5 个 close 换一种求和顺序（`itertools.permutations`）绝大多数排列都能精确算出 `101.9`——只有 `moving_average_series` 实际用的那个从左到右的顺序会舍入成 `101.89999999999999`。即：这是 Python `sum()` 从左到右累加的舍入噪声，与平台/架构无关（IEEE754 加法在任何平台上对同一顺序结果都相同），checked-in fixture 大概率是用旧版本／不同实现（如滚动窗口增量求和）生成的，凑巧避开了这个顺序。修法：`services/analysis_core/us_stock_helper_core/indicators.py` 的 `moving_average_series` 把 `sum()` 换成 `math.fsum()`（与顺序无关的正确舍入求和），两处分歧值精确变回 `101.9`/`100.0`，无需 REGEN 任何 fixture。完成标准：`test_v2_snapshot_matches_the_checked_in_contract_fixture` / `test_v3_snapshot_matches_the_checked_in_contract_fixture` 全绿（已验证），新增 pinning 测试 `test_window_sum_is_not_left_to_right_rounding_noise`（`services/analysis_core/tests/test_indicator_series.py`）钉住该窗口值，修复前失败（`101.89999999999999 != 101.9`）。
 - [ ] **P0** `services/market_gateway`：越界/违规时序数据不得静默降级，必须显式报错或告警。完成标准：对每处静默降级点补测试，断言其抛错或产生可观测告警。
 - [ ] **P1** `apps/mobile` + `services/analysis_api`：主力/散户占比界面展示算法版本串（roadmap：四层防线唯一缺口）。完成标准：API 响应含版本字段的测试 + UI 渲染该字段的测试。
@@ -20,3 +21,4 @@
 （格式：日期 · 条目 · PR/commit · 一句话结果）
 
 - 2026-08-16 · contract fixture `101.9` vs `101.89999999999999` · `claude/token-quota-check-4lvpkl` · 推翻"跨平台浮点差异"旧诊断，实为 `moving_average_series` 用 `sum()` 从左到右累加的舍入噪声；换成 `math.fsum()` 后两份 fixture 无需 REGEN 即全绿。
+- 2026-08-20 · K 线 `available_at` 记录真实接收时刻（复核） · `claude/token-quota-check-4lvpkl` · 阻塞条件已在上一轮解除，本轮复核 `services/market_gateway` 全量测试（187 passed）及 available_at 专项测试仍绿，未改代码，勾掉。
