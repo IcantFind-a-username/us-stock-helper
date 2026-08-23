@@ -244,7 +244,12 @@ class MoomooOpenDProvider:
         items = [
             self._candle_item(row, timeframe, duration, response_at) for row in rows
         ]
-        items.sort(key=lambda item: str(item["timestamp"]))
+        for previous, current in zip(items, items[1:]):
+            if str(current["timestamp"]) <= str(previous["timestamp"]):
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "OpenD candle rows are out of chronological order",
+                )
         received_at = require_utc(self._clock(), "clock")
         return ProviderBatch("moomoo", received_at, items[-count:])
 

@@ -220,6 +220,37 @@ class PagedQuoteContext(FakeQuoteContext):
         return FakeQuoteContext.history
 
 
+class OutOfOrderHistoryQuoteContext(FakeQuoteContext):
+    history = (
+        0,
+        FakeFrame(
+            [
+                {
+                    "code": "US.NVDA",
+                    "time_key": "2026-07-25 11:55:00",
+                    "open": 173.4,
+                    "high": 174.2,
+                    "low": 173.0,
+                    "close": 174.0,
+                    "volume": 100,
+                    "turnover": 100_000.0,
+                },
+                {
+                    "code": "US.NVDA",
+                    "time_key": "2026-07-25 11:50:00",
+                    "open": 172.0,
+                    "high": 174.0,
+                    "low": 171.5,
+                    "close": 173.4,
+                    "volume": 1000,
+                    "turnover": 1_000_000.0,
+                },
+            ]
+        ),
+        None,
+    )
+
+
 class LocalizedGroupQuoteContext(FakeQuoteContext):
     def get_user_security_group(
         self,
@@ -402,6 +433,12 @@ def fake_sdk() -> object:
 def paged_sdk() -> object:
     sdk = fake_sdk()
     sdk.OpenQuoteContext = PagedQuoteContext
+    return sdk
+
+
+def out_of_order_history_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = OutOfOrderHistoryQuoteContext
     return sdk
 
 
@@ -699,6 +736,20 @@ class MoomooOpenDProviderTests(unittest.TestCase):
             [item["timestamp"] for item in batch.items],
             ["2026-07-25T15:55:00Z", "2026-07-25T16:00:00Z"],
         )
+
+    def test_candles_raise_when_provider_rows_are_out_of_chronological_order(
+        self,
+    ) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=out_of_order_history_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.candles("US.NVDA", "5m", 2)
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
 
     def test_provider_error_categories_are_stable_and_sanitized(self) -> None:
         cases = {
