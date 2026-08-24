@@ -337,6 +337,44 @@ class MismatchedFlowCodeQuoteContext(FakeQuoteContext):
     )
 
 
+class OutOfOrderCapitalFlowQuoteContext(FakeQuoteContext):
+    flow = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.flow[1].records[0],
+                    "capital_flow_item_time": "2026-07-25 11:54:00",
+                },
+                {
+                    **FakeQuoteContext.flow[1].records[0],
+                    "capital_flow_item_time": "2026-07-25 11:50:00",
+                },
+            ]
+        ),
+    )
+
+
+class OutOfOrderInstitutionalQuoteContext(FakeQuoteContext):
+    institutional = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.institutional[1].records[0],
+                    "update_time_str": "2026-02-15 10:00:00",
+                },
+                {
+                    **FakeQuoteContext.institutional[1].records[0],
+                    "period_text": "2025/Q4",
+                    "update_time_str": "2026-05-16 10:00:00",
+                },
+            ],
+            attrs={"next_key": "-1"},
+        ),
+    )
+
+
 class PagedInstitutionalContext(FakeQuoteContext):
     def get_shareholders_institutional(
         self,
@@ -462,6 +500,18 @@ def cross_utc_session_sdk() -> object:
 def mismatched_flow_code_sdk() -> object:
     sdk = fake_sdk()
     sdk.OpenQuoteContext = MismatchedFlowCodeQuoteContext
+    return sdk
+
+
+def out_of_order_capital_flow_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = OutOfOrderCapitalFlowQuoteContext
+    return sdk
+
+
+def out_of_order_institutional_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = OutOfOrderInstitutionalQuoteContext
     return sdk
 
 
@@ -640,6 +690,20 @@ class MoomooOpenDProviderTests(unittest.TestCase):
             raised.exception.code,
             ErrorCode.MALFORMED_PROVIDER_DATA,
         )
+
+    def test_capital_flow_raises_when_provider_rows_are_out_of_chronological_order(
+        self,
+    ) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=out_of_order_capital_flow_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.capital_flow("US.NVDA")
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
 
     def test_adapter_marks_only_closed_candles_complete(self) -> None:
         provider = MoomooOpenDProvider(
@@ -860,6 +924,20 @@ class MoomooOpenDProviderTests(unittest.TestCase):
             item["source"],
             "moomoo-delayed-institutional-disclosure",
         )
+
+    def test_institutional_holdings_raise_when_provider_rows_are_out_of_chronological_order(
+        self,
+    ) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=out_of_order_institutional_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.institutional_holdings("US.NVDA")
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
 
     def test_institutional_holdings_follow_dataframe_next_key(self) -> None:
         provider = MoomooOpenDProvider(

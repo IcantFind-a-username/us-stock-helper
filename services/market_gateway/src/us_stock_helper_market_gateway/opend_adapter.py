@@ -290,7 +290,12 @@ class MoomooOpenDProvider:
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "OpenD capital-flow response is malformed",
                 ) from exc
-        items.sort(key=lambda item: str(item["timestamp"]))
+        for previous, current in zip(items, items[1:]):
+            if str(current["timestamp"]) <= str(previous["timestamp"]):
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "OpenD capital-flow rows are out of chronological order",
+                )
         return ProviderBatch("moomoo", received_at, items)
 
     def capital_distribution(self, code: str) -> ProviderBatch:
@@ -391,7 +396,12 @@ class MoomooOpenDProvider:
                     ErrorCode.MALFORMED_PROVIDER_DATA,
                     "OpenD institutional disclosure is malformed",
                 ) from exc
-        items.sort(key=lambda item: str(item["available_at"]), reverse=True)
+        for previous, current in zip(items, items[1:]):
+            if str(current["available_at"]) >= str(previous["available_at"]):
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "OpenD institutional disclosure rows are out of chronological order",
+                )
         received_at = require_utc(self._clock(), "clock")
         return ProviderBatch("moomoo", received_at, items)
 
