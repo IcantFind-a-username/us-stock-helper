@@ -68,6 +68,13 @@ export function ParticipationCard({ bars }: ParticipationCardProps) {
           ? `主力代理 ${(latestAvailable.mainShare! * 100).toFixed(1)}% · 散户代理 ${(latestAvailable.retailShare! * 100).toFixed(1)}%`
           : "暂无可用活动占比"}
       </Text>
+      {latestAvailable ? (
+        <Text
+          style={styles.methodVersion}
+          testID="participation-method-version">
+          算法版本 {latestAvailable.methodVersion}
+        </Text>
+      ) : null}
       {/* The proxy caption lives in the screen's disclosure now: one card
           repeating it under every chart is what buried the numbers. */}
       {missing.length ? (
@@ -120,6 +127,7 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     fontWeight: "800",
   },
+  methodVersion: { color: colors.muted, fontSize: 11 },
   note: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   uncertainty: { color: colors.muted, fontSize: 12, lineHeight: 18 },
 });

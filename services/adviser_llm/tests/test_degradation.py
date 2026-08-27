@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 
 import anthropic
-import httpx
+
+try:
+    import httpx  # anthropic < 1.0 depends on httpx for its transport
+except ModuleNotFoundError:  # anthropic >= 1.0 renamed the dependency to httpx2
+    import httpx2 as httpx  # type: ignore[import-not-found,no-redef]
 
 from adviser_llm import (
     AdviserLlm,

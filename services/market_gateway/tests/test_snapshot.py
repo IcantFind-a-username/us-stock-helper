@@ -288,6 +288,15 @@ class StockSnapshotTests(unittest.TestCase):
         reasons = {bar["missingReason"] for bar in response["participationBars"]}
         self.assertEqual(reasons, {"capital flow unavailable"})
 
+    def test_participation_bars_carry_the_algorithm_version_string(self) -> None:
+        # 主力/散户占比是代理信号，不得冒充机构持仓：every bar must be
+        # traceable to the algorithm version that produced it, live or not.
+        response = self.service.stock_snapshot("NVDA", "5m", 200)
+
+        self.assertTrue(response["participationBars"])
+        for bar in response["participationBars"]:
+            self.assertEqual(bar["methodVersion"], "order-size-activity-share-v1")
+
     def test_the_cutoff_guard_does_not_depend_on_upstream_wording(self) -> None:
         # The guard must be an explicit precondition here, not a search for the
         # word "cutoff" in someone else's exception message: rewording upstream

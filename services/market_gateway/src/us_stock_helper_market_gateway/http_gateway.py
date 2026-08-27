@@ -26,6 +26,7 @@ _PATHS = {
     "/capital-flow",
     "/capital-distribution",
     "/institutional-holdings",
+    "/options-flow",
 }
 _STATUS_BY_ERROR = {
     ErrorCode.INVALID_ARGUMENT.value: 400,
@@ -217,6 +218,7 @@ class GatewayApplication:
             "/capital-flow",
             "/capital-distribution",
             "/institutional-holdings",
+            "/options-flow",
         }:
             symbol = self._one(query, "symbol")
             assert symbol is not None
@@ -224,6 +226,8 @@ class GatewayApplication:
                 return self._service.capital_flow(symbol)
             if path == "/capital-distribution":
                 return self._service.capital_distribution(symbol)
+            if path == "/options-flow":
+                return self._service.options_flow(symbol)
             return self._service.institutional_holdings(symbol)
         symbol = self._one(query, "symbol")
         assert symbol is not None

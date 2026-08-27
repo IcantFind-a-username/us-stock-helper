@@ -382,13 +382,14 @@ class DegradationTests(unittest.TestCase):
                 self.assertTrue(result[key]["reason"])
 
     def test_a_timeout_degrades_explicitly(self) -> None:
-        import anthropic
-        import httpx
-
-        def timeout() -> anthropic.APITimeoutError:
-            return anthropic.APITimeoutError(
-                request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-            )
+        # The degradation boundary (service.py, adviser_provider.py) catches
+        # a bare `except Exception`, so any raised exception exercises the
+        # same path a real anthropic.APITimeoutError would. analysis_api's
+        # `dependencies = []` is a deliberate boundary (only adviser_llm may
+        # depend on the anthropic SDK) — importing anthropic/httpx here made
+        # this test's pass/fail depend on whatever pip happened to resolve.
+        def timeout() -> TimeoutError:
+            return TimeoutError("simulated provider timeout")
 
         adviser = provider_with(parse=[timeout()], stream=[timeout()])
 

@@ -125,6 +125,22 @@ class FakeQuoteContext:
             ]
         ),
     )
+    options = (
+        0,
+        FakeFrame(
+            [
+                {
+                    "code": "US.NVDA",
+                    "option_code": "US.NVDA260116C180000",
+                    "strike_price": 180.0,
+                    "strike_time": "2026-01-16",
+                    "option_type": "call",
+                    "volume": 4_500.0,
+                    "open_interest": 12_000.0,
+                }
+            ]
+        ),
+    )
     institutional = (
         0,
         FakeFrame(
@@ -186,6 +202,9 @@ class FakeQuoteContext:
     ) -> tuple[int, object]:
         return self.institutional
 
+    def get_option_chain(self, stock_code: str) -> tuple[int, object]:
+        return self.options
+
     def close(self) -> None:
         return None
 
@@ -218,6 +237,37 @@ class PagedQuoteContext(FakeQuoteContext):
                 b"next",
             )
         return FakeQuoteContext.history
+
+
+class OutOfOrderHistoryQuoteContext(FakeQuoteContext):
+    history = (
+        0,
+        FakeFrame(
+            [
+                {
+                    "code": "US.NVDA",
+                    "time_key": "2026-07-25 11:55:00",
+                    "open": 173.4,
+                    "high": 174.2,
+                    "low": 173.0,
+                    "close": 174.0,
+                    "volume": 100,
+                    "turnover": 100_000.0,
+                },
+                {
+                    "code": "US.NVDA",
+                    "time_key": "2026-07-25 11:50:00",
+                    "open": 172.0,
+                    "high": 174.0,
+                    "low": 171.5,
+                    "close": 173.4,
+                    "volume": 1000,
+                    "turnover": 1_000_000.0,
+                },
+            ]
+        ),
+        None,
+    )
 
 
 class LocalizedGroupQuoteContext(FakeQuoteContext):
@@ -292,6 +342,20 @@ class CrossUtcSessionQuoteContext(FakeQuoteContext):
     )
 
 
+class MismatchedOptionsCodeQuoteContext(FakeQuoteContext):
+    options = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.options[1].records[0],
+                    "code": "US.TSLA",
+                }
+            ]
+        ),
+    )
+
+
 class MismatchedFlowCodeQuoteContext(FakeQuoteContext):
     flow = (
         0,
@@ -302,6 +366,44 @@ class MismatchedFlowCodeQuoteContext(FakeQuoteContext):
                     "code": "US.TSLA",
                 }
             ]
+        ),
+    )
+
+
+class OutOfOrderCapitalFlowQuoteContext(FakeQuoteContext):
+    flow = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.flow[1].records[0],
+                    "capital_flow_item_time": "2026-07-25 11:54:00",
+                },
+                {
+                    **FakeQuoteContext.flow[1].records[0],
+                    "capital_flow_item_time": "2026-07-25 11:50:00",
+                },
+            ]
+        ),
+    )
+
+
+class OutOfOrderInstitutionalQuoteContext(FakeQuoteContext):
+    institutional = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.institutional[1].records[0],
+                    "update_time_str": "2026-02-15 10:00:00",
+                },
+                {
+                    **FakeQuoteContext.institutional[1].records[0],
+                    "period_text": "2025/Q4",
+                    "update_time_str": "2026-05-16 10:00:00",
+                },
+            ],
+            attrs={"next_key": "-1"},
         ),
     )
 
@@ -405,6 +507,12 @@ def paged_sdk() -> object:
     return sdk
 
 
+def out_of_order_history_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = OutOfOrderHistoryQuoteContext
+    return sdk
+
+
 def localized_group_sdk() -> object:
     sdk = fake_sdk()
     sdk.OpenQuoteContext = LocalizedGroupQuoteContext
@@ -425,6 +533,24 @@ def cross_utc_session_sdk() -> object:
 def mismatched_flow_code_sdk() -> object:
     sdk = fake_sdk()
     sdk.OpenQuoteContext = MismatchedFlowCodeQuoteContext
+    return sdk
+
+
+def mismatched_options_code_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = MismatchedOptionsCodeQuoteContext
+    return sdk
+
+
+def out_of_order_capital_flow_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = OutOfOrderCapitalFlowQuoteContext
+    return sdk
+
+
+def out_of_order_institutional_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = OutOfOrderInstitutionalQuoteContext
     return sdk
 
 
@@ -604,6 +730,49 @@ class MoomooOpenDProviderTests(unittest.TestCase):
             ErrorCode.MALFORMED_PROVIDER_DATA,
         )
 
+    def test_capital_flow_raises_when_provider_rows_are_out_of_chronological_order(
+        self,
+    ) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=out_of_order_capital_flow_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.capital_flow("US.NVDA")
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
+
+    def test_options_flow_returns_normalized_raw_contract_fields(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=fake_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        flow = provider.options_flow("US.NVDA")
+
+        self.assertEqual(flow.items[0]["available_at"], "2026-07-25T15:56:00Z")
+        self.assertEqual(flow.items[0]["contract_code"], "US.NVDA260116C180000")
+        self.assertEqual(flow.items[0]["strike"], 180.0)
+        self.assertEqual(flow.items[0]["expiry"], "2026-01-16")
+        self.assertEqual(flow.items[0]["option_type"], "call")
+        self.assertEqual(flow.items[0]["volume"], 4_500.0)
+        self.assertEqual(flow.items[0]["open_interest"], 12_000.0)
+
+    def test_options_flow_rejects_provider_row_code_mismatch(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=mismatched_options_code_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.options_flow("US.NVDA")
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
+
     def test_adapter_marks_only_closed_candles_complete(self) -> None:
         provider = MoomooOpenDProvider(
             sdk_loader=fake_sdk,
@@ -699,6 +868,20 @@ class MoomooOpenDProviderTests(unittest.TestCase):
             [item["timestamp"] for item in batch.items],
             ["2026-07-25T15:55:00Z", "2026-07-25T16:00:00Z"],
         )
+
+    def test_candles_raise_when_provider_rows_are_out_of_chronological_order(
+        self,
+    ) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=out_of_order_history_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.candles("US.NVDA", "5m", 2)
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
 
     def test_provider_error_categories_are_stable_and_sanitized(self) -> None:
         cases = {
@@ -809,6 +992,20 @@ class MoomooOpenDProviderTests(unittest.TestCase):
             item["source"],
             "moomoo-delayed-institutional-disclosure",
         )
+
+    def test_institutional_holdings_raise_when_provider_rows_are_out_of_chronological_order(
+        self,
+    ) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=out_of_order_institutional_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.institutional_holdings("US.NVDA")
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
 
     def test_institutional_holdings_follow_dataframe_next_key(self) -> None:
         provider = MoomooOpenDProvider(
