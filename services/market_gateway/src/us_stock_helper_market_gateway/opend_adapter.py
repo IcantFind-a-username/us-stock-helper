@@ -333,6 +333,40 @@ class MoomooOpenDProvider:
         received_at = require_utc(self._clock(), "clock")
         return ProviderBatch("moomoo", received_at, items)
 
+    def options_flow(self, code: str) -> ProviderBatch:
+        with self._quote_context() as (sdk, context):
+            method = self._quote_capability(context, "get_option_chain")
+            ret, payload = self._invoke_optional(method, code)
+            self._require_ok(sdk, ret, payload)
+            rows = self._records(payload)
+        received_at = require_utc(self._clock(), "clock")
+        items = []
+        for row in rows:
+            if str(row.get("code", code)) != code:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "OpenD options-chain row does not match the requested code",
+                )
+            try:
+                items.append(
+                    {
+                        "code": code,
+                        "available_at": iso_z(received_at),
+                        "contract_code": str(row["option_code"]),
+                        "strike": float(row["strike_price"]),
+                        "expiry": str(row["strike_time"]),
+                        "option_type": str(row["option_type"]),
+                        "volume": float(row.get("volume", 0.0)),
+                        "open_interest": float(row.get("open_interest", 0.0)),
+                    }
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "OpenD options-chain response is malformed",
+                ) from exc
+        return ProviderBatch("moomoo", received_at, items)
+
     def institutional_holdings(self, code: str) -> ProviderBatch:
         rows: list[dict[str, Any]] = []
         with self._quote_context() as (sdk, context):

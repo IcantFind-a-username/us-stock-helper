@@ -135,6 +135,22 @@ class FakeProvider:
                 }
             ],
         )
+        self.options_flow_result = ProviderBatch(
+            source="moomoo",
+            received_at=NOW - timedelta(seconds=1),
+            items=[
+                {
+                    "code": "US.NVDA",
+                    "available_at": "2026-07-25T03:59:00+00:00",
+                    "contract_code": "US.NVDA260116C180000",
+                    "strike": 180.0,
+                    "expiry": "2026-01-16",
+                    "option_type": "call",
+                    "volume": 4_500.0,
+                    "open_interest": 12_000.0,
+                }
+            ],
+        )
 
     def health(self) -> SessionHealth:
         return self.health_result
@@ -156,6 +172,9 @@ class FakeProvider:
 
     def institutional_holdings(self, code: str) -> ProviderBatch:
         return self.institutional_result
+
+    def options_flow(self, code: str) -> ProviderBatch:
+        return self.options_flow_result
 
 
 class IndependentProvider(FakeProvider):
@@ -640,6 +659,32 @@ class MarketGatewayServiceTests(unittest.TestCase):
         self.assertEqual(item["availableAt"], "2026-05-16T14:00:00Z")
         self.assertEqual(item["source"], "moomoo-delayed-institutional-disclosure")
         self.assertLess(item["reportedAt"], item["availableAt"])
+
+    def test_options_flow_returns_normalized_raw_contract_fields(self) -> None:
+        response = self.service.options_flow("NVDA")
+
+        self.assertEqual(response["session"], "healthy")
+        self.assertEqual(response["symbol"], "NVDA")
+        self.assertEqual(response["semantics"], "raw-options-contract-fields")
+        item = response["items"][0]
+        self.assertEqual(item["contractCode"], "US.NVDA260116C180000")
+        self.assertEqual(item["strike"], 180.0)
+        self.assertEqual(item["expiry"], "2026-01-16")
+        self.assertEqual(item["optionType"], "call")
+        self.assertEqual(item["volume"], 4_500.0)
+        self.assertEqual(item["openInterest"], 12_000.0)
+
+    def test_options_flow_rejects_a_row_available_after_the_decision_cutoff(
+        self,
+    ) -> None:
+        self.provider.options_flow_result.items[0]["available_at"] = (
+            NOW + timedelta(seconds=5)
+        ).isoformat()
+
+        response = self.service.options_flow("NVDA")
+
+        self.assertEqual(response["session"], "malformed")
+        self.assertEqual(response["items"], [])
 
     def test_unsupported_provider_capability_is_explicit(self) -> None:
         def unsupported(code: str) -> ProviderBatch:

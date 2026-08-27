@@ -10,8 +10,8 @@ brokerage context, order endpoint, or order-capable route.
 - `OpenQuoteContext` is the only OpenD context constructed.
 - The HTTP allowlist is exactly `GET /health`, `/watchlist`, `/quotes`,
   `/candles`, `/stock-snapshot`, `/v2/stock-snapshot`, `/v3/stock-snapshot`,
-  `/capital-flow`, `/capital-distribution`, and `/institutional-holdings`; write
-  methods fail closed.
+  `/capital-flow`, `/capital-distribution`, `/institutional-holdings`, and
+  `/options-flow`; write methods fail closed.
 - A response can use `session: "healthy"` only when the OpenD health check and
   the just-received provider batch are fresh and identify `source: "moomoo"`.
 - Every timestamp returned to the app is timezone-aware UTC.
@@ -19,6 +19,9 @@ brokerage context, order endpoint, or order-capable route.
 - Capital flow and order-size distribution carry
   `institutionalIdentity: false`. They are large-order/transaction-size
   proxies, not proof that an institution bought or sold.
+- Options flow (`/options-flow`) returns raw per-contract fields (strike,
+  expiry, type, volume, open interest) with no anomaly-detection logic; it is
+  a pass-through of `OpenQuoteContext`'s option chain, never `TradeContext`.
 - Institutional holdings are delayed disclosures. Every row preserves separate
   `reportedAt` and `availableAt` timestamps plus its disclosure source.
   `reportedAtBasis: "reporting-period-end"` makes clear that OpenD supplies a
@@ -128,6 +131,8 @@ curl --fail --silent --show-error \
   'http://127.0.0.1:8765/capital-distribution?symbol=NVDA'
 curl --fail --silent --show-error \
   'http://127.0.0.1:8765/institutional-holdings?symbol=NVDA'
+curl --fail --silent --show-error \
+  'http://127.0.0.1:8765/options-flow?symbol=NVDA'
 ```
 
 ## Explicit iPhone LAN mode

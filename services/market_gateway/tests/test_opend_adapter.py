@@ -125,6 +125,22 @@ class FakeQuoteContext:
             ]
         ),
     )
+    options = (
+        0,
+        FakeFrame(
+            [
+                {
+                    "code": "US.NVDA",
+                    "option_code": "US.NVDA260116C180000",
+                    "strike_price": 180.0,
+                    "strike_time": "2026-01-16",
+                    "option_type": "call",
+                    "volume": 4_500.0,
+                    "open_interest": 12_000.0,
+                }
+            ]
+        ),
+    )
     institutional = (
         0,
         FakeFrame(
@@ -185,6 +201,9 @@ class FakeQuoteContext:
         num: int | None = None,
     ) -> tuple[int, object]:
         return self.institutional
+
+    def get_option_chain(self, stock_code: str) -> tuple[int, object]:
+        return self.options
 
     def close(self) -> None:
         return None
@@ -317,6 +336,20 @@ class CrossUtcSessionQuoteContext(FakeQuoteContext):
                 {
                     **FakeQuoteContext.flow[1].records[0],
                     "capital_flow_item_time": "2026-07-24 23:54:00",
+                }
+            ]
+        ),
+    )
+
+
+class MismatchedOptionsCodeQuoteContext(FakeQuoteContext):
+    options = (
+        0,
+        FakeFrame(
+            [
+                {
+                    **FakeQuoteContext.options[1].records[0],
+                    "code": "US.TSLA",
                 }
             ]
         ),
@@ -500,6 +533,12 @@ def cross_utc_session_sdk() -> object:
 def mismatched_flow_code_sdk() -> object:
     sdk = fake_sdk()
     sdk.OpenQuoteContext = MismatchedFlowCodeQuoteContext
+    return sdk
+
+
+def mismatched_options_code_sdk() -> object:
+    sdk = fake_sdk()
+    sdk.OpenQuoteContext = MismatchedOptionsCodeQuoteContext
     return sdk
 
 
@@ -702,6 +741,35 @@ class MoomooOpenDProviderTests(unittest.TestCase):
 
         with self.assertRaises(GatewayError) as raised:
             provider.capital_flow("US.NVDA")
+
+        self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
+
+    def test_options_flow_returns_normalized_raw_contract_fields(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=fake_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        flow = provider.options_flow("US.NVDA")
+
+        self.assertEqual(flow.items[0]["available_at"], "2026-07-25T15:56:00Z")
+        self.assertEqual(flow.items[0]["contract_code"], "US.NVDA260116C180000")
+        self.assertEqual(flow.items[0]["strike"], 180.0)
+        self.assertEqual(flow.items[0]["expiry"], "2026-01-16")
+        self.assertEqual(flow.items[0]["option_type"], "call")
+        self.assertEqual(flow.items[0]["volume"], 4_500.0)
+        self.assertEqual(flow.items[0]["open_interest"], 12_000.0)
+
+    def test_options_flow_rejects_provider_row_code_mismatch(self) -> None:
+        provider = MoomooOpenDProvider(
+            sdk_loader=mismatched_options_code_sdk,
+            connectivity_probe=no_op_probe,
+            clock=lambda: NOW,
+        )
+
+        with self.assertRaises(GatewayError) as raised:
+            provider.options_flow("US.NVDA")
 
         self.assertEqual(raised.exception.code, ErrorCode.MALFORMED_PROVIDER_DATA)
 
