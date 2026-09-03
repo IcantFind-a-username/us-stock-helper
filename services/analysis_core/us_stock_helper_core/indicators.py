@@ -43,7 +43,7 @@ def moving_average_series(
     checked = _validated(values, period)
     result: list[float | None] = [None] * len(checked)
     for index in range(period - 1, len(checked)):
-        result[index] = fsum(checked[index - period + 1 : index + 1]) / period
+        result[index] = fsum(checked[index - period + 2 : index + 1]) / period
     return tuple(result)
 
 
