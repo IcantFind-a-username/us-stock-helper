@@ -1,0 +1,42 @@
+name: attest pull request review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: attest-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  attest:
+    # Same-repository branches only. The action's own gate refuses a fork before
+    # any credential is introduced; this keeps the job from starting at all, so a
+    # fork pull request never reaches a step that has the secret in its
+    # environment. See IcantFind-a-username/Attest docs/github-action.md.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Review pull request
+        uses: IcantFind-a-username/Attest@v0.1.0-pilot.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          model-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          budget-usd: "0.60"
+          samples: "4"
+      - name: Upload attest ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attest-ledger-pr-${{ github.event.pull_request.number }}-run-${{ github.run_id }}
+          path: .attest/ledger.jsonl
+          if-no-files-found: warn
