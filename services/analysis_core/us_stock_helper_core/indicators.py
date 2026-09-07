@@ -56,10 +56,8 @@ def moving_average(values: Sequence[float], period: int) -> float | None:
 
 def ema_series(values: Sequence[float], period: int) -> tuple[float, ...]:
     checked = _validated(values, period)
-    if not checked:
-        return ()
     multiplier = 2.0 / (period + 1.0)
-    result = [checked[0]]
+    result: list[float] = [checked[0]]
     for value in checked[1:]:
         result.append((value - result[-1]) * multiplier + result[-1])
     return tuple(result)
