@@ -27,10 +27,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: Review pull request
-        uses: IcantFind-a-username/Attest@v0.1.0-rc.2
+        uses: IcantFind-a-username/Attest@v0.1.0-pilot.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           model-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          budget-usd: "0.60"
+          samples: "4"
       - name: Upload attest ledger
         if: always()
         uses: actions/upload-artifact@v4
