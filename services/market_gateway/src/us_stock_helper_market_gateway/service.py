@@ -175,6 +175,72 @@ class MarketGatewayService:
         )
         return response
 
+    def _normalize_options_flow(
+        self,
+        items: list[dict[str, Any]],
+        now: datetime,
+        *,
+        expected_code: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized = []
+        for item in items:
+            try:
+                available_at = parse_aware(item["available_at"], "available_at")
+                contract_code = item["contract_code"]
+                strike = self._number(item["strike"], "strike")
+                expiry = item["expiry"]
+                option_type = item["option_type"]
+                volume = self._number(item["volume"], "volume")
+                open_interest = self._number(item["open_interest"], "open_interest")
+            except (KeyError, TypeError, GatewayError) as exc:
+                if isinstance(exc, GatewayError):
+                    raise
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider options-flow row is missing required fields",
+                ) from exc
+            if not isinstance(contract_code, str) or not contract_code.strip():
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider options-flow row is missing a contract code",
+                )
+            if not isinstance(expiry, str) or not expiry.strip():
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider options-flow row is missing an expiry date",
+                )
+            if option_type not in {"call", "put"}:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider options-flow row has an unsupported option type",
+                )
+            if expected_code is not None and item.get("code") != expected_code:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider options-flow row does not match the requested symbol",
+                )
+            if strike <= 0 or volume < 0 or open_interest < 0:
+                raise GatewayError(
+                    ErrorCode.MALFORMED_PROVIDER_DATA,
+                    "Provider options-flow row has an out-of-bounds numeric field",
+                )
+            if available_at > now:
+                raise PointInTimeViolation(
+                    "Provider options-flow row is available after the decision cutoff"
+                )
+            normalized.append(
+                {
+                    "availableAt": iso_z(available_at),
+                    "contractCode": contract_code,
+                    "strike": strike,
+                    "expiry": expiry,
+                    "optionType": option_type,
+                    "volume": volume,
+                    "openInterest": open_interest,
+                }
+            )
+        return normalized
+
     def institutional_holdings(self, symbol: str) -> dict[str, Any]:
         try:
             code = to_moomoo_code(symbol)
@@ -188,6 +254,25 @@ class MarketGatewayService:
             {
                 "symbol": from_moomoo_code(code),
                 "semantics": "delayed-reported-holdings",
+            }
+        )
+        return response
+
+    def options_flow(self, symbol: str) -> dict[str, Any]:
+        try:
+            code = to_moomoo_code(symbol)
+        except GatewayError as error:
+            return self._error_envelope(error)
+        response = self._execute(
+            lambda: self._provider.options_flow(code),
+            lambda items, now: self._normalize_options_flow(
+                items, now, expected_code=code
+            ),
+        )
+        response.update(
+            {
+                "symbol": from_moomoo_code(code),
+                "semantics": "raw-options-contract-fields",
             }
         )
         return response

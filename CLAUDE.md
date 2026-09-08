@@ -39,3 +39,8 @@
 
 - `deploy/tests`、`scripts/tests` 在 Linux 容器里会有环境性失败（launchd/fchmod/systemd 假设），不代表代码坏了，勿花 token 去"修"
 - 遇到"同一份代码、不同环境算出不同浮点值"先别急着诊断为"跨平台差异"：`sum()` 对 float 列表是从左到右累加，舍入误差只取决于求和顺序，同一顺序在任何平台上结果都相同——真正该查的是求和/累加顺序有没有变过（如从滚动增量换成整窗重算），需要顺序无关的正确舍入就用 `math.fsum()`
+- 从主线重启已合并旧 PR 的同名分支时，`git push --force-with-lease -u origin <branch>` 若本地从未 fetch 过该远端分支会报 "stale info"（无 lease 基准）；先 `git fetch origin +refs/heads/<branch>:refs/remotes/origin/<branch>` 建立 tracking ref，若仍报错就显式传 `--force-with-lease=<branch>:<远端实际 sha>`（用 `git ls-remote` 确认）
+- `adviser_llm` 的 `anthropic>=0.116` 是开放版本区间，而 `anthropic` SDK 在 1.0.0 版把传输依赖从 `httpx` 改名为 `httpx2`；测试里凡是需要构造真实 `anthropic.*Error` 异常（用于测试 `isinstance` 判断，比无脑换成内置异常更贴近真实场景）时，导入传输库要写成 `try: import httpx / except ModuleNotFoundError: import httpx2 as httpx`，不要硬编码某一个——否则测试红不红取决于 pip 这次解析到哪个 anthropic 版本，看起来像"偶发 flaky"实则是版本漂移
+- 全新容器里 `scripts/test_changed.sh` 只对"改动涉及"的服务目录做 `pip install -e`；若该服务通过绝对包名 import 同仓其他内部服务（如 `analysis_api` 依赖 `device_auth`/`information_layer`/`decision_engine`/`adviser_layer`），首轮会报 `ModuleNotFoundError`，这是新容器没装全内部依赖，不是代码坏了——先把用到的内部包都 `pip install -e` 一遍再跑门禁
+- 全新容器首次跑门禁前还要补两件事，否则报的不是代码问题：`pip install -e <service>` 不装 `[dev]` extra，`pytest` 本身不会被装上，先 `python3 -m pip install -q pytest`；`apps/mobile` 门禁需要 `node_modules`，Linux 容器不会自动跑，先 `cd apps/mobile && npm ci`
+- 夜间 worker 跑 `git config user.name/user.email` 设置身份后，`git commit` 前务必用 `git log -1 --format='%an <%ae>'` 复核一遍再推送——曾出现 config 命令本身没报错、但提交实际作者仍是默认的 `Claude <noreply@anthropic.com>` 的情况，事后要靠 rebase+force-push 改写已推送历史才能修，成本远高于推送前多一步核对

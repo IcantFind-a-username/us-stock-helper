@@ -120,6 +120,28 @@ class StubService:
             "items": [],
         }
 
+    def options_flow(self, symbol: str) -> dict:
+        return {
+            "schemaVersion": "1",
+            "source": "moomoo",
+            "session": "healthy",
+            "asOf": "2026-07-25T04:00:00Z",
+            "availableAt": "2026-07-25T04:00:00Z",
+            "symbol": symbol,
+            "semantics": "raw-options-contract-fields",
+            "items": [
+                {
+                    "availableAt": "2026-07-25T04:00:00Z",
+                    "contractCode": "US.NVDA260116C180000",
+                    "strike": 180.0,
+                    "expiry": "2026-01-16",
+                    "optionType": "call",
+                    "volume": 4_500.0,
+                    "openInterest": 12_000.0,
+                }
+            ],
+        }
+
 
 class GatewayServerConfigTests(unittest.TestCase):
     def test_default_configuration_is_loopback_only(self) -> None:
@@ -212,6 +234,7 @@ class GatewayApplicationTests(unittest.TestCase):
             "/capital-flow",
             "/capital-distribution",
             "/institutional-holdings",
+            "/options-flow",
         ):
             with self.subTest(path=path):
                 query = (
@@ -234,6 +257,22 @@ class GatewayApplicationTests(unittest.TestCase):
         )
         self.assertEqual(status, 404)
         self.assertEqual(body["error"]["code"], "PATH_NOT_ALLOWED")
+
+    def test_options_flow_route_returns_normalized_raw_contract_fields(self) -> None:
+        status, _, body = self.app.handle(
+            "GET", "/options-flow", {"symbol": ["NVDA"]}, {}, "127.0.0.1"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["session"], "healthy")
+        self.assertEqual(body["symbol"], "NVDA")
+        item = body["items"][0]
+        self.assertEqual(item["contractCode"], "US.NVDA260116C180000")
+        self.assertEqual(item["strike"], 180.0)
+        self.assertEqual(item["expiry"], "2026-01-16")
+        self.assertEqual(item["optionType"], "call")
+        self.assertEqual(item["volume"], 4_500.0)
+        self.assertEqual(item["openInterest"], 12_000.0)
 
     def test_write_methods_are_rejected(self) -> None:
         status, headers, body = self.app.handle(

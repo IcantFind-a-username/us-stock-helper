@@ -41,3 +41,14 @@ class QuoteProvider(Protocol):
 
     def institutional_holdings(self, code: str) -> ProviderBatch:
         ...
+
+
+class OptionsFlowProvider(Protocol):
+    """Narrow protocol for read-only per-contract options data.
+
+    Deliberately separate from QuoteProvider: not every provider needs to
+    implement options, and this must never grow trade-context methods.
+    """
+
+    def options_flow(self, code: str) -> ProviderBatch:
+        ...

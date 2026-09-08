@@ -23,6 +23,31 @@ function unavailableBar(reason: string | null): ParticipationBar {
   };
 }
 
+function availableBar(): ParticipationBar {
+  return {
+    closedAt: "2026-08-13T16:05:00.000Z",
+    asOf: "2026-08-13T16:05:00.000Z",
+    availableAt: "2026-08-13T16:05:00.000Z",
+    mainActivity: 0.6,
+    retailActivity: 0.4,
+    mainShare: 0.6,
+    retailShare: 0.4,
+    netFlow: 1000,
+    coverage: 1,
+    source: "moomoo",
+    methodVersion: "order-size-activity-share-v1",
+    qualityStatus: "live",
+    missingReason: null,
+  };
+}
+
+it("shows the algorithm version string next to the ratio, so it can't be mistaken for real institutional holdings", async () => {
+  const view = await render(<ParticipationCard bars={[availableBar()]} />);
+
+  const version = view.getByTestId("participation-method-version");
+  expect(version).toHaveTextContent(/order-size-activity-share-v1/);
+});
+
 it("groups the missing bars by reason instead of printing one line each", async () => {
   // Every bar in a snapshot without capital flow carries the same sentence.
   // Printing it once per bar filled the screen with 199 copies and buried the
