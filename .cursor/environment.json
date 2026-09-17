@@ -1,0 +1,4 @@
+{
+  "name": "us-stock-helper",
+  "install": "for p in .cursor/install.sh repos/us-stock-helper/.cursor/install.sh us-stock-helper/.cursor/install.sh; do [ -f \"$p\" ] && exec bash \"$p\"; done; echo 'us-stock-helper/.cursor/install.sh not found' >&2; exit 1"
+}
