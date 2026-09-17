@@ -9,6 +9,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# --- System prerequisites -------------------------------------------------
+# The default base image ships python3 and node, but pip is not guaranteed.
+# Provision it once if missing so the committed config works on any base.
+if ! python3 -m pip --version >/dev/null 2>&1; then
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip
+fi
+
 # --- Python backend -------------------------------------------------------
 # The eight service packages are installed editable into the user site so the
 # default `python3` resolves every dependency. This matches CI (a single
