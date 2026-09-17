@@ -1,0 +1,4 @@
+{
+  "name": "us-stock-helper",
+  "install": "bash .cursor/install.sh"
+}
